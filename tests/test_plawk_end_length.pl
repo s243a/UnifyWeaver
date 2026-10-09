@@ -307,9 +307,12 @@ test(arithmetic_over_a_record_read_declines_for_length_and_nf_alike) :-
 % before `length` existed in END. The chain driver carries the EndRecord token (that
 % landed separately), so what remains is the chain body's print vocabulary, which is
 % its own follow-on rather than anything to do with `length`.
-test(a_for_in_chain_body_declines_for_length_and_nf_alike) :-
-    build_status("{ c[$1]++ } END { for (k in c) print k, length }\n", 3),
-    build_status("{ c[$1]++ } END { for (k in c) print k, NF }\n", 3),
+% (Arrays PR 3d-2: the dedicated chain still declines a record read in its body; the
+% program now compiles through the mixed END-control fallback, whose shared sequence
+% emitter reads the RETAINED last record -- gawk's `length` / `NF` at END.)
+test(a_for_in_chain_body_reads_the_last_record_for_length_and_nf, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) print k, length }\n", "5 6\n7 6\n"),
+    run_sorted("{ c[$1]++ } END { for (k in c) print k, NF }\n", "5 2\n7 2\n"),
     !,
     % ...and the same chain without a record read still works, so the decline is
     % about the record read and not about the chain.

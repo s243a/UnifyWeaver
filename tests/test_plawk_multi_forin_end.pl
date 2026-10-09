@@ -77,14 +77,16 @@ test(value_sum_dump, [condition(clang_available)]) :-
     assertion(Lines == ["3", "7", "x 7", "y 3"]),
     !.
 
-% A for-in print with a string literal is a clean not-yet (keeps END string-global
-% naming simple): the program declines rather than mis-lowering.
-test(string_literal_in_forin_declines, [condition(clang_available)]) :-
+% A for-in print with a string literal is a not-yet for this driver (END
+% string-global naming); arrays PR 3d-2's mixed END-control fallback compiles it,
+% matching gawk.
+test(string_literal_in_forin_compiles_via_the_fallback, [condition(clang_available)]) :-
     mdir(Dir),
-    build_status(Dir, 'strlit',
+    build_run_sorted(Dir, 'strlit',
         "{ c[$1]++; d[$2]++ } END { for (a in c) print \"c\", a; for (b in d) print \"d\", b }\n",
-        St),
-    assertion(St \== 0),
+        "x 5\ny 3\nx 2\n", Lines, St),
+    assertion(St == 0),
+    assertion(Lines == ["c x", "c y", "d 2", "d 3", "d 5"]),
     !.
 
 % A multi plain-print END (no for-in) now compiles via the scalar-chain

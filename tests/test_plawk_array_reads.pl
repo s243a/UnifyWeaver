@@ -123,6 +123,17 @@ test(arith_reads_keep_a_scalar_key_a_string, [condition(clang_available)]) :-
     run_exact("{ k = $1; c[k]++; print k, c[k] * 3 }\n", "a 3\nb 3\na 6\nc 3\nb 6\na 9\n"),
     !.
 
+% A read inside a compound action is evaluated AT ITS POINT, not hoisted to before
+% the action: the loop re-reads c[$1] after each increment (gawk 54; the hoisted
+% read summed a stale value, 36).
+test(arith_reads_are_not_hoisted, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; i = 0; while (i < 2) { c[$1]++; t += c[$1]; i++ } } END { print t }\n",
+        "54\n"),
+    run_exact("{ c[$1]++; if (NR > 1) t += c[$1] * 2 } END { print t }\n", "18\n"),
+    run_exact("{ c[$1]++; n++; if (n > 2) { m = c[$1] * 10; print m } }\n",
+        "20\n10\n20\n30\n"),
+    !.
+
 test(unadmitted_arith_reads_decline) :-
     forall(member(Src,
             [ % a double table
@@ -168,10 +179,75 @@ test(unadmitted_end_reads_decline) :-
     forall(member(Src,
             [ % a double table
               "{ s[$1] += $2 } END { for (k in s) print k, s[k] * 2 }\n",
-              % END scalar `if` over an element (no table plan on that route yet)
+              % END scalar `if` over an element in a program with no scalar in its
+              % rules (the pure-assoc END-if route; 3d-2)
               "{ c[$1]++ } END { if (c[\"a\"] > 1) print \"many a\" }\n"
             ]),
         build_status_is(Src, 3)),
+    !.
+
+% --- PR 3d-1: END control flow in a mixed (arrays + scalars) program ---------
+
+test(mixed_end_if_and_while, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) print \"big\", n }\n", "big 6\n"),
+    run_exact("{ c[$1]++; n++ } END { if (c[\"a\"] > 1) print \"many a\", n }\n",
+        "many a 6\n"),
+    run_exact("{ c[$1]++; n++ } END { if (c[\"d\"] > 1) print \"many d\"; else print \"few d\" }\n",
+        "few d\n"),
+    run_exact("{ c[$1]++; n++ } END { while (i < 3) i++; print i, n }\n", "3 6\n"),
+    !.
+
+% A literal-key element print in the shared walker: absent prints nothing; `$1`
+% in END is the retained last record.
+test(mixed_end_prints, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) print n, c[\"a\"] }\n", "6 3\n"),
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) print c[\"zz\"] \"|\" }\n", "|\n"),
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) print $1 }\n", "a\n"),
+    !.
+
+% END assignments are typed like rule assignments (3d-2: the END block joins the
+% scalar planning as a pseudo-rule), so a string copy and a division into an
+% END-only scalar get the right slot kind -- 3d-1 had to decline these.
+test(mixed_end_assignments_are_typed, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; k = $1 } END { if (c[\"a\"] > 1) m = k; print m }\n", "a\n"),
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) m = n / 4; print m }\n", "1.5\n"),
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) m = n * 2; print m }\n", "12\n"),
+    !.
+
+% --- PR 3d-2: `for (k in c)` carrying scalar state in END --------------------
+
+% The max / min idioms: the key copied out of the loop (a string slot) and the
+% iterated element compared and copied (present by construction).
+test(forin_max_and_min_idioms, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++ } END { for (k in c) { if (c[k] > max) { max = c[k]; mk = k } }; print mk, max }\n",
+        "a 3\n"),
+    run_exact("{ c[$1]++; n++ } END { for (k in c) { if (c[k] > max) { max = c[k]; mk = k } }; print mk, max, n }\n",
+        "a 3 6\n"),
+    run_exact("{ c[$1]++ } END { for (k in c) { if (c[k] < min || min == 0) { min = c[k]; mk = k } }; print mk, min }\n",
+        "c 1\n"),
+    !.
+
+test(forin_counting_and_folding, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++ } END { for (k in c) { n++ }; print n }\n", "3\n"),
+    run_exact("{ c[$1]++ } END { for (k in c) { if (c[k] > 1) n++ }; print n }\n", "2\n"),
+    run_exact("{ c[$1]++ } END { for (k in c) { t += c[k] * 2 }; print t }\n", "12\n"),
+    !.
+
+test(forin_state_declines) :-
+    forall(member(Src,
+            [ % a double table, a split (positional) table
+              "{ s[$1] += $2 } END { for (k in s) { if (s[k] > max) max = s[k] }; print max }\n",
+              "{ n = split($0, a, \" \"); m++ } END { for (k in a) { t += a[k] }; print t, m }\n",
+              % break in the body
+              "{ c[$1]++ } END { for (k in c) { if (c[k] > 2) break; n++ }; print n }\n"
+            ]),
+        build_status_is(Src, 3)),
+    !.
+
+% No current record at END: a field-KEYED element read declines.
+test(mixed_end_field_keyed_read_declines) :-
+    build_status_is("{ c[$1]++; n++ } END { if (c[$1] > 0) print \"x\" }\n", 3),
+    build_status_is("{ c[$1]++; n++ } END { if (n > 2) print c[$1] }\n", 3),
     !.
 
 :- end_tests(plawk_array_reads).
