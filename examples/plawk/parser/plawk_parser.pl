@@ -2741,6 +2741,14 @@ for_in_body([if(Guard, [PrintAction], [])]) -->
     "{", ws, "if", ws, "(", ws, guard_expr(Guard), ws, ")", ws,
     print_action(PrintAction), ws, "}",
     !.
+% The same guarded print without the braces -- `for (k in c) if (c[k] > 1) print k`,
+% the usual awk spelling (arrays PR 3c). It is the identical term, so it lowers
+% exactly as the braced form does; a braceless if that is not this shape fails here
+% and falls through to the other alternatives (and declines) as before.
+for_in_body([if(Guard, [PrintAction], [])]) -->
+    "if", identifier_boundary, ws, "(", ws, guard_expr(Guard), ws, ")", ws,
+    print_action(PrintAction),
+    !.
 for_in_body(Actions) -->
     action_block(Actions),
     !.
@@ -2749,6 +2757,10 @@ for_in_body([WritebinAction]) -->
     !.
 for_in_body([PrintAction]) -->
     print_action(PrintAction).
+% a braceless printf body -- `for (k in c) printf "%s %d\n", k, c[k]` (arrays PR 3c),
+% the same single action the braced body `{ printf ... }` gives
+for_in_body([PrintfAction]) -->
+    printf_action(PrintfAction).
 
 %% for_c_action(-Action)//
 %

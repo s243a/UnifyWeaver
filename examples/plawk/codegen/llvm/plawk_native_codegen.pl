@@ -7919,7 +7919,8 @@ plawk_end_chain_plan(Rules, Items, AssocPlan) :-
     IterArrays = [First | RestIter],
     findall(Lk,
         ( member(loop(L, _A2, F2), Items),
-          member(assoc(var(Lk), var(L)), F2)
+          member(F, F2),
+          sub_term(assoc(var(Lk), var(L)), F)   % bare, or inside arithmetic (3c)
         ),
         LoopLookups),
     findall(Pa,
@@ -8069,6 +8070,9 @@ plawk_end_chain_tail(Rest, NextIndex, AssocPlan, TailIR) :-
 
 plawk_multi_forin_field_ok(LoopVar, var(LoopVar)).
 plawk_multi_forin_field_ok(LoopVar, assoc(var(_ArrayName), var(LoopVar))).
+% arithmetic over loop-keyed elements (arrays PR 3c)
+plawk_multi_forin_field_ok(LoopVar, Expr) :-
+    plawk_forin_arith_field(LoopVar, Expr).
 
 % The iterated key may be forwarded directly only across tables with the same
 % internal key domain. Check this during END-plan selection as well as during
@@ -8200,6 +8204,25 @@ plawk_assoc_specs_posarray_arrays(RuleSpecs, PosArrays) :-
 plawk_forin_print_field(LoopVar, var(LoopVar)).
 plawk_forin_print_field(LoopVar, assoc(var(_ArrayName), var(LoopVar))).
 plawk_forin_print_field(_LoopVar, string(_Value)).
+% arithmetic over elements keyed by the loop variable (arrays PR 3c):
+% `print k, c[k] * 2`, `print k, c[k] / total[k]` -- counter tables only, checked
+% at the emitter
+plawk_forin_print_field(LoopVar, Expr) :-
+    plawk_forin_arith_field(LoopVar, Expr).
+
+%% plawk_forin_arith_field(+LoopVar, +Expr) is semidet.
+%  A binary arithmetic tree whose leaves are integer literals and elements keyed by
+%  the loop variable, with at least one element.
+plawk_forin_arith_field(LoopVar, Expr) :-
+    plawk_i64_binary_expr(Expr, _Op, _Name, L, R),
+    plawk_forin_arith_leaf(LoopVar, L),
+    plawk_forin_arith_leaf(LoopVar, R),
+    sub_term(assoc(_, var(LoopVar)), Expr),
+    !.
+
+plawk_forin_arith_leaf(_LoopVar, int(N)) :- integer(N), !.
+plawk_forin_arith_leaf(LoopVar, assoc(var(A), var(LoopVar))) :- atom(A), !.
+plawk_forin_arith_leaf(LoopVar, Expr) :- plawk_forin_arith_field(LoopVar, Expr).
 
 plawk_forin_writebin_field(LoopVar, var(LoopVar)).
 plawk_forin_writebin_field(LoopVar, assoc(var(_ArrayName), var(LoopVar))).
@@ -9021,6 +9044,31 @@ plawk_forin_body_print_lines([assoc(var(LookupArrayName), var(LoopVar)) | Rest],
     plawk_emit_lines(ValueLines),
     plawk_forin_body_print_lines(Rest, LoopVar, ArrayName, TableIndex, AssocPlan,
         Descriptor, OutputSeparator, NextPrintIndex).
+% Arithmetic over elements keyed by the loop variable (arrays PR 3c): each element
+% is read -- the ITERATED table by its occupied slot (value_at), any other table by
+% the loop key (get, absent -> 0, awk's numeric reading) -- and substituted as an
+% ssa(Ref) leaf, then the expression prints the awk way (integer, or %g with fdiv
+% once it divides). Counter tables only: a double / string table fails here and the
+% program declines. Names are forin_ex_<PrintIndex>... so nothing collides with
+% the other per-field emitters or with END statements after the loop.
+plawk_forin_body_print_lines([Expr | Rest], LoopVar, ArrayName, TableIndex,
+        AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
+    { plawk_forin_arith_field(LoopVar, Expr) },
+    !,
+    plawk_forin_separator_lines(PrintIndex, OutputSeparator),
+    { format(atom(Base), 'forin_ex_~w', [PrintIndex]),
+      plawk_forin_arith_reads(Expr, LoopVar, ArrayName, TableIndex, AssocPlan, Base,
+          0, _, Expr1, ReadLines),
+      format(atom(FmtVar), 'forin_ex_fmt_~w', [PrintIndex]),
+      format(atom(F64Print), 'forin_ex_printed_f64_~w', [PrintIndex]),
+      format(atom(I64Print), 'forin_ex_printed_~w', [PrintIndex]),
+      plawk_numeric_print_lines(Expr1, Base, FmtVar, F64Print, I64Print, PrintLines),
+      append(ReadLines, PrintLines, Lines),
+      NextPrintIndex is PrintIndex + 1
+    },
+    plawk_emit_lines(Lines),
+    plawk_forin_body_print_lines(Rest, LoopVar, ArrayName, TableIndex, AssocPlan,
+        Descriptor, OutputSeparator, NextPrintIndex).
 plawk_forin_body_print_lines([string(Value) | Rest], LoopVar, ArrayName,
         TableIndex, AssocPlan, Descriptor, OutputSeparator, PrintIndex) -->
     plawk_forin_separator_lines(PrintIndex, OutputSeparator),
@@ -9028,6 +9076,101 @@ plawk_forin_body_print_lines([string(Value) | Rest], LoopVar, ArrayName,
     { NextPrintIndex is PrintIndex + 1 },
     plawk_forin_body_print_lines(Rest, LoopVar, ArrayName, TableIndex, AssocPlan,
         Descriptor, OutputSeparator, NextPrintIndex).
+
+%% plawk_end_lit_arith_field(+Expr) is semidet.
+%  Binary arithmetic whose leaves are integer literals and literal-key elements,
+%  with at least one element.
+plawk_end_lit_arith_field(Expr) :-
+    plawk_i64_binary_expr(Expr, _Op, _Name, L, R),
+    plawk_end_lit_arith_leaf(L),
+    plawk_end_lit_arith_leaf(R),
+    sub_term(assoc(_, _), Expr),
+    !.
+
+plawk_end_lit_arith_leaf(int(N)) :- integer(N), !.
+plawk_end_lit_arith_leaf(assoc(var(A), string(_))) :- atom(A), !.
+plawk_end_lit_arith_leaf(assoc(var(A), int(N))) :- atom(A), integer(N), !.
+plawk_end_lit_arith_leaf(Expr) :- plawk_end_lit_arith_field(Expr).
+
+%% plawk_end_lit_arith_reads(+Expr, +AssocPlan, +Base, +I0, -I, -Expr1, -Lines)
+plawk_end_lit_arith_reads(assoc(var(A), KeyTerm), AssocPlan, Base, I0, I, ssa(Ref),
+        Lines) :-
+    !,
+    plawk_counter_array(A),
+    \+ plawk_assoc_plan_posarray_array(AssocPlan, A),
+    plawk_assoc_table_index(AssocPlan, A, TableIndex),
+    (   KeyTerm = string(S) -> string_codes(S, Codes)
+    ;   KeyTerm = int(N), number_codes(N, Codes)
+    ),
+    length(Codes, Len),
+    Size is Len + 1,
+    plawk_llvm_cstring_escape(Codes, Esc),
+    format(atom(K), '~w_k~w', [Base, I0]),
+    format(atom(Buf), '  %~w_buf = alloca [~w x i8]', [K, Size]),
+    format(atom(Store), '  store [~w x i8] c"~w\\00", [~w x i8]* %~w_buf',
+        [Size, Esc, Size, K]),
+    format(atom(Ptr),
+        '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* %~w_buf, i64 0, i64 0',
+        [K, Size, Size, K]),
+    format(atom(Id), '  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 ~w)',
+        [K, K, Len]),
+    format(atom(Ref), '%~w_v~w', [Base, I0]),
+    format(atom(KeyIR), '%~w_id', [K]),
+    plawk_assoc_elem_call_line(Ref, i64, i64, get, TableIndex, KeyIR, Get),
+    Lines = [Buf, Store, Ptr, Id, Get],
+    I is I0 + 1.
+plawk_end_lit_arith_reads(Expr, AssocPlan, Base, I0, I, Expr1, Lines) :-
+    compound(Expr),
+    Expr \= int(_),
+    !,
+    Expr =.. [F, L, R],
+    plawk_end_lit_arith_reads(L, AssocPlan, Base, I0, I1, L1, LL),
+    plawk_end_lit_arith_reads(R, AssocPlan, Base, I1, I, R1, LR),
+    Expr1 =.. [F, L1, R1],
+    append(LL, LR, Lines).
+plawk_end_lit_arith_reads(Leaf, _AssocPlan, _Base, I, I, Leaf, []).
+
+%% plawk_llvm_cstring_escape(+Codes, -Escaped)
+%  LLVM c"..." text: printable ASCII except `"` and `\` as is, every other byte
+%  as \XX.
+plawk_llvm_cstring_escape(Codes, Escaped) :-
+    foldl([C, A0, A]>>(
+            (   C >= 32, C =< 126, C =\= 34, C =\= 92
+            ->  char_code(Ch, C), atom_concat(A0, Ch, A)
+            ;   format(atom(Hex), '\\~|~`0t~16r~2+', [C]),
+                upcase_atom(Hex, HexU), atom_concat(A0, HexU, A)
+            )),
+        Codes, '', Escaped).
+
+%% plawk_forin_arith_reads(+Expr, +LoopVar, +Iterated, +TableIndex, +AssocPlan,
+%%     +Base, +I0, -I, -Expr1, -Lines) is semidet.
+plawk_forin_arith_reads(assoc(var(A), var(LoopVar)), LoopVar, Iterated, TableIndex,
+        AssocPlan, Base, I0, I, ssa(Ref), [Line]) :-
+    !,
+    plawk_counter_array(A),
+    format(atom(Ref), '%~w_v~w', [Base, I0]),
+    (   A == Iterated
+    ->  plawk_assoc_elem_call_line(Ref, i64, i64, value_at, TableIndex,
+            '%forin_slot', Line)
+    ;   plawk_assoc_table_index(AssocPlan, A, LookupIndex),
+        plawk_assoc_elem_call_line(Ref, i64, i64, get, LookupIndex,
+            '%forin_key_id', Line)
+    ),
+    I is I0 + 1.
+plawk_forin_arith_reads(Expr, LoopVar, Iterated, TableIndex, AssocPlan, Base, I0, I,
+        Expr1, Lines) :-
+    compound(Expr),
+    Expr \= int(_),
+    !,
+    Expr =.. [F, L, R],
+    plawk_forin_arith_reads(L, LoopVar, Iterated, TableIndex, AssocPlan, Base, I0, I1,
+        L1, LL),
+    plawk_forin_arith_reads(R, LoopVar, Iterated, TableIndex, AssocPlan, Base, I1, I,
+        R1, LR),
+    Expr1 =.. [F, L1, R1],
+    append(LL, LR, Lines).
+plawk_forin_arith_reads(Leaf, _LoopVar, _Iterated, _TableIndex, _AssocPlan, _Base, I, I,
+        Leaf, []).
 
 plawk_forin_separator_lines(0, _OutputSeparator) -->
     !,
@@ -11857,6 +12000,11 @@ plawk_assoc_blob_key_ok(Blob) :-
 
 plawk_assoc_print_array(assoc(var(ArrayName), string(_Key)), ArrayName).
 plawk_assoc_print_array(assoc(var(ArrayName), int(_Key)), ArrayName).
+% the literal-key elements inside an END arithmetic field (arrays PR 3c)
+plawk_assoc_print_array(Expr, ArrayName) :-
+    plawk_end_lit_arith_field(Expr),
+    sub_term(assoc(var(ArrayName), Key), Expr),
+    ( Key = string(_) ; Key = int(_) ).
 
 plawk_assoc_planned_rules([], _Tables, _StrArrays, _PosArrays, _Index) -->
     [].
@@ -16654,6 +16802,30 @@ plawk_assoc_end_print_lines([assoc(var(ArrayName), string(Key)) | Rest], AssocPl
 % resolves against the slots, and this route has none, so such a concat declines -- which is
 % correct rather than a limitation, since a program with a scalar var is a MIXED program and
 % goes to the other walker.
+% END arithmetic over LITERAL-key elements (arrays PR 3c): `END { print c["a"] +
+% c["b"] }`, `print c["a"] * 2`. Each element is read with @wam_assoc_i64_get (absent
+% -> 0) on a counter table and substituted as an ssa(Ref) leaf; the expression then
+% prints the awk way. The key bytes are stored into a stack buffer from an inline
+% c"..." constant, so no module global is needed (this route's line stream has no
+% global channel). Names carry `end_`, so a statement list's per-statement rename
+% (plawk_end_print_suffix_rename/3) keeps them unique.
+plawk_assoc_end_print_lines([Field | Rest], AssocPlan, Descriptor, OutputSeparator,
+        EndRecord, PrintIndex) -->
+    { plawk_end_lit_arith_field(Field) },
+    !,
+    plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
+    { format(atom(Base), 'end_elem_~w', [PrintIndex]),
+      plawk_end_lit_arith_reads(Field, AssocPlan, Base, 0, _, Field1, ReadLines),
+      format(atom(FmtVar), 'end_elem_fmt_~w', [PrintIndex]),
+      format(atom(F64Print), 'end_elem_printed_f64_~w', [PrintIndex]),
+      format(atom(I64Print), 'end_elem_printed_~w', [PrintIndex]),
+      plawk_numeric_print_lines(Field1, Base, FmtVar, F64Print, I64Print, PrintLines),
+      append(ReadLines, PrintLines, Lines),
+      NextPrintIndex is PrintIndex + 1
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_end_print_lines(Rest, AssocPlan, Descriptor, OutputSeparator, EndRecord,
+        NextPrintIndex).
 plawk_assoc_end_print_lines([concat(Parts) | Rest], AssocPlan, Descriptor, OutputSeparator,
         EndRecord, PrintIndex) -->
     plawk_scalar_end_separator_lines(PrintIndex, OutputSeparator),
@@ -22737,27 +22909,32 @@ plawk_end_expr_print_lines(Expr, StatePlan, PrintIndex) -->
     { plawk_substitute_end_reads(Expr, StatePlan, SubstitutedExpr),
       format(atom(Base), 'plawk_end_expr_~w', [PrintIndex]),
       format(atom(FmtVar), 'end_expr_fmt_~w', [PrintIndex]),
-      ( plawk_expr_is_double(SubstitutedExpr)
-      -> % A double-typed END expression (float literal leaf or a read of
-         % a double slot): whole tree promotes to double, prints as %g,
-         % and division is IEEE fdiv rather than guarded sdiv.
-         plawk_f64_expr_ir(SubstitutedExpr, 32, Base, Base, ValueIR,
-             [], SetupParts),
-         format(atom(FmtPtr),
-             '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
-             [FmtVar]),
-         format(atom(PrintCall),
-             '  %printed_end_expr_f64_~w = call i32 @wam_print_awk_number(i8* %~w, double ~w)',
-             [PrintIndex, FmtVar, ValueIR])
-      ;  plawk_i64_expr_ir(SubstitutedExpr, 32, Base, Base, ValueIR,
-             [], SetupParts),
-         format(atom(PrintVar), 'printed_end_expr_~w', [PrintIndex]),
-         llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
-             ValueIR, [FmtPtr, PrintCall])
-      ),
-      append(SetupParts, [FmtPtr, PrintCall], Lines)
+      format(atom(F64Print), 'printed_end_expr_f64_~w', [PrintIndex]),
+      format(atom(I64Print), 'printed_end_expr_~w', [PrintIndex]),
+      plawk_numeric_print_lines(SubstitutedExpr, Base, FmtVar, F64Print, I64Print,
+          Lines)
     },
     plawk_emit_lines(Lines).
+
+%% plawk_numeric_print_lines(+Expr, +Base, +FmtVar, +F64Print, +I64Print, -Lines)
+%  Print a numeric expression the awk way, naming its SSA values from the given
+%  names. A double-typed expression (float literal leaf, a double read, or any
+%  division) promotes to double, prints as %g, and divides with IEEE fdiv;
+%  otherwise it is an i64 printed with %ld.
+plawk_numeric_print_lines(Expr, Base, FmtVar, F64Print, I64Print, Lines) :-
+    (   plawk_expr_is_double(Expr)
+    ->  plawk_f64_expr_ir(Expr, 32, Base, Base, ValueIR, [], SetupParts),
+        format(atom(FmtPtr),
+            '  %~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
+            [FmtVar]),
+        format(atom(PrintCall),
+            '  %~w = call i32 @wam_print_awk_number(i8* %~w, double ~w)',
+            [F64Print, FmtVar, ValueIR])
+    ;   plawk_i64_expr_ir(Expr, 32, Base, Base, ValueIR, [], SetupParts),
+        llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, I64Print,
+            ValueIR, [FmtPtr, PrintCall])
+    ),
+    append(SetupParts, [FmtPtr, PrintCall], Lines).
 
 plawk_emit_lines([]) -->
     [].
