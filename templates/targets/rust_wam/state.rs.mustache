@@ -1194,6 +1194,248 @@ mod d121_backtrack_tests {
 }
 
 #[cfg(test)]
+mod d135_clause_cp_arg_save_tests {
+    // R0a (D135): a clause-entry choice point (TryMeElseArgs) saves only
+    // A1..A<arity>. Its save must be exactly save_regs() restricted to those
+    // slots; a retry must restore the arguments and leave every other A/X
+    // slot Uninit (a temporary clause 1 wrote is Uninit in clause 2, as with
+    // the full save); and an ITE guard (TryMeElse) must still restore the
+    // temporaries it saw.
+    use super::*;
+
+    fn lcg(seed: &mut u64) -> usize {
+        *seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+        (*seed >> 33) as usize
+    }
+
+    fn assert_mask_covers_live_slots(m: &WamState) {
+        for i in 0..AX_REGS {
+            if !matches!(m.regs[i], Value::Uninit) {
+                assert_eq!((m.ax_dirty.0[i >> 6] >> (i & 63)) & 1, 1,
+                    "live A/X slot {} is missing from the dirty mask", i);
+            }
+        }
+    }
+
+    #[test]
+    fn save_arg_regs_is_save_regs_restricted_to_the_arguments() {
+        let mut m = WamState::new(vec![], HashMap::new());
+        let mut snaps: Vec<Vec<(usize, Value)>> = Vec::new();
+        let mut seed: u64 = 0x0135_d135;
+        for step in 0..3000 {
+            match lcg(&mut seed) % 16 {
+                0..=10 => {
+                    let k = lcg(&mut seed);
+                    let name = match k % 4 {
+                        0 => format!("A{}", lcg(&mut seed) % 160),
+                        1 => format!("X{}", lcg(&mut seed) % 110),
+                        2 => format!("Y{}", 1 + lcg(&mut seed) % 3),
+                        _ => format!("A{}", 1 + lcg(&mut seed) % 6),
+                    };
+                    let val = if lcg(&mut seed) % 5 == 0 { Value::Uninit } else { Value::Integer(step as i64) };
+                    m.set_reg(&name, val);
+                }
+                11..=12 => snaps.push(m.save_regs()),
+                13..=14 if !snaps.is_empty() => {
+                    let s = snaps[lcg(&mut seed) % snaps.len()].clone();
+                    m.restore_regs(&s);
+                }
+                15 => m.reset_query(),
+                _ => {}
+            }
+            let full = m.save_regs();
+            for n in [0usize, 1, 2, 3, 7, 99, 100, 150, 199, 200, 250, MAX_REGS + 5] {
+                let want: Vec<(usize, Value)> =
+                    full.iter().filter(|(i, _)| *i < n).cloned().collect();
+                assert_eq!(m.save_arg_regs(n), want, "arity {} at step {}", n, step);
+            }
+        }
+    }
+
+    /// p/2 with two clauses. Clause 1 writes a temporary (X5) and an
+    /// argument register beyond the arity (A3), then fails; clause 2 is
+    /// `proceed`. `entry` is the try_me_else under test.
+    fn two_clause_program(entry: Instruction) -> (Vec<Instruction>, HashMap<String, usize>) {
+        let code = vec![
+            entry,                                                           // 1 p/2
+            Instruction::PutConstant(Value::Integer(55), "X5".to_string()),  // 2
+            Instruction::PutConstant(Value::Integer(33), "A3".to_string()),  // 3
+            Instruction::BuiltinCall("fail/0".to_string(), 0),               // 4
+            Instruction::TrustMe,                                            // 5 L_p_2_2
+            Instruction::Proceed,                                            // 6
+        ];
+        let mut labels = HashMap::new();
+        labels.insert("p/2".to_string(), 1);
+        labels.insert("L_p_2_2".to_string(), 5);
+        labels.insert("L_ite_else_1".to_string(), 5);
+        (code, labels)
+    }
+
+    /// Enter the program with A1, A2 (the arguments), A3, A4 and X3 (a
+    /// caller's stale registers) set, run clause 1 to its failure and
+    /// backtrack into the choice point. Returns the machine at clause 2.
+    fn at_clause_two(entry: Instruction) -> WamState {
+        at_clause_two_with(entry, false)
+    }
+
+    fn at_clause_two_with(entry: Instruction, full_save_flag: bool) -> WamState {
+        let (code, labels) = two_clause_program(entry);
+        let mut m = WamState::new(code, labels);
+        m.clause_cp_full_save = full_save_flag;
+        m.set_reg("A1", Value::Integer(1));
+        m.set_reg("A2", Value::Integer(2));
+        m.set_reg("A3", Value::Integer(3));
+        m.set_reg("A4", Value::Integer(4));
+        m.set_reg("X3", Value::Integer(103));
+        m.pc = 1;
+        for _ in 0..3 {
+            let instr = m.code[m.pc - 1].clone();
+            assert!(m.step(&instr));
+        }
+        let fail = m.code[m.pc - 1].clone();
+        assert!(!m.step(&fail));
+        assert!(m.backtrack());
+        assert_eq!(m.pc, 5);
+        m
+    }
+
+    #[test]
+    fn clause_retry_restores_only_the_arguments() {
+        let m = at_clause_two(Instruction::TryMeElseArgs("L_p_2_2".to_string(), 2));
+        assert_eq!(m.choice_points.len(), 1);
+        assert_eq!(m.choice_points[0].saved_args,
+                   vec![(0, Value::Integer(1)), (1, Value::Integer(2))]);
+        assert_eq!(m.get_reg_raw("A1"), Some(Value::Integer(1)));
+        assert_eq!(m.get_reg_raw("A2"), Some(Value::Integer(2)));
+        // Clause 1's temporary is Uninit in clause 2, exactly as with the
+        // full save (it was written after the choice point).
+        assert_eq!(m.get_reg_raw("X5"), None);
+        // Registers outside A1..A2 that were set BEFORE the entry are not
+        // saved any more: Uninit in clause 2.
+        assert_eq!(m.get_reg_raw("A3"), None);
+        assert_eq!(m.get_reg_raw("A4"), None);
+        assert_eq!(m.get_reg_raw("X3"), None);
+        assert_mask_covers_live_slots(&m);
+        // The cut barrier the clause chain parks is the same as TryMeElse's.
+        let full = at_clause_two(Instruction::TryMeElse("L_p_2_2".to_string()));
+        assert_eq!(m.cut_barrier, full.cut_barrier);
+        assert_eq!(m.cp, full.cp);
+    }
+
+    #[test]
+    fn full_save_choice_points_still_restore_every_live_register() {
+        // The same program entered through a full-save try_me_else: a clause
+        // label (the form every non-verified program keeps) and an ITE guard
+        // label. Both restore the registers set before the choice point, and
+        // the temporary written after it is Uninit.
+        for label in ["L_p_2_2", "L_ite_else_1"] {
+            let m = at_clause_two(Instruction::TryMeElse(label.to_string()));
+            assert_eq!(m.get_reg_raw("A1"), Some(Value::Integer(1)), "{}", label);
+            assert_eq!(m.get_reg_raw("A2"), Some(Value::Integer(2)), "{}", label);
+            assert_eq!(m.get_reg_raw("A3"), Some(Value::Integer(3)), "{}", label);
+            assert_eq!(m.get_reg_raw("A4"), Some(Value::Integer(4)), "{}", label);
+            assert_eq!(m.get_reg_raw("X3"), Some(Value::Integer(103)), "{}", label);
+            assert_eq!(m.get_reg_raw("X5"), None, "{}", label);
+            assert_mask_covers_live_slots(&m);
+        }
+    }
+
+    #[test]
+    fn the_full_save_flag_makes_a_clause_cp_save_everything() {
+        // include/3 & co. run their goals with clause_cp_full_save set: a
+        // TryMeElseArgs choice point then saves exactly what TryMeElse saves.
+        for entry in [Instruction::TryMeElseArgs("L_p_2_2".to_string(), 2),
+                      Instruction::TryMeElsePcArgs(5, 2)] {
+            let m = at_clause_two_with(entry, true);
+            let full = at_clause_two(Instruction::TryMeElse("L_p_2_2".to_string()));
+            assert_eq!(m.choice_points[0].saved_args, full.choice_points[0].saved_args);
+            assert_eq!(m.regs, full.regs);
+            assert_eq!(m.get_reg_raw("A3"), Some(Value::Integer(3)));
+            assert_eq!(m.get_reg_raw("X3"), Some(Value::Integer(103)));
+        }
+        let mut m = WamState::new(vec![], HashMap::new());
+        m.clause_cp_full_save = true;
+        m.reset_query();
+        assert!(!m.clause_cp_full_save);
+    }
+
+    #[test]
+    fn pc_resolved_form_saves_the_same_registers() {
+        let a = at_clause_two(Instruction::TryMeElseArgs("L_p_2_2".to_string(), 2));
+        let b = at_clause_two(Instruction::TryMeElsePcArgs(5, 2));
+        assert_eq!(a.choice_points[0].saved_args, b.choice_points[0].saved_args);
+        assert_eq!(a.regs, b.regs);
+        assert_eq!((a.pc, a.cp, a.cut_barrier), (b.pc, b.cp, b.cut_barrier));
+        assert_eq!(a.pending_cut_barrier, b.pending_cut_barrier);
+        // Arity 0 saves nothing; the retry leaves no A/X register live.
+        let z = at_clause_two(Instruction::TryMeElsePcArgs(5, 0));
+        assert!(z.choice_points[0].saved_args.is_empty());
+        assert!(z.regs[..AX_REGS].iter().all(|v| matches!(v, Value::Uninit)));
+    }
+
+    /// color(red). color(green). color(blue).   pick(blue).
+    /// query(X) :- color(X), pick(X).   (the D122 program)
+    fn color_program(arg_save: bool) -> (Vec<Instruction>, HashMap<String, usize>) {
+        let a = |s: &str| Value::atom(s);
+        let entry = if arg_save {
+            Instruction::TryMeElseArgs("L_c2".to_string(), 1)
+        } else {
+            Instruction::TryMeElse("L_c2".to_string())
+        };
+        let code = vec![
+            entry,                                                  // 1 color/1
+            Instruction::GetConstant(a("red"), "A1".to_string()),   // 2
+            Instruction::Proceed,                                   // 3
+            Instruction::RetryMeElse("L_c3".to_string()),           // 4 L_c2
+            Instruction::GetConstant(a("green"), "A1".to_string()), // 5
+            Instruction::Proceed,                                   // 6
+            Instruction::TrustMe,                                   // 7 L_c3
+            Instruction::GetConstant(a("blue"), "A1".to_string()),  // 8
+            Instruction::Proceed,                                   // 9
+            Instruction::GetConstant(a("blue"), "A1".to_string()),  // 10 pick/1
+            Instruction::Proceed,                                   // 11
+            Instruction::Allocate,                                  // 12 query/1
+            Instruction::GetVariable("Y1".to_string(), "A1".to_string()),
+            Instruction::Call("color/1".to_string(), 1),
+            Instruction::PutValue("Y1".to_string(), "A1".to_string()),
+            Instruction::Call("pick/1".to_string(), 1),
+            Instruction::Deallocate,
+            Instruction::Proceed,                                   // 18
+        ];
+        let mut labels = HashMap::new();
+        labels.insert("color/1".to_string(), 1);
+        labels.insert("L_c2".to_string(), 4);
+        labels.insert("L_c3".to_string(), 7);
+        labels.insert("pick/1".to_string(), 10);
+        labels.insert("query/1".to_string(), 12);
+        (code, labels)
+    }
+
+    #[test]
+    fn a_compiled_search_gives_the_same_answer_with_either_save() {
+        let x = || Value::Unbound("X".to_string().into());
+        for arg in [x(), Value::atom("blue"), Value::atom("red")] {
+            let mut seen = Vec::new();
+            for arg_save in [false, true] {
+                let (code, labels) = color_program(arg_save);
+                let mut vm = WamState::new(code, labels);
+                vm.reset_query();
+                vm.set_reg("A1", arg.clone());
+                // A stale caller temporary: saved by the full form only, and
+                // dead here (nothing reads it), so the answer is the same.
+                vm.set_reg("X7", Value::Integer(7));
+                vm.cp = 0;
+                vm.pc = 12;
+                let ok = vm.run();
+                seen.push(format!("ok={} bts={} cps={} X={:?}", ok, vm.backtrack_count,
+                                  vm.choice_points.len(), vm.deref_heap(&x())));
+            }
+            assert_eq!(seen[0], seen[1], "arg {:?}", arg);
+        }
+    }
+}
+
+#[cfg(test)]
 mod d122_code_snapshot_tests {
     // D122: `run` borrows each instruction from an Arc snapshot of `code`
     // instead of cloning it. It must behave exactly like the old
@@ -2357,6 +2599,14 @@ pub struct WamState {
     /// nested run backtrack into the outer resolver search (P3 deb path; the
     /// v/3 path never triggered it because `is_v3` always succeeds there).
     pub backtrack_floor: usize,
+    /// R0a (D135): while true, a clause-entry choice point (`TryMeElseArgs`)
+    /// takes the full `save_regs()` instead of A1..A<arity>. Set by Rust code
+    /// that reads an A/X register AFTER running goals in a nested run
+    /// (include/3, exclude/3, partition/4 and foldl/4,5 read their output
+    /// argument registers after the per-element calls), so the clause choice
+    /// points those goals push keep saving the caller's registers exactly as
+    /// before. Each setter restores the previous value; `reset_query` clears it.
+    pub clause_cp_full_save: bool,
     /// Pending barrier captured before a predicate clause choice point was
     /// pushed. The following Allocate consumes it so neck cuts commit to the
     /// current clause instead of leaving the predicate alternative alive.
@@ -2508,6 +2758,7 @@ impl WamState {
             var_counter: 0,
             cut_barrier: 0,
             backtrack_floor: 0,
+            clause_cp_full_save: false,
             pending_cut_barrier: None,
             pending_level: None,
             step_count: 0,
@@ -4306,6 +4557,7 @@ impl WamState {
         self.var_counter = 0;
         self.cut_barrier = 0;
         self.backtrack_floor = 0;
+        self.clause_cp_full_save = false;
         self.pending_cut_barrier = None;
         self.pending_level = None;
         self.step_count = 0;
@@ -4475,6 +4727,26 @@ impl WamState {
                 }
             }
         });
+        saved
+    }
+
+    /// R0a (D135): the save of a clause-entry choice point (`TryMeElseArgs`):
+    /// only the argument registers A1..A<arity>, i.e. slots `0..arity`. The
+    /// result is `save_regs()` restricted to those slots: the same
+    /// `(index, value)` pairs in the same ascending order, `Uninit` slots
+    /// skipped. `restore_ax_regs` is unchanged, so a retry still clears every
+    /// other dirty A/X slot. Under `clause_cp_full_save` it is `save_regs()`.
+    fn save_arg_regs(&self, arity: usize) -> Vec<(usize, Value)> {
+        if self.clause_cp_full_save {
+            return self.save_regs();
+        }
+        let n = arity.min(AX_REGS).min(self.regs.len());
+        let mut saved = Vec::with_capacity(n);
+        for (i, v) in self.regs[..n].iter().enumerate() {
+            if !matches!(v, Value::Uninit) {
+                saved.push((i, v.clone()));
+            }
+        }
         saved
     }
 

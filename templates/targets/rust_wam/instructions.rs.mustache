@@ -122,6 +122,16 @@ pub enum Instruction {
     TryMeElse(String),
     /// Create choice point with a pre-resolved alternative PC.
     TryMeElsePc(usize),
+    /// R0a (D135): the clause-entry `try_me_else` of a predicate of the given
+    /// arity. Same as TryMeElse, but the choice point saves only the argument
+    /// registers A1..A<arity>; backtracking still clears every other dirty
+    /// A/X slot. The generator emits it only after checking that no other
+    /// A/X register is live where a retry resumes (see
+    /// rust_r0a_instr_options/4 in wam_rust_target.pl). ITE guards and all
+    /// other choice points keep TryMeElse's full save.
+    TryMeElseArgs(String, usize),
+    /// TryMeElseArgs with a pre-resolved alternative PC.
+    TryMeElsePcArgs(usize, usize),
     /// Update choice point to next alternative at Label.
     RetryMeElse(String),
     /// Update choice point to a pre-resolved alternative PC.
