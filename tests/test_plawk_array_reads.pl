@@ -168,10 +168,44 @@ test(unadmitted_end_reads_decline) :-
     forall(member(Src,
             [ % a double table
               "{ s[$1] += $2 } END { for (k in s) print k, s[k] * 2 }\n",
-              % END scalar `if` over an element (no table plan on that route yet)
+              % END scalar `if` over an element in a program with no scalar in its
+              % rules (the pure-assoc END-if route; 3d-2)
               "{ c[$1]++ } END { if (c[\"a\"] > 1) print \"many a\" }\n"
             ]),
         build_status_is(Src, 3)),
+    !.
+
+% --- PR 3d-1: END control flow in a mixed (arrays + scalars) program ---------
+
+test(mixed_end_if_and_while, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) print \"big\", n }\n", "big 6\n"),
+    run_exact("{ c[$1]++; n++ } END { if (c[\"a\"] > 1) print \"many a\", n }\n",
+        "many a 6\n"),
+    run_exact("{ c[$1]++; n++ } END { if (c[\"d\"] > 1) print \"many d\"; else print \"few d\" }\n",
+        "few d\n"),
+    run_exact("{ c[$1]++; n++ } END { while (i < 3) i++; print i, n }\n", "3 6\n"),
+    !.
+
+% A literal-key element print in the shared walker: absent prints nothing; `$1`
+% in END is the retained last record.
+test(mixed_end_prints, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) print n, c[\"a\"] }\n", "6 3\n"),
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) print c[\"zz\"] \"|\" }\n", "|\n"),
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) print $1 }\n", "a\n"),
+    !.
+
+% END assignments keep their kind (the plan never sees them): a string copy or a
+% double into a counter declines; integer arithmetic over elements compiles.
+test(mixed_end_assignments_keep_their_kind, [condition(clang_available)]) :-
+    build_status_is("{ c[$1]++; k = $1 } END { if (c[\"a\"] > 1) m = k; print m }\n", 3),
+    build_status_is("{ c[$1]++; n++ } END { if (n > 2) m = n / 4; print m }\n", 3),
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) m = n * 2; print m }\n", "12\n"),
+    !.
+
+% No current record at END: a field-KEYED element read declines.
+test(mixed_end_field_keyed_read_declines) :-
+    build_status_is("{ c[$1]++; n++ } END { if (c[$1] > 0) print \"x\" }\n", 3),
+    build_status_is("{ c[$1]++; n++ } END { if (n > 2) print c[$1] }\n", 3),
     !.
 
 :- end_tests(plawk_array_reads).
