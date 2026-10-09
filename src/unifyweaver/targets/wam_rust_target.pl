@@ -633,11 +633,9 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, c
                     Value::List(items) => Value::List(items.cons(mid.clone())),
                     tail => Value::list(vec![mid.clone(), tail]),
                 };
+                // R0b: only the child-hops register can be a Y register;
+                // A1-A4 are argument staging and are not trailed.
                 self.trail_binding(child_hops_reg);
-                self.trail_binding("A1");
-                self.trail_binding("A2");
-                self.trail_binding("A3");
-                self.trail_binding("A4");
                 self.put_reg(child_hops_reg, child_hops.clone());
                 self.set_reg_str("A1", mid);
                 self.set_reg_str("A2", root);
@@ -1625,7 +1623,6 @@ compile_execute_arith_builtin_to_rust(Code) :-
                     };
                     match lhs {
                         Some(Value::Unbound(ref var_name)) => {
-                            self.trail_binding("A1");
                             self.set_reg_str("A1", final_val.clone());
                             self.bind_var(var_name, final_val);
                             self.pc += 1; true
@@ -7229,6 +7226,12 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 // Filter: keep elements for which the test call succeeds
                 // (include) or fails (exclude). Test-call bindings are
                 // trial-only and unwound after each element.
+                //
+                // R0b: capture the output argument A3 BEFORE the element
+                // calls, as predsort/3 does. The element goal loads A1..An
+                // (call_goal_key, the callee''s put_*, lowered put_reg) and
+                // unwind_trail_to restores no A/X register, so A3 read after
+                // the loop would be whatever the last element call left there.
                 let goal = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
                     .unwrap_or(Value::Uninit);
@@ -7236,6 +7239,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 let keep_on = op == "include/3";
                 let mut kept: Vec<Value> = Vec::new();
                 for item in items.iter() {
@@ -7249,10 +7253,10 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     if !ok && self.thrown_ball.is_some() { return false; }
                     if ok == keep_on { kept.push(item.clone()); }
                 }
-                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 if self.unify(&a3, &Value::list(kept)) { self.pc += 1; true } else { false }
             }
             "partition/4" => {
+                // R0b: A3/A4 captured before the element calls (see include/3).
                 let goal = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
                     .unwrap_or(Value::Uninit);
@@ -7260,6 +7264,8 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let a4 = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
                 let mut incl: Vec<Value> = Vec::new();
                 let mut excl: Vec<Value> = Vec::new();
                 for item in items.iter() {
@@ -7273,8 +7279,6 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     if !ok && self.thrown_ball.is_some() { return false; }
                     if ok { incl.push(item.clone()); } else { excl.push(item.clone()); }
                 }
-                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                let a4 = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
                 if self.unify(&a3, &Value::list(incl)) && self.unify(&a4, &Value::list(excl)) {
                     self.pc += 1; true
                 } else { false }
@@ -7301,6 +7305,9 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let mut acc = self.get_reg_raw(acc0_reg)
                     .map(|v| self.deref_var(&v))
                     .unwrap_or(Value::Uninit);
+                // R0b: capture the output argument before the element calls,
+                // which load A1..An (see include/3).
+                let out = self.get_reg_raw(out_reg).unwrap_or(Value::Uninit);
                 for i in 0..l1.len() {
                     let next = self.fresh_meta_var();
                     let mut extra: Vec<Value> = vec![self.deref_var(&l1[i])];
@@ -7316,7 +7323,6 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     if !self.call_goal_once_full_save(&g) { return false; }
                     acc = self.deref_var(&next);
                 }
-                let out = self.get_reg_raw(out_reg).unwrap_or(Value::Uninit);
                 if self.unify(&out, &acc) { self.pc += 1; true } else { false }
             }
             _ => false,
@@ -7385,8 +7391,12 @@ compile_execute_meta_builtin_to_rust(Code) :-
         // with the nested frame''s stale value, and reverse/2 then saw an
         // unbound list and failed. Drop the nested run''s Yi-register trail
         // entries here, keeping binding entries (so predsort_order can still
-        // read the comparator''s Order result) and Ai/Xi entries (restored
-        // explicitly by the caller''s save/restore).
+        // read the comparator''s Order result). Since R0b the trail holds no
+        // Ai/Xi entries (trail_binding records Y registers only), so after this
+        // filter the tail is binding entries only. A caller that needs its own
+        // A/X registers after this call reads them before it (include/3,
+        // partition/4, foldl/4,5, predsort/3) or restores them explicitly
+        // (predsort_order, catch/3).
         if self.trail.len() > trail_mark {
             let tail = self.trail.split_off(trail_mark);
             for e in tail {

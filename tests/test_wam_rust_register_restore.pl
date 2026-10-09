@@ -9,17 +9,19 @@
 % audit is docs/reports/wam_rust_r0b_register_trail_audit.md.
 %
 % Every program below runs a goal that loads argument and temporary registers
-% (through put_constant/put_value/get_variable, which push register trail
-% entries today) and then FAILS, or succeeds inside a scope that is rolled
-% back, and afterwards reads an argument or a temporary. Each program covers
-% one kind of non-choice-point rollback (or one choice-point kind next to it,
-% for contrast). Today every checked case matches SWI-Prolog. The cases exist
-% to fail if R0b drops a register entry that some site still reads. With the
-% A/X register pushes disabled in a scratch build, exactly the interpreter
-% include/exclude/partition checks fail: those builtins read their output
-% argument register after rolling back each element call, and only the
-% register trail gives it back (see the audit). Programs that differ from
-% SWI-Prolog today for other reasons are listed in rr_known_divergence/3.
+% (through put_constant/put_value/get_variable, which pushed register trail
+% entries before R0b) and then FAILS, or succeeds inside a scope that is
+% rolled back, and afterwards reads an argument or a temporary. Each program
+% covers one kind of non-choice-point rollback (or one choice-point kind next
+% to it, for contrast). Every checked case matches SWI-Prolog. Before R0b,
+% disabling the A/X register pushes in a scratch build failed exactly the
+% interpreter include/exclude/partition checks: those builtins read their
+% output argument register after rolling back each element call, and only
+% the register trail gave it back (see the audit). R0b removed the A/X
+% entries and made those builtins (and foldl/4,5) read their output
+% arguments at entry, which also fixed their functions-mode and
+% extended-goal divergences. Programs that differ from SWI-Prolog for other
+% reasons are listed in rr_known_divergence/3.
 %
 % The harness is the one of tests/test_wam_rust_baseline_fixes.pl: one source
 % of truth (rr_clause/2), asserted into user: for SWI and handed to
@@ -48,6 +50,7 @@
 :- use_module(library(readutil)).
 :- use_module('../src/unifyweaver/targets/wam_rust_target',
               [write_wam_rust_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_rust_lowered_emitter', []).
 
 % ---------------------------------------------------------------------
 % Programs. rr_program(Name, Kind, Query, Out, Setup)
@@ -150,9 +153,9 @@ rr_clause(exclude,   (rr_exclude(R) :- exclude(rr_keep, [1, 2, 3], R))).
 rr_clause(partition, (rr_partition(R) :- partition(rr_keep, [1, 2, 3], I, E), R = parts(I, E))).
 rr_clause(maplist_fail, (rr_maplist_fail(X, R) :- ( maplist(rr_keep, [2, 1]) -> R = all ; R = some(X) ))).
 % foldl/4 and include/3 whose extended goal has three or more arguments: the
-% builtin reads its output register (A4, A3) after the element calls, which
-% overwrite it. Known divergences (rr_known_divergence/3), kept here so the
-% R0b fix for include/exclude/partition covers them too.
+% element calls overwrite the output register (A4, A3). Before R0b the
+% builtin read it after the calls and diverged from SWI; R0b reads it at
+% builtin entry.
 rr_program(foldl,        filter, rr_foldl(R),        R, true).
 rr_program(include_wide, filter, rr_include_wide(R), R, true).
 rr_clause(foldl, (rr_foldl(R) :- foldl(rr_add, [1, 2, 3], 0, R))).
@@ -511,33 +514,16 @@ check_once(Name) :-
 %  Programs whose interpreted entry differs from SWI-Prolog today, for reasons
 %  the R0b audit traced (docs/reports/wam_rust_r0b_register_trail_audit.md).
 %  They are not checked against SWI; test known_divergences_still_present
-%  asserts that each one still differs, so a fix (the R0b implementation
-%  captures these output registers at builtin entry) must move the program
-%  into the checked set by deleting its line here.
+%  asserts that each one still differs, so a fix must move the program into
+%  the checked set by deleting its line here. (R0b did this for the
+%  functions-mode include/exclude/partition and both modes of foldl and
+%  include_wide: those builtins now read their output registers at entry.)
 %
-%  include/3, exclude/3 and partition/4 read their output argument registers
-%  (A3, A4) after the element calls. In emit_mode(functions) the element
-%  goal reaches lowered helpers (rr_clob_ok/1, rr_w/5) whose register writes
-%  are not trailed, so the trail-only rollback after each element does not
-%  give the registers back and the output unification fails.
-rr_known_divergence(functions, include,   lowered_writes_untrailed_output_register).
-rr_known_divergence(functions, exclude,   lowered_writes_untrailed_output_register).
-rr_known_divergence(functions, partition, lowered_writes_untrailed_output_register).
-%  foldl/4 reads its output register (A4) after the element calls, on the
-%  success path, where nothing restores it; an element goal of arity 3 or
-%  more overwrites it (here rr_add/3 calls rr_clob_ok/1, which loads A4).
-rr_known_divergence(interpreter, foldl, output_register_read_after_calls).
-rr_known_divergence(functions,   foldl, output_register_read_after_calls).
 %  aggregate_all/3 written inside a findall/3 goal is compiled as
 %  `call aggregate_all/3` (it is inlined only as a clause-body goal), and the
 %  runtime has no aggregate_all/3 builtin or label, so the inner goal fails.
 rr_known_divergence(interpreter, nested_agg_inline, aggregate_all_in_findall_goal_is_a_call).
 rr_known_divergence(functions,   nested_agg_inline, aggregate_all_in_findall_goal_is_a_call).
-%  include/3 with an extended goal of arity 3 or more: call_goal_key loads
-%  A1..A3 with set_reg (not trailed), so A3 holds the last element when
-%  include/3 reads its output argument.
-rr_known_divergence(interpreter, include_wide, output_register_read_after_calls).
-rr_known_divergence(functions,   include_wide, output_register_read_after_calls).
 
 %% rr_lowered_out_of_scope(?Name, ?Why)
 %  Programs whose DIRECT lowered entry is wrong, or does not reach the
@@ -570,12 +556,6 @@ rr_lowered_out_of_scope(nested_fail,    lowered_aggregates_unsupported).
 %  stack nor E), so the else branch reads its Y registers from the callee's
 %  frame. A lowered-tier defect independent of the register trail.
 rr_lowered_out_of_scope(naf_temp, lowered_ite_keeps_failed_callee_frame).
-%  The functions-mode known divergences above, through the lowered entry.
-rr_lowered_out_of_scope(include,      lowered_writes_untrailed_output_register).
-rr_lowered_out_of_scope(exclude,      lowered_writes_untrailed_output_register).
-rr_lowered_out_of_scope(partition,    lowered_writes_untrailed_output_register).
-rr_lowered_out_of_scope(foldl,        output_register_read_after_calls).
-rr_lowered_out_of_scope(include_wide, output_register_read_after_calls).
 
 %% rr_lowered_required(?Name)
 %  Programs whose query predicate MUST be lowered in functions mode, so the
@@ -589,7 +569,7 @@ rr_lowered_required(ite_temps).
 rr_lowered_required(ifthen).
 
 test_wam_rust_register_restore :-
-    run_tests(wam_rust_register_restore).
+    run_tests([wam_rust_register_restore, wam_rust_r0b_ite_else_check]).
 
 :- begin_tests(wam_rust_register_restore, [condition(cargo_available),
                                           setup(install_rr_programs)]).
@@ -615,3 +595,58 @@ test(known_divergences_still_present,
     \+ ( SOut == ROut, SOk == ROk ).
 
 :- end_tests(wam_rust_register_restore).
+
+% ---------------------------------------------------------------------
+% R0b emit-time check (no cargo needed): the else path of a lowered
+% if-then-else (its else branch plus the instructions after the ITE) must
+% write every A/X register before reading it, because unwind_trail_to no
+% longer restores A/X. wam_rust_lowered_emitter:rust_ite_else_ax_check/2 is
+% called by emit_instrs/3 on every ITE it emits.
+% ---------------------------------------------------------------------
+
+ite_check(Else, Rest) :-
+    wam_rust_lowered_emitter:rust_ite_else_ax_check(Else, Rest).
+
+ite_check_rejects(Else, Rest, Reg) :-
+    catch(( ite_check(Else, Rest), Got = accepted ),
+          error(lowered_ite_else_reads_ax_before_write(R, _), _),
+          Got = rejected(R)),
+    Got == rejected(Reg).
+
+:- begin_tests(wam_rust_r0b_ite_else_check).
+
+test(else_loads_its_arguments) :-
+    ite_check([put_value("Y2", "A1"), put_constant("e", "A2"),
+               builtin_call("=/2", "2")],
+              [deallocate, proceed]).
+
+test(else_reads_an_argument_it_did_not_load) :-
+    ite_check_rejects([put_value("Y2", "A2"), builtin_call("=/2", "2")],
+                      [proceed], "A1").
+
+test(after_the_ite_reads_a_temporary_the_else_did_not_write) :-
+    ite_check_rejects([put_constant("e", "A1")],
+                      [get_value("X3", "A1"), proceed], "X3").
+
+test(nested_ite_keeps_only_registers_both_branches_wrote) :-
+    % the nested condition and then branch write A1 and A2, its else branch
+    % only A3: after the nested ITE, A1 is not known to be written.
+    ite_check_rejects([ite([put_constant("a", "A1"), builtin_call("atom/1", "1")],
+                           [put_constant("b", "A2")],
+                           [put_constant("c", "A3")]),
+                       builtin_call("atom/1", "1")],
+                      [], "A1").
+
+test(a_call_ends_the_path) :-
+    ite_check([put_value("Y1", "A1"), call("q/1", "1"), get_value("X1", "A1")],
+              [proceed]).
+
+test(execute_reads_its_arguments) :-
+    ite_check_rejects([put_value("Y1", "A1"), execute("q/2")], [], "A2").
+
+test(y_registers_are_not_checked) :-
+    ite_check([get_value("Y1", "Y2"), put_value("Y3", "A1"),
+               builtin_call("atom/1", "1")],
+              []).
+
+:- end_tests(wam_rust_r0b_ite_else_check).

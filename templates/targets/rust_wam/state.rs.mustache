@@ -2087,8 +2087,12 @@ mod d125_bindings_tests {
                         m.bind(&names[i], val);
                     }
                     9..=10 => {
+                        // R0b: an A/X register is not trailed (no entry); a
+                        // Y register is (one entry; no Env frame here, so the
+                        // unwind's put_reg of it is a no-op).
                         vm.put_reg("A1", Value::Integer(step as i64));
                         vm.trail_binding("A1");
+                        vm.trail_binding("Y1");
                         m.trail.push(MEntry::Reg);
                     }
                     11..=13 => marks.push(vm.trail.len()),
@@ -2333,6 +2337,8 @@ mod d127_register_trail_tests {
         // (reg_name.to_string(), get_reg(name)), and undoes it with the same
         // put_reg calls the old unwind made. Names include non-canonical forms
         // that still decode to a live register (`A01`, `X007`, `Y01`, `A100`).
+        // R0b: `rf` records Y names only, as `trail_binding` does, so an A/X
+        // write survives every unwind on both machines.
         let names = ["A1", "A2", "A10", "A99", "X1", "X5", "X42", "Y1", "Y2", "Y12",
                      "A01", "X007", "Y01", "A100"];
         for seed in 1..=10u64 {
@@ -2347,8 +2353,10 @@ mod d127_register_trail_tests {
                 match rng.below(10) {
                     0..=4 => {
                         vm.trail_binding(name);
-                        let old = rf.get_reg(name);
-                        rf_trail.push((name.to_string(), old));
+                        if WamState::is_y_reg_name(name) {
+                            let old = rf.get_reg(name);
+                            rf_trail.push((name.to_string(), old));
+                        }
                         let v = match rng.below(3) {
                             0 => Value::Integer(step as i64),
                             1 => Value::atom("a"),
@@ -2375,6 +2383,7 @@ mod d127_register_trail_tests {
                 }
                 assert_eq!(vm.trail.len(), rf_trail.len(), "trail len at step {}", step);
                 for (e, (n, old)) in vm.trail.iter().zip(rf_trail.iter()) {
+                    assert!(WamState::is_y_reg_name(n), "only Y entries (R0b): {}", n);
                     assert_eq!(e.register_name(), Some(n.as_str()));
                     assert_eq!(&e.old_value, old);
                 }
@@ -4523,6 +4532,12 @@ impl WamState {
     /// discarded before the else branch runs. Because get_reg derefs
     /// through `bindings`, reverting these entries fully restores the
     /// pre-condition view of every variable.
+    ///
+    /// R0b: register entries are Y-only (`trail_binding`), so this never
+    /// restores an A or X register. A caller that reads an A/X register
+    /// after the unwind must have captured it before the rolled-back code
+    /// ran (as include/3, partition/4 and predsort/3 do) or restore it
+    /// itself (`restore_regs`, as catch/3 and `lo_restore_clause` do).
     pub fn unwind_trail_to(&mut self, mark: usize) {
         while self.trail.len() > mark {
             let entry = match self.trail.pop() {
@@ -6448,8 +6463,23 @@ impl WamState {
         }
     }
 
-    /// Record a binding on the trail for backtracking.
+    /// Record the old value of a Y register on the trail, before the caller
+    /// overwrites it.
+    ///
+    /// R0b: only Y registers are recorded. An A/X name is a no-op. Choice
+    /// points restore A/X from their own register snapshot (`backtrack`
+    /// never applies register entries), and every trail-only rollback
+    /// (`unwind_trail_to`) either restores the registers explicitly or reads
+    /// no A/X register it did not load again: see
+    /// docs/reports/wam_rust_r0b_register_trail_audit.md. Y entries stay
+    /// until the environment-slot trail replaces them. The class test is the
+    /// one `get_reg`/`put_reg` route on, so a recorded entry is always
+    /// undone into the same storage it was read from.
+    #[inline]
     pub fn trail_binding(&mut self, key: &str) {
+        if !Self::is_y_reg_name(key) {
+            return;
+        }
         let old = self.get_reg(key);
         self.trail.push(TrailEntry::register(key, old));
     }
@@ -10101,42 +10131,70 @@ mod trail_enum_tests {
     // under `trail_enum`, by prefix under the OFF baseline) — a register entry is
     // never mis-applied to the binding table, and a binding entry is never applied
     // to a register.
+    //
+    // R0b: register entries are recorded for Y registers only. The register
+    // here is Y1 (in an Env frame); an A1 write next to it is NOT trailed and
+    // keeps its new value through the unwind.
     #[test]
     fn bind_unwind_round_trip_with_register_entry() {
         let mut m = vm();
+        m.smut().push(StackEntry::Env(0, YRegs::new(), 0));
 
-        // Pre-mark state: _X bound to atom(one); register A1 holds atom(reg0).
+        // Pre-mark state: _X bound to atom(one); Y1 holds atom(reg0); A1 a0.
         m.bind_var("_X", Value::atom("one"));
-        m.put_reg("A1", Value::atom("reg0"));
+        m.put_reg("Y1", Value::atom("reg0"));
+        m.put_reg("A1", Value::atom("a0"));
         assert_eq!(m.bindings.get("_X"), Some(&Value::atom("one")));
-        assert_eq!(m.get_reg("A1"), Some(Value::atom("reg0")));
+        assert_eq!(m.get_reg("Y1"), Some(Value::atom("reg0")));
 
         let mark = m.trail.len();
 
-        // Past the mark: rebind _X, bind a fresh _Y, and overwrite register A1
+        // Past the mark: rebind _X, bind a fresh _Y, and overwrite register Y1
         // via a register-trail entry (trail_binding records the old value first).
         m.bind_var("_X", Value::atom("two"));       // Binding entry (old = one)
         m.bind_var("_Y", Value::atom("y_val"));     // Binding entry (old = None)
-        m.trail_binding("A1");                        // Register entry (old = reg0)
-        m.put_reg("A1", Value::atom("reg1"));
+        m.trail_binding("Y1");                        // Register entry (old = reg0)
+        m.put_reg("Y1", Value::atom("reg1"));
+        m.trail_binding("A1");                        // no entry (R0b)
+        m.put_reg("A1", Value::atom("a1"));
 
         // The mutations took effect.
         assert_eq!(m.bindings.get("_X"), Some(&Value::atom("two")));
         assert_eq!(m.bindings.get("_Y"), Some(&Value::atom("y_val")));
-        assert_eq!(m.get_reg("A1"), Some(Value::atom("reg1")));
+        assert_eq!(m.get_reg("Y1"), Some(Value::atom("reg1")));
         assert_eq!(m.trail.len(), mark + 3, "three trail entries past the mark");
 
         m.unwind_trail_to(mark);
 
         // _X restored to its pre-mark binding, _Y removed (was unbound before the
-        // mark), A1 restored to reg0.
+        // mark), Y1 restored to reg0, A1 left as written.
         assert_eq!(m.bindings.get("_X"), Some(&Value::atom("one")),
             "binding _X restored to pre-mark value");
         assert_eq!(m.bindings.get("_Y"), None,
             "binding _Y removed (was unbound before the mark)");
-        assert_eq!(m.get_reg("A1"), Some(Value::atom("reg0")),
-            "register A1 restored to pre-mark value");
+        assert_eq!(m.get_reg("Y1"), Some(Value::atom("reg0")),
+            "register Y1 restored to pre-mark value");
+        assert_eq!(m.get_reg("A1"), Some(Value::atom("a1")),
+            "A1 is not trailed (R0b)");
         assert_eq!(m.trail.len(), mark, "trail truncated to the mark");
+    }
+
+    // R0b: trail_binding of an A or X register pushes nothing, whatever the
+    // spelling; a Y register pushes one entry.
+    #[test]
+    fn trail_binding_records_y_registers_only() {
+        let mut m = vm();
+        m.smut().push(StackEntry::Env(0, YRegs::new(), 0));
+        for name in ["A1", "A2", "A99", "X1", "X42", "A01", "X007", "A100"] {
+            m.put_reg(name, Value::atom("v"));
+            m.trail_binding(name);
+        }
+        assert_eq!(m.trail.len(), 0, "no entry for an A/X register");
+        m.put_reg("Y2", Value::atom("v"));
+        m.trail_binding("Y2");
+        assert_eq!(m.trail.len(), 1);
+        assert_eq!(m.trail[0].register_name(), Some("Y2"));
+        assert_eq!(m.trail[0].old_value, Some(Value::atom("v")));
     }
 
     // Repeated unwinds are stable and a full unwind (mark 0) clears everything a
@@ -10144,16 +10202,17 @@ mod trail_enum_tests {
     #[test]
     fn full_unwind_clears_all_query_bindings() {
         let mut m = vm();
+        m.smut().push(StackEntry::Env(0, YRegs::new(), 0));
         m.bind_var("_A", Value::atom("a1"));
         m.bind_var("_B", Value::atom("b1"));
-        m.put_reg("A1", Value::atom("r0"));
-        m.trail_binding("A1");
-        m.put_reg("A1", Value::atom("r1"));
+        m.put_reg("Y1", Value::atom("r0"));
+        m.trail_binding("Y1");
+        m.put_reg("Y1", Value::atom("r1"));
 
         m.unwind_trail_to(0);
         assert_eq!(m.bindings.get("_A"), None, "_A cleared");
         assert_eq!(m.bindings.get("_B"), None, "_B cleared");
-        assert_eq!(m.get_reg("A1"), Some(Value::atom("r0")), "A1 back to r0");
+        assert_eq!(m.get_reg("Y1"), Some(Value::atom("r0")), "Y1 back to r0");
         assert_eq!(m.trail.len(), 0);
 
         // Unwinding an already-empty trail past its length is a no-op.
