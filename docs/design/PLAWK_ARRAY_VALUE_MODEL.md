@@ -309,9 +309,15 @@ each newly admitted input -- not deferred to the declaration PR.
    (`print k, c[k] * 2`, `c[k] / 4`, `c[k] + d[k]` -- the iterated table by slot, others
    by the loop key); END arithmetic over literal-key elements (`print c["a"] + c["b"]`,
    also after a for-in in a statement list). Counter tables only.
-   (d) Still open: an END scalar `if` over an element (`END { if (c["a"] > 1) ... }`),
-   scalar state inside an END for-in (the max idiom), for-in printf bodies, guards
-   combining `&&` / key comparisons, and double-table reads (f64 arithmetic, `fcmp`).
+   (d-1) END control flow in a MIXED program -- landed: a top-level `if` / `while` /
+   `do-while` in END of a program with arrays and scalars lowers through the scalar
+   driver's END lowering (the shared sequence emitter, final slot values in) given the
+   program's table plan, so element reads, literal-key element prints and the retained
+   last record all work there. A field-KEYED element read at END declines (no current
+   record).
+   (d-2) Still open: `for (k in c)` carrying scalar state (the max idiom); an END `if`
+   in a program whose only scalars live in END; for-in printf bodies; guards combining
+   `&&` / key comparisons; double-table reads (f64 arithmetic, `fcmp`).
 4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with

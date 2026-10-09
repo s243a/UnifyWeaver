@@ -170,12 +170,13 @@ test(exit_nested_in_an_end_loop_declines) :-
 
 % --- a driver boundary, not a regression --------------------------------
 
-% Assoc rules alongside a SCALAR END loop decline: those programs belong to the
-% assoc drivers, and this clause's state plan does not cover them. Verified NOT to
-% be the safety gate's doing -- the gate accepts this END block; the decline comes
-% from the state plan. Pinned so the distinction is recorded rather than rediscovered.
-test(assoc_rules_with_a_scalar_end_loop_decline) :-
-    build_status("{ c[$1]++ } END { n = 2; while (n > 0) { print n; n-- } }\n", 3),
+% Assoc rules alongside a SCALAR END loop used to decline here: this clause's state
+% plan does not cover them. Arrays PR 3d-1 added the MIXED driver's END-control clause,
+% which lowers the same END block through the same sequence emitter with the program's
+% table plan -- so the program now compiles (gawk: "2" then "1"). The boundary this
+% test pinned is gone by design; the gate below still accepts the END block.
+test(assoc_rules_with_a_scalar_end_loop_compile) :-
+    run("{ c[$1]++ } END { n = 2; while (n > 0) { print n; n-- } }\n", "2\n1\n"),
     !.
 
 test(the_gate_itself_accepts_that_end_block) :-

@@ -1651,6 +1651,81 @@ plawk_program_native_driver_ir(
             RecordIR, NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+%% A MIXED program (arrays + scalars) whose END block has control flow (arrays PR
+%% 3d-1): `END { if (n > 2) print n }`, `END { if (c["a"] > 1) ... }`, an END while.
+%
+%  The mixed driver's record half (plan, rule chain, phis) as in the END-print clause
+%  above; the END half is the scalar driver's END-loop lowering
+%  (plawk_end_loop_body_ir/8: the shared sequence emitter, prefix end_body, FINAL slot
+%  values in) given this program's TABLE PLAN, so the emitter's element reads resolve
+%  against tables still alive at END. A straight-line END keeps its own (simpler)
+%  driver; only a top-level if / while / do-while claims this clause. Field reads go
+%  through the retained last record (or decline), and a field-KEYED element read
+%  declines (plawk_cond_elem_key/9: there is no current record at END).
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, [end(EndActions)]),
+    InputPath,
+    DriverIR
+) :-
+    \+ plawk_begin_has_binfmt(BeginClauses),
+    plawk_mixed_end_has_control(EndActions),
+    plawk_field_separator(BeginClauses, FieldSeparator),
+    plawk_end_loop_print_fields(EndActions, PrintFields),
+    plawk_end_record_source(FieldSeparator, EndActions, EndRecord, RetainIR),
+    plawk_end_loop_actions_ok(EndActions, EndRecord),
+    plawk_mixed_state_plan(Rules, PrintFields, MixedPlan),
+    MixedPlan = mixed_plan(ScalarPlan, AssocPlan, _PlannedRules),
+    plawk_output_separator(BeginClauses, OutputSeparator),
+    plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
+    plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
+    plawk_end_print_string_globals(PrintFields, StringGlobalIR),
+    plawk_assoc_entry_setup_ir(AssocPlan, EntrySetupIR),
+    plawk_mixed_rule_chain_ir(MixedPlan, FieldSeparator, OutputSeparator,
+        RuleGlobalIR, RuleChainIR, RuleCount, BranchControlExits),
+    plawk_rules_body_print_fields(Rules, BodyPrintFields),
+    plawk_rules_scalar_update_exprs(Rules, ScalarExprs),
+    append(PrintFields, BodyPrintFields, PrintExprs),
+    append(PrintExprs, ScalarExprs, RecordCounterExprs),
+    plawk_print_record_counter_ir(ScalarPlan, RecordCounterExprs,
+        RecordLoopPhiIR, RecordCounterIR),
+    plawk_state_loop_phi_ir(ScalarPlan, StateLoopPhiIR),
+    plawk_join_nonempty_ir([StateLoopPhiIR, RecordLoopPhiIR], LoopPhiIR),
+    plawk_join_nonempty_ir([RetainIR, RecordCounterIR, RuleChainIR], RecordIR),
+    plawk_mixed_rule_controls(MixedPlan, MixedRuleControls),
+    plawk_mixed_scalar_next_phi_ir(ScalarPlan, RuleCount, MixedRuleControls,
+        BranchControlExits, NextPhiIR),
+    plawk_break_close_ir(ScalarPlan, RuleCount, MixedRuleControls, BranchControlExits,
+        done, BreakCloseIR, FinalStatePhiIR),
+    plawk_end_loop_body_ir(EndActions, ScalarPlan, AssocPlan, FieldSeparator,
+        OutputSeparator, EndRecord, EndGlobalIR, EndIR),
+    phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
+    atomic_list_concat(FreeLines, '\n', FreeIR),
+    format(atom(SurfaceGlobalIR0), '~w~n~w~n~w~n~w',
+        [BeginGlobalIR, StringGlobalIR, EndGlobalIR, RuleGlobalIR]),
+    plawk_end_lastrec_globals_ir(EndRecord, LastRecGlobalIR),
+    plawk_append_surface_global_ir(SurfaceGlobalIR0, LastRecGlobalIR, SurfaceGlobalIR),
+    plawk_combine_entry_ir(BeginIR, EntrySetupIR, CombinedEntrySetupIR),
+    plawk_i64_end_print_globals(BeginClauses, SurfaceGlobalIR, RuntimeGlobals),
+    format(atom(CloseOkIR),
+'end_print:
+~w~w
+~w
+  %plawk_exit_ec = load i32, i32* @plawk_exit_code
+  ret i32 %plawk_exit_ec',
+        [FinalStatePhiIR, EndIR, FreeIR]),
+    llvm_emit_stream_driver_ir(InputPath,
+        driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, LoopPhiIR, lowered_mixed,
+            RecordIR, NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
+        DriverIR).
+
+%% plawk_mixed_end_has_control(+Actions) is semidet.
+%  A top-level if / while / do-while in the END block.
+plawk_mixed_end_has_control(Actions) :-
+    is_list(Actions),
+    member(A, Actions),
+    ( A = if(_, _, _) ; plawk_end_loop_action(A) ),
+    !.
+
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules0, [end([print(PrintFields)])]),
     InputPath,
@@ -2142,13 +2217,22 @@ plawk_end_loop_action_field(Action, var(Name)) :-
 %  is correct. Using the rule count makes that non-collision structural.
 plawk_end_loop_body_ir(Actions0, StatePlan, FieldSeparator, OutputSeparator,
         EndRecord, GlobalIR, IR) :-
+    plawk_end_loop_body_ir(Actions0, StatePlan, none, FieldSeparator, OutputSeparator,
+        EndRecord, GlobalIR, IR).
+
+%% plawk_end_loop_body_ir(+Actions, +StatePlan, +AssocPlan, +FieldSeparator,
+%%                        +OutputSeparator, +EndRecord, -GlobalIR, -IR)
+%  The same, with a table plan: a MIXED program's END (arrays PR 3d-1) passes its
+%  tables, so the shared sequence emitter's element reads (3a/3b) resolve there.
+plawk_end_loop_body_ir(Actions0, StatePlan, AssocPlan, FieldSeparator, OutputSeparator,
+        EndRecord, GlobalIR, IR) :-
     plawk_end_branch_fields_rewrite(EndRecord, Actions0, Actions),
     plawk_state_plan_slots(StatePlan, Slots),
     plawk_state_plan_tracked(StatePlan, Tracked),
     b_setval(plawk_walker_tracked, Tracked),
     b_setval(plawk_walker_assigned, []),
     plawk_final_slot_values(StatePlan, FinalValues),
-    phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, none,
+    phrase(plawk_scalar_action_sequence_pairs(Actions, Slots, AssocPlan,
         FieldSeparator, OutputSeparator, end_body, end_print, end_body, 0,
         FinalValues, _OutValues, _NextOpIndex, _ExitLabel, _NextExits), Pairs),
     pairs_keys_values(Pairs, GlobalParts, LineParts),
@@ -7287,7 +7371,8 @@ plawk_cond_elem_key(Key, _Slots, _Vs, FS, Base, EBase, KeyId, [Global], Lines) :
     integer(FS),
     plawk_cond_elem_key_comps(Key, Comps),
     (   member(fld(_), Comps)
-    ->  \+ sub_atom(Base, 0, _, _, plawk_endif)
+    ->  \+ sub_atom(Base, 0, _, _, plawk_endif),
+        \+ sub_atom(Base, 0, _, _, end_body)      % END statements (3d-1): no record
     ;   true
     ),
     format(atom(KeyId), '%~w_kid', [EBase]),
@@ -17534,6 +17619,8 @@ plawk_rule_body_print_field(assoc(var(_), var(_))).
 plawk_rule_body_print_field(assoc(var(_), field(N))) :- integer(N), N >= 0.
 % an integer position -- resolved only on a positional (split) table
 plawk_rule_body_print_field(assoc(var(_), int(N))) :- integer(N).
+% a string-literal key (arrays PR 3d-1) -- resolved against the plan's tables
+plawk_rule_body_print_field(assoc(var(_), string(S))) :- string(S).
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(environ(Key)) :- string(Key).
@@ -18449,6 +18536,21 @@ plawk_resolve_assoc_read_field(_Slots, _Values, AssocPlan,
     (   plawk_assoc_plan_posarray_array(AssocPlan, ArrayName)
     ->  Resolved = assoc_unsupported_read(ArrayName)
     ;   Resolved = assoc_field_read(TableIndex, N)
+    ).
+% `print arr["x"]` in the shared walker (a mixed rule body, or a mixed END block,
+% arrays PR 3d-1): the literal is the key text, interned; the table's print helper
+% prints nothing for an absent key. A positional table means a raw position, which
+% a string literal is not -- left unsupported (declines).
+plawk_resolve_assoc_read_field(_Slots, _Values, AssocPlan,
+        assoc(var(ArrayName), string(Text)), Resolved) :-
+    string(Text),
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    !,
+    (   plawk_assoc_plan_posarray_array(AssocPlan, ArrayName)
+    ->  Resolved = assoc_unsupported_read(ArrayName)
+    ;   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
+    ->  Resolved = assoc_lit_read(TableIndex, Text, str)
+    ;   Resolved = assoc_lit_read(TableIndex, Text, i64)
     ).
 plawk_resolve_assoc_read_field(Slots, Values, AssocPlan, concat(Parts0),
         concat(Parts)) :-
@@ -24600,6 +24702,21 @@ plawk_emit_print_expr_for_context(assoc_field_read(TableIndex, N), FieldSeparato
     format(atom(KeyIR), '%~w_kid', [Base]),
     plawk_assoc_value_print_line(TableIndex, KeyIR, PrL),
     append(SrcLines, [MissL, SafePtrL, KidL, PrL], Lines).
+% `print arr["x"]` (resolved literal-key read): a module c-string for the key,
+% interned, then the table's print helper (nothing for an absent key).
+plawk_emit_print_expr_for_context(assoc_lit_read(TableIndex, Text, Kind), _FieldSeparator,
+        Context, direct([PtrL, KidL, PrL]), [Global], []) :-
+    plawk_print_expr_value_base(Context, assoc_lit_read, Base),
+    format(atom(GName), '~w_key', [Base]),
+    llvm_emit_c_string_global(GName, Text, Global, Len, BytesLen),
+    format(atom(PtrL),
+        '  %~w_key_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [Base, BytesLen, BytesLen, GName]),
+    format(atom(KidL),
+        '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 ~w)',
+        [Base, Base, Len]),
+    format(atom(KeyIR), '%~w_kid', [Base]),
+    plawk_assoc_kind_value_print_line(Kind, TableIndex, KeyIR, PrL).
 % `print arr[i]` / `print arr[2]` on a positional str table (split pieces): the key
 % is the raw position; the str print helper resolves the stored atom id to its
 % text and prints nothing for an absent position (awk's empty string).
@@ -25339,6 +25456,8 @@ plawk_normal_print_expr_value_base(length, Index, Base) :-
     format(atom(Base), 'plawk_length_~w', [Index]).
 plawk_normal_print_expr_value_base(assoc_field_read, Index, Base) :-
     format(atom(Base), 'plawk_afr_~w', [Index]).
+plawk_normal_print_expr_value_base(assoc_lit_read, Index, Base) :-
+    format(atom(Base), 'plawk_alr_~w', [Index]).
 plawk_normal_print_expr_value_base(field_dyn, Index, Base) :-
     format(atom(Base), 'plawk_field_dyn_~w', [Index]).
 plawk_normal_print_expr_value_base(field_nf, Index, Base) :-
