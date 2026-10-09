@@ -2228,6 +2228,7 @@ plawk_end_loop_body_ir(Actions0, StatePlan, AssocPlan, FieldSeparator, OutputSep
         EndRecord, GlobalIR, IR) :-
     plawk_end_branch_fields_rewrite(EndRecord, Actions0, Actions),
     plawk_state_plan_slots(StatePlan, Slots),
+    plawk_end_copies_keep_kind(Actions, Slots),
     plawk_state_plan_tracked(StatePlan, Tracked),
     b_setval(plawk_walker_tracked, Tracked),
     b_setval(plawk_walker_assigned, []),
@@ -2238,6 +2239,38 @@ plawk_end_loop_body_ir(Actions0, StatePlan, AssocPlan, FieldSeparator, OutputSep
     pairs_keys_values(Pairs, GlobalParts, LineParts),
     plawk_join_nonempty_ir(GlobalParts, GlobalIR),
     atomic_list_concat(LineParts, '\n', IR).
+
+%% plawk_end_copies_keep_kind(+Actions, +Slots) is semidet.
+%  Every scalar COPY `m = k` in an END block moves a value between slots of the
+%  same kind, and no END assignment stores a double into a counter slot. The state plan types slots from the rules and the END print fields;
+%  it never sees an assignment made in END, so `{ k = $1 } END { ...; m = k; print m }`
+%  gave m a counter slot and copied k's atom id into it -- printing 0 where gawk
+%  prints the last key. A copy whose kinds disagree declines instead. (Found probing
+%  arrays PR 3d; the scalar END-loop route had it too.)
+plawk_end_copies_keep_kind(Actions, Slots) :-
+    \+ ( sub_term(set(var(N), var(V)), Actions),
+          atom(N), atom(V),
+          member(SN, Slots), plawk_slot_name(SN, N),
+          member(SV, Slots), plawk_slot_name(SV, V),
+          functor(SN, KN, _), functor(SV, KV, _),
+          KN \== KV ),
+    % ...and no END assignment puts a DOUBLE into a counter slot: `m = n / 4` (awk
+    % `/` is fdiv) gave m a counter slot and printed 1 where gawk prints 1.5.
+    \+ ( sub_term(T, Actions),
+          compound(T),
+          ( T = set(var(N), E) ; T = add(var(N), E) ),
+          atom(N),
+          member(scalar_counter(N), Slots),
+          plawk_end_value_is_double(E, Slots) ).
+
+plawk_end_value_is_double(E, _Slots) :-
+    plawk_expr_is_double(E),
+    !.
+plawk_end_value_is_double(E, Slots) :-
+    sub_term(var(V), E),
+    atom(V),
+    memberchk(scalar_double(V), Slots),
+    !.
 
 % Tag-guard sugar: with a union BINFMT, plain rules whose patterns lead
 % with TAG == K are shorthand for case blocks -- the tag test selects

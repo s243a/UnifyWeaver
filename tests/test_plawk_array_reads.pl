@@ -194,6 +194,14 @@ test(mixed_end_prints, [condition(clang_available)]) :-
     run_exact("{ c[$1]++; n++ } END { if (n > 2) print $1 }\n", "a\n"),
     !.
 
+% END assignments keep their kind (the plan never sees them): a string copy or a
+% double into a counter declines; integer arithmetic over elements compiles.
+test(mixed_end_assignments_keep_their_kind, [condition(clang_available)]) :-
+    build_status_is("{ c[$1]++; k = $1 } END { if (c[\"a\"] > 1) m = k; print m }\n", 3),
+    build_status_is("{ c[$1]++; n++ } END { if (n > 2) m = n / 4; print m }\n", 3),
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) m = n * 2; print m }\n", "12\n"),
+    !.
+
 % No current record at END: a field-KEYED element read declines.
 test(mixed_end_field_keyed_read_declines) :-
     build_status_is("{ c[$1]++; n++ } END { if (c[$1] > 0) print \"x\" }\n", 3),
