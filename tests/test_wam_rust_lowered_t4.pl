@@ -101,7 +101,7 @@ fn call(setup: &dyn Fn(&mut WamState), f: fn(&mut WamState) -> bool) -> bool {
     setup(&mut vm);
     f(&mut vm)
 }
-fn a(s: &str) -> Value { Value::Atom(s.to_string()) }
+fn a(s: &str) -> Value { Value::Atom(s.into()) }
 
 #[test]
 fn t4_parity() {

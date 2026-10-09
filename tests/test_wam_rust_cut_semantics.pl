@@ -345,14 +345,14 @@ const OUT: &str = \"_cut_probe_out\";
 fn run_lowered(vm: &mut WamState, f: fn(&mut WamState) -> bool) {
     vm.reset_query();
     vm.cp = 0;
-    vm.set_reg(\"A1\", Value::Unbound(OUT.to_string()));
+    vm.set_reg(\"A1\", Value::Unbound(OUT.into()));
     if f(vm) {
         // Read the answer from A1, falling back to the binding table: a
         // lowered `get_constant` may overwrite the register slot instead of
         // binding the variable that was in it, and a lowered list walk may
         // overwrite A1 with a recursive tail while still binding the
         // variable. Trying both covers each shape.
-        let bound = vm.deref_heap(&Value::Unbound(OUT.to_string()));
+        let bound = vm.deref_heap(&Value::Unbound(OUT.into()));
         let out = if bound.is_unbound() {
             vm.get_reg(\"A1\").map(|v| vm.deref_heap(&v)).unwrap_or(bound)
         } else {

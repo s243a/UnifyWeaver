@@ -898,7 +898,7 @@ emit_one(get_constant(CStr, AiStr), I) :-
         format("~w        Some(true) => {}~n", [I]),
         format("~w        Some(false) => return false,~n", [I]),
         format("~w        None => {~n", [I]),
-        format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"~w\".to_string())) { return false; }~n", [I, Ai, Esc]),
+        format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"~w\".into())) { return false; }~n", [I, Ai, Esc]),
         format("~w        }~n", [I]),
         format("~w    }~n", [I]),
         format("~w}~n", [I])
@@ -934,7 +934,7 @@ emit_one(get_nil(AiStr), I) :-
     format("~w        Some(true) => {}~n", [I]),
     format("~w        Some(false) => return false,~n", [I]),
     format("~w        None => {~n", [I]),
-    format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"[]\".to_string())) { return false; }~n", [I, Ai]),
+    format("~w            if !vm.head_constant(\"~w\", Value::Atom(\"[]\".into())) { return false; }~n", [I, Ai]),
     format("~w        }~n", [I]),
     format("~w    }~n", [I]),
     format("~w}~n", [I]).
@@ -975,7 +975,7 @@ emit_one(put_variable(XnStr, AiStr), I) :-
     rust_reg_name(XnStr, Xn), rust_reg_name(AiStr, Ai),
     format("~w// put_variable ~w, ~w~n", [I, XnStr, AiStr]),
     format("~w{~n", [I]),
-    format("~w    let v = Value::Unbound(format!(\"_V{}\", vm.var_counter));~n", [I]),
+    format("~w    let v = Value::Unbound(WamState::fresh_var_sym(b'V', vm.var_counter));~n", [I]),
     format("~w    vm.var_counter += 1;~n", [I]),
     format("~w    vm.put_reg(\"~w\", v.clone());~n", [I, Xn]),
     format("~w    vm.put_reg(\"~w\", v);~n", [I, Ai]),
@@ -1042,13 +1042,21 @@ emit_one(deallocate, I) :-
 
 % --- Control instructions ---
 
+% R-1a: the nested `vm.run()` of a lowered call/execute runs under a
+% backtrack floor at the call's entry depth (rule L3 of the heap-cell design,
+% the mechanism `call_goal_once` uses), so a callee that fails returns false
+% here instead of resuming a choice point older than the call.
 emit_one(call(PredStr, _NStr), I) :-
     format("~w// call ~w~n", [I, PredStr]),
     format("~w{~n", [I]),
     format("~w    let saved_cp = vm.cp;~n", [I]),
     format("~w    if let Some(&pc) = vm.labels.get(\"~w\") {~n", [I, PredStr]),
     format("~w        vm.pc = pc;~n", [I]),
-    format("~w        if !vm.run() { return false; }~n", [I]),
+    format("~w        let saved_floor = vm.backtrack_floor;~n", [I]),
+    format("~w        vm.backtrack_floor = vm.choice_points.len();~n", [I]),
+    format("~w        let ok = vm.run();~n", [I]),
+    format("~w        vm.backtrack_floor = saved_floor;~n", [I]),
+    format("~w        if !ok { return false; }~n", [I]),
     format("~w    } else { return false; }~n", [I]),
     format("~w    vm.cp = saved_cp;~n", [I]),
     format("~w}~n", [I]).
@@ -1057,7 +1065,11 @@ emit_one(execute(PredStr), I) :-
     format("~w// execute ~w (tail call)~n", [I, PredStr]),
     format("~wif let Some(&pc) = vm.labels.get(\"~w\") {~n", [I, PredStr]),
     format("~w    vm.pc = pc;~n", [I]),
-    format("~w    return vm.run();~n", [I]),
+    format("~w    let saved_floor = vm.backtrack_floor;~n", [I]),
+    format("~w    vm.backtrack_floor = vm.choice_points.len();~n", [I]),
+    format("~w    let ok = vm.run();~n", [I]),
+    format("~w    vm.backtrack_floor = saved_floor;~n", [I]),
+    format("~w    return ok;~n", [I]),
     format("~w}~n", [I]),
     format("~wreturn false;~n", [I]).
 
@@ -1111,5 +1123,5 @@ rust_val_literal(Str, RustVal) :-
     ;   Class = float(F)
     ->  format(atom(RustVal), 'Value::Float(~w)', [F])
     ;   Class = atom(Name),
-        format(atom(RustVal), 'Value::Atom("~w".to_string())', [Name])
+        format(atom(RustVal), 'Value::Atom("~w".into())', [Name])
     ).
