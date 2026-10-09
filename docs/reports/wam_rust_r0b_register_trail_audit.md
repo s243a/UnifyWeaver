@@ -8,7 +8,8 @@
 remove A/X register entries from the trail; Y entries stay until R2.
 **What this is:** the audit and the test net that R0b requires before the
 removal. No runtime code or template changed. The new test file is
-`tests/test_wam_rust_register_restore.pl`.
+`tests/test_wam_rust_register_restore.pl`. §7 records the implementation
+that followed (D136).
 
 Citations: `T` = `src/unifyweaver/targets/wam_rust_target.pl`, `ST` =
 `templates/targets/rust_wam/state.rs.mustache`, `DB` =
@@ -493,3 +494,96 @@ no I/O rollback.
    no register-trail support. Work: the cell kind and its forcing hook in
    `get_list`/`unify`/`deref`, the buffer in the stream table, the two
    builtins, and tests that compare with SWI's `pure_input`.
+
+## 7. Results: the R0b implementation (D136)
+
+**Code:** this branch, on top of the audit commit. Ledger row D136 in
+`docs/proposals/JS_TARGETS_PARITY_PUNCHLIST.md`. It follows the plan of §5;
+no choice-point code (`save_regs`, `ChoicePoint`, `backtrack`) changed, so it
+is independent of R0a.
+
+### 7.1 What changed
+
+| item of §5 | change |
+| --- | --- |
+| 1. `trail_binding` | Returns before the `get_reg` unless `is_y_reg_name(key)` (the test `get_reg`/`put_reg` route on, so an entry is always undone into the storage it was read from); marked `#[inline]`. The calls that can only name an argument register are dropped: `RecurseCategoryAncestorPc`'s `A1`-`A4` and `is/2`'s `A1`. Every other call site keeps its call, because its operand can be a Y register (`xn`, `reg`, `result_reg`) or comes from the instruction text (`ai`); the in-function test makes those no-ops for A/X. |
+| 2. read outputs at entry | `include/3`, `exclude/3` read `A3`, and `partition/4` reads `A3` and `A4`, before the element loop. `foldl/4,5` reads its output register (`A4`/`A5`) before the loop. The include change also fixes `include/3` with an extended goal of arity ≥ 3 (`include_wide`). |
+| 3. lowered ITE | `emit_instrs/3` calls `rust_ite_else_ax_check/2` for every ITE it emits: along the else branch followed by the rest of the enclosing instruction list, every A/X register must be written before it is read. A `call`/`execute`/`proceed`/`fail` ends the path. A nested ITE continues from the registers its condition and then branch wrote, restarts its else branch from the set before it, and passes on the intersection. A violation throws `error(lowered_ite_else_reads_ax_before_write(Reg, Instr), _)` at generation time. No generated program in the test suites, the conformance smoke or the resolver builds triggers it. |
+| 4. comments | `call_goal_once` (the Y filter: after R0b the kept tail is binding entries only), `unwind_trail_to` (restores no A/X register), `trail_binding`, and the lowered ITE emitter. |
+| 5. lib tests | `d125_bindings_tests`: the register step pushes `A1` (no entry) and `Y1` (one entry). `d127_register_trail_tests`: the reference trail records Y names only, and every entry is checked to be Y. `trail_enum_tests`: the round trips use `Y1` in an Env frame and check that an `A1` write survives the unwind; new `trail_binding_records_y_registers_only` (A/X names, including `A01`, `X007`, `A100`, push nothing). |
+
+Test file: the functions-mode `include`, `exclude`, `partition` rows and
+both modes of `foldl` and `include_wide` now match SWI-Prolog, so their
+`rr_known_divergence/3` lines and the matching `rr_lowered_out_of_scope/2`
+lines are removed (the direct lowered entries of those five programs are
+now checked and pass). A new block `wam_rust_r0b_ite_else_check` (no cargo
+needed) checks the emit-time check on seven instruction lists.
+
+**Sites the audit missed:** none. No gate below changed relative to the
+base, and the two classes the audit predicted (the 2 sites of §2.2 and the
+`foldl`/`include_wide` defects of §4) are the only behaviour changes.
+
+### 7.2 Register trail pushes by class (base, before the change)
+
+A temporary counter build of the base crate (relaxed atomic counter per
+first byte of the name in `trail_binding`; never used for Ir or wall
+numbers), one `resolve_layered([p30])` resolve:
+
+| class | `trail_binding` calls, N=40 | share | after R0b |
+| --- | ---: | ---: | --- |
+| A | 4,824 | 44.7% | no entry |
+| X | 3,052 | 28.3% | no entry |
+| Y | 2,924 | 27.1% | one entry each, as before |
+| total | 10,800 | | 2,924 register entries |
+
+The counts are identical at N=5000 and identical for every in-process
+repeat. The audit's estimate was 7,876 A/X pushes × ~170 Ir ≈ 1.34 M Ir.
+
+### 7.3 Gates
+
+Run from the repo root with `LANG=C.utf8 LC_ALL=C.utf8`. Base is the audit
+commit (`5f08375` code): the term crate built in the worktree before the
+change, the store crate and plunit in a `git archive` export of it.
+
+| gate | result |
+| --- | --- |
+| `rust/run_differential_rust.sh` | `cases: 2600 / divergences: 0 / crashes: 0` |
+| `rust/run_corpus_rust.sh` | `corpus-under-rust: 51/51 matched SWI` |
+| `rust_store/run_differential_rust_store.sh` | `cases: 503 / divergences: 0 / crashes: 0` |
+| `rust_store/run_corpus_rust_store.sh` | `51/51 matched SWI`; `rust_store corpus IDENTICAL to term corpus (51/51)` |
+| byte identity vs base | `cmp`-identical: term diff `rust.jsonl` (2600 lines), term corpus `rust.jsonl` (51), store diff `rust.jsonl` (503), store corpus `rust_store.jsonl` (51); scale `--bench` stdout at N=40 and N=5000 |
+| generated crate `cargo test --release --lib` | `test result: ok. 261 passed; 0 failed` (260 + the new test) |
+| `tests/test_wam_rust_register_restore.pl` | 113/113 (was 120 with 9 known-divergence checks; 7 of those programs are now compared with SWI) + 7/7 for the emit-time check |
+| `tests/test_wam_rust_baseline_fixes.pl` | 92/92 |
+| Rust WAM plunit (58 files: `tests/test_wam_rust_*.pl`, `tests/core/*rust*.pl`) | same per-file rc as base (36 rc=0, 22 rc≠0) and the same 33 failing test names |
+| CI rust conformance (`CONFORMANCE_TARGETS=rust`, `CONFORMANCE_PROGRAMS=member,builtins`) | rc=0, unsampled and with `CONFORMANCE_SAMPLE=2` |
+
+### 7.4 Measurements
+
+Method as in `docs/reports/wam_rust_register_trail_static_names.md`: a
+scratch copy of the generated crate with a shim that repeats `call_pred`
+in-process and checks that every answer is equal; Ir per warm resolve is
+`(Ir(1+k) − Ir(1)) / k` under callgrind, k=10 at N=40 and k=2 at N=5000.
+
+| N | base | R0b | Δ |
+| ---: | ---: | ---: | ---: |
+| 40 | 23.10 M | **21.90 M** | **−1.20 M (−5.2%)** |
+| 5000 | 388.25 M | **387.07 M** | −1.18 M (−0.3%) |
+
+The saving is flat across N, as the push counts are. At N=40,
+`trail_binding` (inclusive) per warm resolve goes from 1.55 M to 0.54 M,
+and `backtrack` (inclusive), which drops the truncated trail tail, from
+about 3.32 M to 3.17 M. In all, ~152 Ir per avoided push. A whole `--bench` process at N=40 (one
+cold resolve, load included) goes from 34.29 M to 32.94 M Ir (−3.9%).
+
+Wall clock (shared 4-core container), base and new interleaved, 11
+in-process resolves per run; warm = median of resolves 2..11, then the
+median over rounds:
+
+| N | rounds | cold base | cold R0b | warm base | warm R0b | Δ warm |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| 40 | 21 | 5.22 ms | 4.49 ms | 3.50 ms | **3.36 ms** | −4% |
+| 40 | 41 | 4.91 ms | 4.27 ms | 3.46 ms | **3.25 ms** | −6% |
+| 5000 | 9 | 59.31 ms | 50.98 ms | 53.69 ms | 52.71 ms | (noise) |
+
+Ir is the reliable metric.
