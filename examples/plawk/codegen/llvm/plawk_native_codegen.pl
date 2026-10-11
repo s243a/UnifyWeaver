@@ -7228,6 +7228,12 @@ plawk_cond_elem_operand(Operand, _Slots, _Vs, _Plan, _FS, _Base, I, I, Operand, 
 %% plawk_action_has_arith_elem_read(+Action) is semidet.
 %  Action has an element read as an operand of binary arithmetic.
 plawk_action_has_arith_elem_read(Action) :-
+    % Only an ELEMENTARY action: a compound one (if / loops / for-in) is walked
+    % statement by statement, and each nested statement gets its own pre-pass AT
+    % ITS POINT. Matching the compound action hoisted every read in its body to
+    % before it -- `while (i < 2) { c[$1]++; t += c[$1]; i++ }` read c[$1] once,
+    % before the loop, and summed a stale value (36 where gawk prints 54).
+    \+ plawk_compound_action(Action),
     sub_term(T, Action),
     compound(T),
     plawk_arith_parent(T, Args),
@@ -7241,6 +7247,12 @@ plawk_arith_parent(T, [L, R]) :-
     !.
 plawk_arith_parent(add(var(N), X), [X]) :-
     atom(N).
+
+plawk_compound_action(if(_, _, _)).
+plawk_compound_action(while_loop(_, _)).
+plawk_compound_action(do_while_loop(_, _)).
+plawk_compound_action(for_in(_, _, _)).
+plawk_compound_action(foreach_loop(_, _)).
 
 %% plawk_arith_elem_reads(+Term, +Ctx, +Slots, +Vs, +Plan, +FS, +Base, +I0, -I,
 %%     -Term1, -Globals, -Lines) is semidet.

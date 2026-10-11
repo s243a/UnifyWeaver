@@ -123,6 +123,17 @@ test(arith_reads_keep_a_scalar_key_a_string, [condition(clang_available)]) :-
     run_exact("{ k = $1; c[k]++; print k, c[k] * 3 }\n", "a 3\nb 3\na 6\nc 3\nb 6\na 9\n"),
     !.
 
+% A read inside a compound action is evaluated AT ITS POINT, not hoisted to before
+% the action: the loop re-reads c[$1] after each increment (gawk 54; the hoisted
+% read summed a stale value, 36).
+test(arith_reads_are_not_hoisted, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; i = 0; while (i < 2) { c[$1]++; t += c[$1]; i++ } } END { print t }\n",
+        "54\n"),
+    run_exact("{ c[$1]++; if (NR > 1) t += c[$1] * 2 } END { print t }\n", "18\n"),
+    run_exact("{ c[$1]++; n++; if (n > 2) { m = c[$1] * 10; print m } }\n",
+        "20\n10\n20\n30\n"),
+    !.
+
 test(unadmitted_arith_reads_decline) :-
     forall(member(Src,
             [ % a double table
