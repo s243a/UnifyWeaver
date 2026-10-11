@@ -12,8 +12,9 @@
 % numerically -- an absent element is 0, awk's numeric reading -- on COUNTER tables
 % only (every write `++`, `+= int` or a counter set, not imported). The key is
 % interned exactly as the writes intern it (field, literal, integer, SUBSEP list,
-% or a scalar's id). Double / string / split / row tables, a string comparison, an
-% END condition and a loop condition decline (exit 3), never exit 4.
+% or a scalar's id). DOUBLE tables (a field delta) read the same way since PR 3e,
+% as f64 values that print %g. String / split / row tables, a string comparison
+% and a loop condition decline (exit 3), never exit 4.
 % gawk 5.1.0 (LC_ALL=C).
 
 :- use_module(library(plunit)).
@@ -68,9 +69,7 @@ test(key_forms, [condition(clang_available)]) :-
 
 test(unadmitted_reads_decline) :-
     forall(member(Src,
-            [ % a double table (a field delta) -- f64 reads are a follow-on
-              "{ c[$1] += $2; if (c[$1] > 5) print $1 }\n",
-              % a strnum value (bare field copy)
+            [ % a strnum value (bare field copy)
               "{ c[$1] = $2; if (c[$1] > 3) print $1 }\n",
               % a string comparison
               "{ c[$1]++; if (c[$1] == \"1\") print $1 }\n",
@@ -136,9 +135,7 @@ test(arith_reads_are_not_hoisted, [condition(clang_available)]) :-
 
 test(unadmitted_arith_reads_decline) :-
     forall(member(Src,
-            [ % a double table
-              "{ c[$1] += $2; n = c[$1] * 2; print n }\n",
-              % a bare copy may be an unset element (spec section 3)
+            [ % a bare copy may be an unset element (spec section 3)
               "{ c[$1]++; n = c[$1]; print n }\n"
             ]),
         build_status_is(Src, 3)),
@@ -177,9 +174,7 @@ test(end_literal_key_arith, [condition(clang_available)]) :-
 
 test(unadmitted_end_reads_decline) :-
     forall(member(Src,
-            [ % a double table
-              "{ s[$1] += $2 } END { for (k in s) print k, s[k] * 2 }\n",
-              % END scalar `if` over an element in a program with no scalar in its
+            [ % END scalar `if` over an element in a program with no scalar in its
               % rules (the pure-assoc END-if route; 3d-2)
               "{ c[$1]++ } END { if (c[\"a\"] > 1) print \"many a\" }\n"
             ]),
@@ -235,8 +230,7 @@ test(forin_counting_and_folding, [condition(clang_available)]) :-
 
 test(forin_state_declines) :-
     forall(member(Src,
-            [ % a double table, a split (positional) table
-              "{ s[$1] += $2 } END { for (k in s) { if (s[k] > max) max = s[k] }; print max }\n",
+            [ % a split (positional) table
               "{ n = split($0, a, \" \"); m++ } END { for (k in a) { t += a[k] }; print t, m }\n",
               % a body that ENDS in a bare break (no fall-through edge), and next / exit
               "{ c[$1]++ } END { for (k in c) { n++; break }; print n }\n",
@@ -279,6 +273,42 @@ test(forin_nested_and_braceless, [condition(clang_available)]) :-
         "3\n"),
     !.
 
+% --- PR 3e: double tables --------------------------------------------------
+% `s[$1] += $2` stores doubles; a read is an f64 (absent -> 0) wherever a counter
+% read already worked -- conditions, arithmetic, END literal keys, for-in bodies.
+% The fractional input makes the %g printing (and the fcmp) actually matter.
+
+fractional_input("a 1.5\nb 0.25\na 2.25\nc 1e3\nb -0.1\n").
+
+test(double_reads_in_rules, [condition(clang_available)]) :-
+    run_sorted("{ c[$1] += $2; if (c[$1] > 5) print $1 }\n", "a\nb\n"),
+    run_sorted("{ c[$1] += $2; n = c[$1] * 2; print n }\n", "10\n10\n18\n2\n24\n6\n"),
+    fractional_input(F),
+    run_sorted_on(F, "{ s[$1] += $2; if (s[$1] > 2) print $1, s[$1] }\n",
+        "a 3.75\nc 1000\n"),
+    run_sorted_on(F, "{ c[$1] += $2; n = c[$1] * 2; print n }\n",
+        "0.3\n0.5\n2000\n3\n7.5\n"),
+    run_sorted_on(F, "{ s[$1] += $2; t += s[$1] } END { print t }\n", "1005.65\n"),
+    !.
+
+test(double_reads_in_end, [condition(clang_available)]) :-
+    run_sorted("{ s[$1] += $2 } END { for (k in s) print k, s[k] * 2 }\n",
+        "a 24\nb 18\nc 2\n"),
+    run_sorted("{ s[$1] += $2 } END { for (k in s) { if (s[k] > max) max = s[k] }; print max }\n",
+        "12\n"),
+    fractional_input(F),
+    run_sorted_on(F, "{ s[$1] += $2 } END { print s[\"a\"] + s[\"b\"], s[\"a\"] * 2, s[\"zz\"] + 1 }\n",
+        "3.9 7.5 1\n"),
+    run_sorted_on(F, "{ s[$1] += $2 } END { for (k in s) print k, s[k] * 2 }\n",
+        "a 7.5\nb 0.3\nc 2000\n"),
+    run_sorted_on(F, "{ s[$1] += $2; c[$1]++ } END { for (k in s) print k, s[k] / c[k] }\n",
+        "a 1.875\nb 0.075\nc 1000\n"),
+    run_sorted_on(F, "{ s[$1] += $2 } END { for (k in s) { if (s[k] > max) { max = s[k]; mk = k } }; print mk, max }\n",
+        "c 1000\n"),
+    run_sorted_on(F, "{ s[$1] += $2 } END { for (k in s) { t += s[k] }; print t }\n",
+        "1003.9\n"),
+    !.
+
 :- end_tests(plawk_array_reads).
 
 % --- helpers ---------------------------------------------------------------
@@ -314,6 +344,9 @@ run_exact(Src, Expected) :-
 
 run_sorted(Src, Expected) :-
     input(Input),
+    run_sorted_on(Input, Src, Expected).
+
+run_sorted_on(Input, Src, Expected) :-
     odir(Dir),
     directory_file_path(Dir, 'ars_bin', Bin),
     ( exists_file(Bin) -> delete_file(Bin) ; true ),

@@ -333,9 +333,17 @@ each newly admitted input -- not deferred to the declaration PR.
    cursor-advance block; a body ENDING in a bare break/continue, and next / exit,
    decline), braceless simple and nested for-in bodies (inner keys typed by the
    recursive planning flatten).
-   (e) Still open: double-table reads (f64 arithmetic, `fcmp`) in conditions,
-   arithmetic and END; a compound condition mixing a string comparison with
-   `&&` / `||` (a general limitation of the condition emitter).
+   (e) Double-table reads -- landed: every place a counter-table read works also
+   reads a DOUBLE table (`s[$1] += $2`) -- conditions (`fcmp`), rule-body
+   arithmetic, END literal keys, for-in arithmetic print fields and the END for-in
+   row (element substituted as an f64 leaf; the planning flatten types it double).
+   A key read is `@wam_assoc_f64_get` (the i64 get's bits as a double, absent -> 0.0
+   = all-zero bits); the iterated element is `@wam_assoc_f64_value_at`. Every such
+   table carries its `plawk-f64-table` marker, so the f64 table IR check still holds.
+   Still open: a compound condition mixing a string comparison with `&&` / `||` (a
+   general limitation of the condition emitter); an END `if` over an element in a
+   program with NO scalar in its rules (the pure-assoc END route, counter tables
+   included).
 4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
