@@ -326,9 +326,16 @@ each newly admitted input -- not deferred to the declaration PR.
    `length` / `NF` of the last record, a printf after the loop) now compile. The
    for-in half is the last /3 driver clause, a fallback behind the dedicated for-in
    drivers. Counter tables only; break / continue / next / exit in the body decline.
-   (d-3) Still open: for-in printf bodies on the dedicated drivers, guards combining
-   `&&` / key comparisons, double-table reads (f64 arithmetic, `fcmp`), break /
-   continue in an END for-in body, nested for-in.
+   (d-3) END for-in completeness -- landed: printf bodies (the walker's printf row
+   resolves element reads as print does), compound guards (the braced guard grammar's
+   forin_val_cmp / and / or become element-read conditions; a braceless body may be
+   any `if`), break / continue (break merges into the exit phis, continue into the
+   cursor-advance block; a body ENDING in a bare break/continue, and next / exit,
+   decline), braceless simple and nested for-in bodies (inner keys typed by the
+   recursive planning flatten).
+   (e) Still open: double-table reads (f64 arithmetic, `fcmp`) in conditions,
+   arithmetic and END; a compound condition mixing a string comparison with
+   `&&` / `||` (a general limitation of the condition emitter).
 4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
