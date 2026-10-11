@@ -205,12 +205,43 @@ test(mixed_end_prints, [condition(clang_available)]) :-
     run_exact("{ c[$1]++; n++ } END { if (n > 2) print $1 }\n", "a\n"),
     !.
 
-% END assignments keep their kind (the plan never sees them): a string copy or a
-% double into a counter declines; integer arithmetic over elements compiles.
-test(mixed_end_assignments_keep_their_kind, [condition(clang_available)]) :-
-    build_status_is("{ c[$1]++; k = $1 } END { if (c[\"a\"] > 1) m = k; print m }\n", 3),
-    build_status_is("{ c[$1]++; n++ } END { if (n > 2) m = n / 4; print m }\n", 3),
+% END assignments are typed like rule assignments (3d-2: the END block joins the
+% scalar planning as a pseudo-rule), so a string copy and a division into an
+% END-only scalar get the right slot kind -- 3d-1 had to decline these.
+test(mixed_end_assignments_are_typed, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++; k = $1 } END { if (c[\"a\"] > 1) m = k; print m }\n", "a\n"),
+    run_exact("{ c[$1]++; n++ } END { if (n > 2) m = n / 4; print m }\n", "1.5\n"),
     run_exact("{ c[$1]++; n++ } END { if (n > 2) m = n * 2; print m }\n", "12\n"),
+    !.
+
+% --- PR 3d-2: `for (k in c)` carrying scalar state in END --------------------
+
+% The max / min idioms: the key copied out of the loop (a string slot) and the
+% iterated element compared and copied (present by construction).
+test(forin_max_and_min_idioms, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++ } END { for (k in c) { if (c[k] > max) { max = c[k]; mk = k } }; print mk, max }\n",
+        "a 3\n"),
+    run_exact("{ c[$1]++; n++ } END { for (k in c) { if (c[k] > max) { max = c[k]; mk = k } }; print mk, max, n }\n",
+        "a 3 6\n"),
+    run_exact("{ c[$1]++ } END { for (k in c) { if (c[k] < min || min == 0) { min = c[k]; mk = k } }; print mk, min }\n",
+        "c 1\n"),
+    !.
+
+test(forin_counting_and_folding, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++ } END { for (k in c) { n++ }; print n }\n", "3\n"),
+    run_exact("{ c[$1]++ } END { for (k in c) { if (c[k] > 1) n++ }; print n }\n", "2\n"),
+    run_exact("{ c[$1]++ } END { for (k in c) { t += c[k] * 2 }; print t }\n", "12\n"),
+    !.
+
+test(forin_state_declines) :-
+    forall(member(Src,
+            [ % a double table, a split (positional) table
+              "{ s[$1] += $2 } END { for (k in s) { if (s[k] > max) max = s[k] }; print max }\n",
+              "{ n = split($0, a, \" \"); m++ } END { for (k in a) { t += a[k] }; print t, m }\n",
+              % break in the body
+              "{ c[$1]++ } END { for (k in c) { if (c[k] > 2) break; n++ }; print n }\n"
+            ]),
+        build_status_is(Src, 3)),
     !.
 
 % No current record at END: a field-KEYED element read declines.

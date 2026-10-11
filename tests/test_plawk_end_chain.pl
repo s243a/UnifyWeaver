@@ -202,13 +202,13 @@ test(chain_retain_is_pay_per_use) :-
 
 % --- clean declines ------------------------------------------------------
 
-% `printf` is not in the chain's ITEM VOCABULARY at all -- plawk_end_chain_blocks//8
-% has no plain(printf(...)) clause -- so this declines at admission, not at emission.
-% Distinct from the LIST drivers, whose printf now takes record arguments via the
-% same token this chain carries: adding printf here is a vocabulary addition, not a
-% capability one.
-test(forin_then_printf_declines) :-
-    build_status("{ c[$1]++ } END { for (k in c) print k; printf \"n=%d\\n\", 1 }\n", 3),
+% `printf` is not in this chain's ITEM VOCABULARY -- plawk_end_chain_blocks//8 has no
+% plain(printf(...)) clause -- so the chain still declines it. The program now
+% compiles through the mixed END-control fallback instead (arrays PR 3d-2: the shared
+% sequence emitter, which has printf), matching gawk.
+test(forin_then_printf_compiles_via_the_fallback, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) print k; printf \"n=%d\\n\", 1 }\n",
+        ["a", "b", "c", "n=1"], 0),
     !.
 
 % WAS a decline -- "not wired to the record counter yet". It is now, for free: NR needs no

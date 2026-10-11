@@ -1651,30 +1651,25 @@ plawk_program_native_driver_ir(
             RecordIR, NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
-%% A MIXED program (arrays + scalars) whose END block has control flow (arrays PR
-%% 3d-1): `END { if (n > 2) print n }`, `END { if (c["a"] > 1) ... }`, an END while.
-%
-%  The mixed driver's record half (plan, rule chain, phis) as in the END-print clause
-%  above; the END half is the scalar driver's END-loop lowering
-%  (plawk_end_loop_body_ir/8: the shared sequence emitter, prefix end_body, FINAL slot
-%  values in) given this program's TABLE PLAN, so the emitter's element reads resolve
-%  against tables still alive at END. A straight-line END keeps its own (simpler)
-%  driver; only a top-level if / while / do-while claims this clause. Field reads go
-%  through the retained last record (or decline), and a field-KEYED element read
-%  declines (plawk_cond_elem_key/9: there is no current record at END).
-plawk_program_native_driver_ir(
-    program(BeginClauses, Rules, [end(EndActions)]),
-    InputPath,
-    DriverIR
-) :-
+%% plawk_mixed_end_control_driver_ir(+BeginClauses, +Rules, +EndActions, +InputPath,
+%%     -DriverIR) is semidet.
+%  The shared body of the two mixed END-control clauses (see them above).
+plawk_mixed_end_control_driver_ir(BeginClauses, Rules, EndActions, InputPath,
+        DriverIR) :-
     \+ plawk_begin_has_binfmt(BeginClauses),
-    plawk_mixed_end_has_control(EndActions),
     plawk_field_separator(BeginClauses, FieldSeparator),
-    plawk_end_loop_print_fields(EndActions, PrintFields),
+    % END assignments are typed like rule assignments (arrays PR 3d-2): the END
+    % block joins the scalar planning as a pseudo-rule, with each `for (k in A)`
+    % flattened to `k = ""` (the key is a string) plus its body.
+    plawk_end_planning_actions(EndActions, PlanActions),
+    plawk_end_loop_print_fields(PlanActions, PrintFields),
     plawk_end_record_source(FieldSeparator, EndActions, EndRecord, RetainIR),
     plawk_end_loop_actions_ok(EndActions, EndRecord),
-    plawk_mixed_state_plan(Rules, PrintFields, MixedPlan),
-    MixedPlan = mixed_plan(ScalarPlan, AssocPlan, _PlannedRules),
+    plawk_mixed_state_plan(Rules, PrintFields, MixedPlan0),
+    MixedPlan0 = mixed_plan(_ScalarPlan0, AssocPlan, PlannedRules),
+    append(Rules, [rule(end_planning, PlanActions)], PlanRules),
+    plawk_mixed_scalar_state_plan(PlanRules, PrintFields, ScalarPlan),
+    MixedPlan = mixed_plan(ScalarPlan, AssocPlan, PlannedRules),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
@@ -1718,13 +1713,93 @@ plawk_program_native_driver_ir(
             RecordIR, NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
+%% plawk_mixed_end_has_forin(+Actions) is semidet.
+plawk_mixed_end_has_forin(Actions) :-
+    is_list(Actions),
+    memberchk(for_in(_, _, _), Actions).
+
 %% plawk_mixed_end_has_control(+Actions) is semidet.
 %  A top-level if / while / do-while in the END block.
 plawk_mixed_end_has_control(Actions) :-
     is_list(Actions),
     member(A, Actions),
-    ( A = if(_, _, _) ; plawk_end_loop_action(A) ),
+    ( A = if(_, _, _) ; plawk_end_loop_action(A) ; A = for_in(_, _, _) ),
     !.
+
+%% plawk_end_planning_actions(+EndActions, -PlanActions) is det.
+%  The END block as the state planner should see it: each top-level
+%  `for (k in A) Body` becomes `k = ""` -- the key is an interned string -- followed
+%  by Body, with the iterated element `A[k]` as an already-read i64 (ssa): it is a
+%  counter table's value whenever the loop row substitutes it, and an ssa operand
+%  keeps every condition shape the planners know. Everything else is unchanged.
+plawk_end_planning_actions([], []).
+plawk_end_planning_actions([for_in(var(K), var(A), Body0) | Rest], Plan) :-
+    !,
+    plawk_replace_term(Body0, assoc(var(A), var(K)), ssa('%plawk_forin_plan_elem'), Body),
+    plawk_end_planning_actions(Rest, RestPlan),
+    append([set(var(K), string("")) | Body], RestPlan, Plan).
+plawk_end_planning_actions([Action | Rest], [Action | RestPlan]) :-
+    plawk_end_planning_actions(Rest, RestPlan).
+
+plawk_replace_nth0(0, [_ | T], X, [X | T]) :- !.
+plawk_replace_nth0(N, [H | T], X, [H | T1]) :-
+    N > 0, N1 is N - 1,
+    plawk_replace_nth0(N1, T, X, T1).
+
+%% plawk_replace_term_outside_prints(+Term0, +From, +To, -Term) is det.
+%  As plawk_replace_term/4, but print / printf nodes are kept as they are: a print
+%  reads the element through the print row (string context, existence-aware).
+plawk_replace_term_outside_prints(Term, _From, _To, Term) :-
+    compound(Term),
+    ( Term = print(_) ; Term = printf(_, _) ),
+    !.
+plawk_replace_term_outside_prints(Term0, From, To, To) :-
+    Term0 == From,
+    !.
+plawk_replace_term_outside_prints(Term0, From, To, Term) :-
+    compound(Term0),
+    !,
+    Term0 =.. [F | Args0],
+    maplist([A0, A]>>plawk_replace_term_outside_prints(A0, From, To, A), Args0, Args),
+    Term =.. [F | Args].
+plawk_replace_term_outside_prints(Term, _From, _To, Term).
+
+%% plawk_replace_term(+Term0, +From, +To, -Term) is det.
+%  Term0 with every subterm == From replaced by To.
+plawk_replace_term(Term0, From, To, To) :-
+    Term0 == From,
+    !.
+plawk_replace_term(Term0, From, To, Term) :-
+    compound(Term0),
+    !,
+    Term0 =.. [F | Args0],
+    maplist([A0, A]>>plawk_replace_term(A0, From, To, A), Args0, Args),
+    Term =.. [F | Args].
+plawk_replace_term(Term, _From, _To, Term).
+
+%% A MIXED program (arrays + scalars) whose END block has control flow (arrays PR
+%% 3d-1): `END { if (n > 2) print n }`, `END { if (c["a"] > 1) ... }`, an END while.
+%
+%  The mixed driver's record half (plan, rule chain, phis) as in the END-print clause
+%  above; the END half is the scalar driver's END-loop lowering
+%  (plawk_end_loop_body_ir/8: the shared sequence emitter, prefix end_body, FINAL slot
+%  values in) given this program's TABLE PLAN, so the emitter's element reads resolve
+%  against tables still alive at END. A straight-line END keeps its own (simpler)
+%  driver; only a top-level if / while / do-while claims this clause (an END with a
+%  for-in goes to the fallback clause at the end of the /3 group instead). It sits
+%  HERE, before the scalar END-loop clause, because that clause cuts on a loop and
+%  then fails for a mixed program. Field reads go
+%  through the retained last record (or decline), and a field-KEYED element read
+%  declines (plawk_cond_elem_key/9: there is no current record at END).
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, [end(EndActions)]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_mixed_end_has_control(EndActions),
+    \+ plawk_mixed_end_has_forin(EndActions),
+    plawk_mixed_end_control_driver_ir(BeginClauses, Rules, EndActions, InputPath,
+        DriverIR).
 
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules0, [end([print(PrintFields)])]),
@@ -2942,6 +3017,22 @@ plawk_program_native_driver_ir(
         driver_blocks(RuntimeGlobals, CombinedEntrySetupIR, RecordLoopPhiIR,
             lowered_assoc, RecordIR, '', BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
+
+%% The for-in half of the mixed END-control driver (arrays PR 3d-2): an END block
+%% with a top-level `for (k in A)` in a mixed program. The LAST /3 clause, a
+%% fallback: the dedicated END for-in drivers come first and keep every program they
+%% handle (callers commit to the first driver that succeeds, so an earlier position
+%% would steal -- and could mis-lower -- those programs).
+plawk_program_native_driver_ir(
+    program(BeginClauses, Rules, [end(EndActions)]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_mixed_end_has_forin(EndActions),
+    plawk_mixed_end_control_driver_ir(BeginClauses, Rules, EndActions, InputPath,
+        DriverIR).
+
+
 
 %% plawk_program_native_driver_ir(+Program, +InputPath, +Options, -DriverIR) is semidet.
 %
@@ -7290,7 +7381,7 @@ plawk_while_cond_vars(or(A, B), Vars) :-
 % so an element read contributes no variables; a scalar key must already have
 % its own slot, or the read declines.
 plawk_while_cond_vars(cmp(L, _Op, R), Vars) :-
-    ( L = assoc(_, _) ; R = assoc(_, _) ),
+    ( L = assoc(_, _) ; R = assoc(_, _) ; L = ssa(_) ; R = ssa(_) ),
     !,
     plawk_cond_operand_vars(L, VL),
     plawk_cond_operand_vars(R, VR),
@@ -7305,6 +7396,8 @@ plawk_while_cond_vars(cmp(var(V), _Op, var(W)), [V, W]).
 
 plawk_cond_operand_vars(var(V), [V]) :- !.
 plawk_cond_operand_vars(assoc(_, _), []) :- !.
+% an element already read (the iterated element of an END for-in, 3d-2)
+plawk_cond_operand_vars(ssa(_), []) :- !.
 plawk_cond_operand_vars(_, []).
 
 %% plawk_cond_elem_reads(+Cond, +Slots, +Values, +AssocPlan, +FS, +Base, +I0, -I,
@@ -10077,7 +10170,27 @@ plawk_scalar_string_names(Rules, Strings) :-
           plawk_scalar_action_update(Action, Name, set_str(_Src))
         ),
         Names0),
-    sort(Names0, Strings).
+    sort(Names0, Strings0),
+    plawk_end_planning_string_copies(Rules, Strings0, Strings).
+
+% In the END planning pseudo-rule (arrays PR 3d-2) a COPY of a string scalar is a
+% string: `mk = k` with k the for-in key. Only there -- rule-body typing is as it
+% was. A fixpoint, so a chain of copies types through.
+plawk_end_planning_string_copies(Rules, Strings0, Strings) :-
+    findall(N,
+        ( member(rule(end_planning, Actions), Rules),
+          member(A0, Actions),
+          plawk_scalar_nested_action(A0, A),
+          A = set(var(N), var(V)), atom(N),
+          ord_memberchk(V, Strings0),
+          \+ ord_memberchk(N, Strings0) ),
+        New0),
+    sort(New0, New),
+    (   New == []
+    ->  Strings = Strings0
+    ;   ord_union(Strings0, New, Strings1),
+        plawk_end_planning_string_copies(Rules, Strings1, Strings)
+    ).
 
 %% plawk_scalar_strnum_names(+Rules, -Strnums)
 %
@@ -18835,6 +18948,10 @@ plawk_scalar_action_update(add(var(Name), assoc(var(A), Key)), Name, add(assoc(v
     atom(A).
 plawk_scalar_action_update(add(var(Name), ssa(Ref)), Name, add(ssa(Ref))) :-
     atom(Ref).
+% a bare copy of an element already read (only produced for the iterated element of
+% an END for-in, which is present by construction -- arrays PR 3d-2)
+plawk_scalar_action_update(set(var(Name), ssa(Ref)), Name, set(ssa(Ref))) :-
+    atom(Name), atom(Ref).
 plawk_scalar_action_update(add(var(Name), prolog_call(Pred, Args)), Name,
         add(prolog_call(Pred, Args))) :-
     plawk_prolog_call_expr(prolog_call(Pred, Args)).
@@ -19994,6 +20111,119 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
         NextOpIndex, AfterValues, Values, FinalOpIndex, ExitLabel, RestNextExits),
     { append(RestExits, RestNextExits, NextExits) }.
+% for (k in A) BODY in an END block (arrays PR 3d-2): a loop over A's occupied
+% slots that carries every scalar slot through head phis, like while_loop, with a
+% cursor phi beside them. Each iteration binds the loop key's STRING slot to the
+% slot's key id; the iterated element A[k] -- present by construction -- is read once
+% by slot (value_at) and substituted as an ssa leaf, so even a bare copy
+% (`max = A[k]`) is sound. A[k] is only substituted when A is a counter table and
+% the body does not reassign k. END only (rule-body for-ins keep their print-only
+% row); break / continue / next / exit in the body decline (the phi wiring assumes
+% the body falls through).
+plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body0) | Rest],
+        Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { sub_atom(Prefix, 0, _, _, end_body),
+      atom(K), atom(A),
+      plawk_assoc_table_index(AssocPlan, A, TableIndex),
+      \+ plawk_assoc_plan_posarray_array(AssocPlan, A),
+      nth0(KIdx, Slots, KSlot), plawk_slot_name(KSlot, K),
+      plawk_slot_holds_text(KSlot),
+      \+ ( sub_term(T, Body0),
+            ( T == break ; T == continue ; T == next ; T == exit
+            ; nonvar(T), T = exit(_) ) ),
+      plawk_walker_assigned_get(Assigned0),
+      format(atom(Base), '~w_forin_~w', [Prefix, OpIndex]),
+      format(atom(EntryLabel), '~w_entry', [Base]),
+      format(atom(HeadLabel), '~w_head', [Base]),
+      format(atom(BodyLabel), '~w_body', [Base]),
+      format(atom(BodyDoneLabel), '~w_body_done', [Base]),
+      format(atom(AfterLabel), '~w_after', [Base]),
+      findall(PhiValue,
+          ( nth0(SlotIndex, Slots, _Slot),
+            format(atom(PhiValue), '%~w_slot_~w', [Base, SlotIndex])
+          ),
+          HeadValues),
+      format(atom(KeyRef), '%~w_key', [Base]),
+      plawk_replace_nth0(KIdx, HeadValues, KeyRef, BodyIn),
+      (   plawk_counter_array(A),
+          \+ ( sub_term(set(var(K0), _), Body0), K0 == K )
+      ->  format(atom(ElemRef), '%~w_val', [Base]),
+          format(atom(SlotRef), '%~w_islot', [Base]),
+          plawk_assoc_elem_call_line(ElemRef, i64, i64, value_at, TableIndex,
+              SlotRef, ElemLine),
+          plawk_replace_term_outside_prints(Body0, assoc(var(A), var(K)),
+              ssa(ElemRef), Body),
+          ElemLines = [ElemLine]
+      ;   Body = Body0,
+          ElemLines = []
+      ),
+      plawk_with_loopctx(loop_ctx(AfterLabel, BodyDoneLabel),
+          ( phrase(plawk_scalar_action_sequence_pairs(Body, Slots, AssocPlan,
+                FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
+                BodyIn, BodyOutValues, _InnerOpIndex, InnerExitLabel,
+                InnerNextExits), BodyPairs),
+            InnerNextExits == [],
+            pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
+            atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
+            atomic_list_concat(BodyLineParts, '\n', BodyIR),
+            plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR) )),
+      plawk_while_head_phi_ir(Slots, Values0, BodyOutValues, [],
+          Base, EntryLabel, BodyDoneLabel, HeadPhiIR),
+      format(atom(IterLine),
+          '  %~w_islot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_idx)',
+          [Base, TableIndex, Base]),
+      format(atom(EcKey), '%~w_key', [Base]),
+      format(atom(EcSlot), '%~w_islot', [Base]),
+      plawk_assoc_elem_call_line(EcKey, i64, i64, key_at, TableIndex, EcSlot, KeyLine),
+      atomic_list_concat([KeyLine | ElemLines], '\n', BindIR),
+      format(atom(IR),
+'  br label %~w
+
+~w:
+  br label %~w
+
+~w:
+~w
+  %~w_idx = phi i64 [0, %~w], [%~w_next_idx, %~w]
+~w
+  %~w_done = icmp slt i64 %~w_islot, 0
+  br i1 %~w_done, label %~w, label %~w
+
+~w:
+~w
+~w
+~w
+
+~w:
+  %~w_next_idx = add i64 %~w_islot, 1
+  br label %~w
+
+~w:',
+          [EntryLabel,
+           EntryLabel,
+           HeadLabel,
+           HeadLabel,
+           HeadPhiIR,
+           Base, EntryLabel, Base, BodyDoneLabel,
+           IterLine,
+           Base, Base,
+           Base, AfterLabel, BodyLabel,
+           BodyLabel,
+           BindIR,
+           BodyIR,
+           BodyDoneBrIR,
+           BodyDoneLabel,
+           Base, Base,
+           HeadLabel,
+           AfterLabel]),
+      % the body may run zero times: what it assigned is not definitely assigned
+      b_setval(plawk_walker_assigned, Assigned0),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
+        NextOpIndex, HeadValues, Values, FinalOpIndex, ExitLabel, NextExits).
 % do_while_loop: like while_loop but the condition tests AFTER the body, so the
 % body always runs at least once. The head phi sits at the top of the body
 % block; the condition reads the body's OUTPUT values (the exit values), since
@@ -20390,6 +20620,12 @@ plawk_field_text_lines(FieldIndex, FieldSeparator, Base, PtrVar, LenVar,
 % straight into the target slot -- strnum-ness propagates, no coercion. The
 % read has already been substituted to ssa_strnum(Id).
 plawk_scalar_update_operation_ir_(set(ssa_strnum(Id)), scalar_strnum(_Name),
+        _FieldSeparator, _Prefix, _SlotIndex, _OpIndex, _InputValue, Id, ''-'') :-
+    !.
+% string copy `m = k` into a STRING slot (arrays PR 3d-2: the END for-in key copied
+% out of the loop): copy the atom id as is. Only a string target matches; a string
+% read into any other slot kind still has no lowering and declines.
+plawk_scalar_update_operation_ir_(set(ssa_str(Id)), scalar_string(_Name),
         _FieldSeparator, _Prefix, _SlotIndex, _OpIndex, _InputValue, Id, ''-'') :-
     !.
 plawk_scalar_update_operation_ir_(set(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
