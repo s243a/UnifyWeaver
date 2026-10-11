@@ -1928,7 +1928,9 @@ measured where cost is today. It did not measure what dereference traversal,
 heap construction, copy-in/out, heap growth or fork copying cost on cells.
 Do not use these ranges as schedule or acceptance assumptions until G0 (§12)
 has measured the two largest. Wall columns assume wall scales with Ir; the
-spike does not establish that at N=5000.
+spike does not establish that at N=5000. G0 has now measured the two largest
+(D137). The N=5000 table carries its column, and each entry in it is marked
+as measured or projected.
 
 Against base D127 (Ir per warm resolve 23.30 M / 388.51 M; warm wall 4.26 /
 ~64–69 ms):
@@ -1951,18 +1953,27 @@ are small.
 
 **N=5000.**
 
-| part | base | target | status |
-| --- | ---: | ---: | --- |
-| sort family | 196.2 M | 35–65 M | unvalidated; G0 measures it |
-| other builtins | 17.5 M | 10–17.5 M | unvalidated |
-| regions | 138.0 M | 40–70 M if native | unvalidated; G0 measures `group_keyed` |
-| `reset_query` | 19.1 M | ~0 | follows from `H = base` |
-| mechanics | ~17.6 M | ~4 M | scaled from the N=40 target |
-| boundary copy-in/out | (inside today's shim) | not estimated | G0 measures it |
-| **total** | **388.5 M** | **~90–157 M plus boundary** | |
+| part | base | target | status | G0 (D137, main `4121f9f`, today 392.2 M) |
+| --- | ---: | ---: | --- | ---: |
+| sort family | 196.2 M | 35–65 M | unvalidated; G0 measures it | **32.1 M measured** (38.6 M without comparator fast paths); today 197.6 M |
+| other builtins | 17.5 M | 10–17.5 M | unvalidated | not measured |
+| regions | 138.0 M | 40–70 M if native | unvalidated; G0 measures `group_keyed` | **15.6–22.4 M**: `group_keyed` **6.7 M measured** (today 60.2 M); the other 80.2 M projected at 9.0×–5.1× |
+| `reset_query` | 19.1 M | ~0 | follows from `H = base` | not measured |
+| mechanics | ~17.6 M | ~4 M | scaled from the N=40 target | not measured (today 17.7 M) |
+| boundary copy-in/out | (inside today's shim) | not estimated | G0 measures it | **8.9 M copy-in per call, 0.02 M copy-out, measured**; base segment 2.04 MB vs ~6.8 MB of `Value` trees |
+| **total** | **388.5 M** | **~90–157 M plus boundary** | | **70.6–91.5 M**; 105.2 M if mechanics do not improve |
 
 With a boundary cost of up to ~10 M that is the planning range **100–160 M**
 (2.4–3.9×; 16–28 ms if wall scales with Ir from 64–69 ms; ~0.9–1.6× SWI at 17.5 ms).
+
+**G0 result (D137, `docs/reports/wam_rust_g0_native_sort_region_prototype.md`).**
+The two largest targets are now measured on the real N=5000 arguments: the
+23 `sort/2` calls take 32.1 M on cells and the `group_keyed` region 6.7 M.
+All 25 outputs print byte-identical to today's. Copy-in of the catalog
+costs 8.9 M per call (zero with base-segment reuse). The other rows of the
+G0 column are projections, not measurements. With them the total is
+71–92 M, or 105 M if mechanics stay at today's 17.7 M. Both are below the
+100–160 M planning range, so the range stands as a conservative bound.
 
 Other cases:
 
