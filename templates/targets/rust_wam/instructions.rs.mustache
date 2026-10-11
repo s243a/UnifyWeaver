@@ -138,6 +138,19 @@ pub enum Instruction {
     RetryMeElsePc(usize),
     /// Remove choice point, try final clause.
     TrustMe,
+    /// D138: first entry of an indexed dispatch chain (`try L`, emitted by
+    /// wam_target.pl's format_dispatch_chain/5 for an index key shared by
+    /// several clauses). Standard WAM `try`: push a choice point whose
+    /// alternative is the NEXT instruction (the chain's following retry /
+    /// trust), then jump to the clause body at Label. Not TryMeElse, which
+    /// stores Label as the alternative and falls through.
+    Try(String),
+    /// D138: middle entry of a dispatch chain (`retry L`): the alternative
+    /// becomes the next chain instruction, then jump to the body at Label.
+    Retry(String),
+    /// D138: last entry of a dispatch chain (`trust L`): remove the chain's
+    /// choice point, then jump to the body at Label.
+    Trust(String),
 
     // === Indexing ===
     /// First-argument constant dispatch.

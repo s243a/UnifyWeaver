@@ -1251,10 +1251,65 @@ wam_instruction_arm('Instruction::RetryMeElsePc(next_pc)', Body) :-
                 self.pending_cut_barrier = Some((self.choice_points.len().saturating_sub(1), self.pc + 1));
                 self.pc += 1; true'.
 
+% D138: the indexed dispatch chain (format_dispatch_chain/5 in wam_target.pl)
+% for an index key shared by several clauses:
+%     L_p_2_const_k_dispatch:
+%         try   L_p_2_2_body
+%         retry L_p_2_4_body
+%         trust L_p_2_5_body
+% Standard WAM semantics: the chain's choice point resumes at the NEXT chain
+% instruction, and each entry JUMPS to its clause body. The body's Allocate
+% (its first instruction when the clause allocates) takes the barrier below
+% the chain's choice point, so a `!` in a dispatched clause removes it, as it
+% does for a clause entered through try_me_else / retry_me_else.
+wam_instruction_arm('Instruction::Try(label)', Body) :-
+    Body = '                if let Some(&target) = self.labels.get(label) {
+                    let clause_barrier = self.choice_points.len();
+                    self.choice_points.push(ChoicePoint {
+                        next_pc: self.pc + 1,
+                        saved_args: self.save_regs(),
+                        cp: self.cp,
+                        stack: self.stack.clone(),
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: None,
+                        cut_barrier: self.cut_barrier,
+                        levels: Vec::new(),
+                    });
+                    self.pending_cut_barrier = Some((clause_barrier, target));
+                    self.pc = target;
+                    true
+                } else { false }'.
+
+wam_instruction_arm('Instruction::Retry(label)', Body) :-
+    Body = '                if let Some(&target) = self.labels.get(label) {
+                    let resume = self.pc + 1;
+                    if let Some(cp) = self.choice_points.last_mut() {
+                        cp.next_pc = resume;
+                    }
+                    self.pending_cut_barrier = Some((self.choice_points.len().saturating_sub(1), target));
+                    self.pc = target;
+                    true
+                } else { false }'.
+
+wam_instruction_arm('Instruction::Trust(label)', Body) :-
+    Body = '                if let Some(&target) = self.labels.get(label) {
+                    self.choice_points.pop();
+                    self.pc = target;
+                    true
+                } else { false }'.
+
 % --- Indexing Instructions ---
+%
+% D138: every jump to a table target goes through enter_indexed_clause/1
+% (state.rs), which enters a linear-chain target (`L_p_n_i`, a retry_me_else
+% / trust_me line, used by the _fallthrough and second-argument forms) with a
+% choice point of this call's own instead of rewriting the caller's. The
+% constant forms read the key through index_key/1, which compares an empty
+% Value::List as the atom [] (the aliasing GetConstant applies).
 
 wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
-    Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
+    Body = '                let raw = self.get_reg_raw("A1").map(|v| Self::index_key(self.deref_var(&v)));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         // Linear scan by value equality. (A binary search would
@@ -1272,7 +1327,7 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                             Some("default") => { self.pc += 1; return true; }
                             Some(label) => {
                                 if let Some(&pc) = self.labels.get(label) {
-                                    self.pc = pc; return true;
+                                    return self.enter_indexed_clause(pc);
                                 }
                                 return false;
                             }
@@ -1284,13 +1339,13 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantFallthrough(table)', Body) :-
-    Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
+    Body = '                let raw = self.get_reg_raw("A1").map(|v| Self::index_key(self.deref_var(&v)));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         for (key, label) in table {
                             if *key == val {
                                 if let Some(&pc) = self.labels.get(label) {
-                                    self.pc = pc; return true;
+                                    return self.enter_indexed_clause(pc);
                                 }
                             }
                         }
@@ -1305,7 +1360,7 @@ wam_instruction_arm('Instruction::SwitchOnConstantFallthrough(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
-    Body = '                let raw = self.get_reg_raw("A1").map(|v| self.deref_var(&v));
+    Body = '                let raw = self.get_reg_raw("A1").map(|v| Self::index_key(self.deref_var(&v)));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         // Linear scan by value equality (see SwitchOnConstant:
@@ -1313,8 +1368,7 @@ wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
                         // binary search dropped keys).
                         for (key, target_pc) in table {
                             if *key == val {
-                                self.pc = *target_pc;
-                                return true;
+                                return self.enter_indexed_clause(*target_pc);
                             }
                         }
                         return false;
@@ -1331,7 +1385,7 @@ wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
                         for (k, label) in table {
                             if Self::functor_key_eq(f, n, k) {
                                 if let Some(&pc) = self.labels.get(label) {
-                                    self.pc = pc; return true;
+                                    return self.enter_indexed_clause(pc);
                                 }
                             }
                         }
@@ -1347,7 +1401,7 @@ wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
                         let n = args.len();
                         for (k, target_pc) in table {
                             if Self::functor_key_eq(f, n, k) {
-                                self.pc = *target_pc; return true;
+                                return self.enter_indexed_clause(*target_pc);
                             }
                         }
                     }
@@ -1355,12 +1409,12 @@ wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw("A2") {
+    Body = '                if let Some(val) = self.get_reg_raw("A2").map(Self::index_key) {
                     if !val.is_unbound() {
                         for (key, label) in table {
                             if *key == val {
                                 if let Some(&pc) = self.labels.get(label) {
-                                    self.pc = pc; return true;
+                                    return self.enter_indexed_clause(pc);
                                 }
                             }
                         }
@@ -1369,11 +1423,11 @@ wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantA2Pc(table)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw("A2") {
+    Body = '                if let Some(val) = self.get_reg_raw("A2").map(Self::index_key) {
                     if !val.is_unbound() {
                         for (key, target_pc) in table {
                             if *key == val {
-                                self.pc = *target_pc; return true;
+                                return self.enter_indexed_clause(*target_pc);
                             }
                         }
                     }
@@ -8711,17 +8765,25 @@ wam_line_to_rust_instr(["try_me_else", Label], Pred/Arity, Options, Rust) :-
 wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).
+% D138: the indexed dispatch chain's try/retry/trust (format_dispatch_chain/5
+% in wam_target.pl) have standard-WAM semantics -- the choice point's
+% alternative is the NEXT chain instruction and control JUMPS to the body
+% label. They used to be mapped to TryMeElse/RetryMeElse/TrustMe, which take
+% the label as the alternative and fall through: a key shared by several
+% clauses ran off the end of the chain and returned no solutions.
 wam_line_to_rust_instr(["try", Label], _, _, Rust) :-
     format(string(Rust),
-        'Instruction::TryMeElse("~w".to_string())', [Label]).
+        'Instruction::Try("~w".to_string())', [Label]).
 wam_line_to_rust_instr(["trust_me"], _, _, "Instruction::TrustMe").
-wam_line_to_rust_instr(["trust", _Label], _, _, "Instruction::TrustMe").
+wam_line_to_rust_instr(["trust", Label], _, _, Rust) :-
+    format(string(Rust),
+        'Instruction::Trust("~w".to_string())', [Label]).
 wam_line_to_rust_instr(["retry_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::RetryMeElse("~w".to_string())', [Label]).
 wam_line_to_rust_instr(["retry", Label], _, _, Rust) :-
     format(string(Rust),
-        'Instruction::RetryMeElse("~w".to_string())', [Label]).
+        'Instruction::Retry("~w".to_string())', [Label]).
 wam_line_to_rust_instr(["jump", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::Jump("~w".to_string())', [Label]).
@@ -8738,26 +8800,34 @@ wam_line_to_rust_instr(["get_level", Yn], _, _, Rust) :-
 wam_line_to_rust_instr(["cut", Yn], _, _, Rust) :-
     clean_comma(Yn, CYn),
     format(string(Rust), 'Instruction::CutTo("~w".to_string())', [CYn]).
-% Indexing instructions
-wam_line_to_rust_instr(["switch_on_constant"|Entries], _, _, Rust) :-
+% Indexing instructions. Each entry is `Key:Label`; rust_index_entries/2
+% first re-joins a quoted key with its label (see there).
+wam_line_to_rust_instr(["switch_on_constant"|Entries0], _, _, Rust) :-
+    rust_index_entries(Entries0, Entries),
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstant(vec![~w])', [Joined]).
-wam_line_to_rust_instr(["switch_on_constant_fallthrough"|Entries], _, _, Rust) :-
+wam_line_to_rust_instr(["switch_on_constant_fallthrough"|Entries0], _, _, Rust) :-
+    rust_index_entries(Entries0, Entries),
     % Entries with a "default" target mean "fall through" for that key, so
     % they carry no jump and are dropped from the table. Emitting this as a
     % real instruction (rather than the unknown-fallback comment) keeps every
     % later label PC aligned — the missing instruction shifted them by one.
-    exclude(is_default_index_entry, Entries, JumpEntries),
+    rust_drop_default_keys(Entries, JumpEntries),
     maplist(parse_index_entry_constant, JumpEntries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust),
         'Instruction::SwitchOnConstantFallthrough(vec![~w])', [Joined]).
-wam_line_to_rust_instr(["switch_on_structure"|Entries], _, _, Rust) :-
+wam_line_to_rust_instr(["switch_on_structure"|Entries0], _, _, Rust) :-
+    rust_index_entries(Entries0, Entries),
     maplist(parse_index_entry_structure, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnStructure(vec![~w])', [Joined]).
-wam_line_to_rust_instr(["switch_on_constant_a2"|Entries], _, _, Rust) :-
+wam_line_to_rust_instr(["switch_on_constant_a2"|Entries0], _, _, Rust) :-
+    rust_index_entries(Entries0, Entries1),
+    % Same per-clause table shape as the _fallthrough form (A2 also falls
+    % through on a miss), so the same "default" rule applies.
+    rust_drop_default_keys(Entries1, Entries),
     maplist(parse_index_entry_constant, Entries, RustEntries),
     atomic_list_concat(RustEntries, ', ', Joined),
     format(string(Rust), 'Instruction::SwitchOnConstantA2(vec![~w])', [Joined]).
@@ -8830,23 +8900,69 @@ is_default_index_entry(Entry) :-
     ( string(Entry) -> S = Entry ; atom_string(Entry, S) ),
     sub_string(S, _, _, 0, ":default").
 
+%% rust_index_entries(+Tokens, -Entries)
+%  D138: wam_tokenize_line/2 ends a quoted token at its closing quote, so a
+%  quoted key (`'Hello World':L_..`, `'a:b':L_..`) arrives as two tokens,
+%  the key and `:Label`. Re-join every `:`-led token onto the key before it.
+%  (Unquoted entries arrive whole.)
+rust_index_entries([], []).
+rust_index_entries([Key, Tok|Rest], Entries) :-
+    string_concat(":", _, Tok),
+    !,
+    string_concat(Key, Tok, Entry),
+    rust_index_entries([Entry|Rest], Entries).
+rust_index_entries([E|Rest], [E|Entries]) :-
+    rust_index_entries(Rest, Entries).
+
+%% rust_drop_default_keys(+Entries, -JumpEntries)
+%  The _fallthrough and second-argument tables list one entry PER CLAUSE in
+%  clause order (build_constant_index/5), so a key can repeat, and the
+%  runtime takes a key's FIRST entry. A first entry "default" (clause 1)
+%  means "run the whole try_me_else chain" -- a fall-through, i.e. no table
+%  hit -- so D138 drops EVERY entry of such a key. Dropping only the
+%  "default" entry let a later entry of the same key win: `a:default ..
+%  a:L_p_3_3` entered at clause 3 and lost clause 1.
+rust_drop_default_keys(Entries, JumpEntries) :-
+    findall(K,
+            ( member(E, Entries),
+              is_default_index_entry(E),
+              rust_index_entry_split(E, K, _) ),
+            DefaultKeys),
+    exclude(rust_entry_key_in(DefaultKeys), Entries, JumpEntries).
+
+rust_entry_key_in(Keys, Entry) :-
+    rust_index_entry_split(Entry, K, _),
+    memberchk(K, Keys).
+
+%% rust_index_entry_split(+Entry, -KeyStr, -Label) is semidet.
+%  Split `Key:Label` at the LAST colon: labels never contain one, keys may
+%  (`'a:b'`).
+rust_index_entry_split(Entry, KeyStr, Label) :-
+    findall(B, sub_string(Entry, B, 1, _, ":"), Bs),
+    max_list(Bs, Before),
+    sub_string(Entry, 0, Before, _, KeyStr),
+    LabelStart is Before + 1,
+    sub_string(Entry, LabelStart, _, 0, Label).
+
+%  D138: the key is classified exactly like a get_constant operand
+%  (rust_const_value/2), so the table key and the clause head's constant are
+%  the same Value: a float key used to be emitted as Value::Integer(2.5) (a
+%  compile error), `true`/`false` as Value::Bool (never equal to the atom a
+%  head or a caller builds), and a quoted atom kept its quotes.
 parse_index_entry_constant(Entry, Rust) :-
-    (   sub_string(Entry, Before, 1, After, ":")
-    ->  sub_string(Entry, 0, Before, _, ValStr),
-        sub_string(Entry, _, After, 0, Label),
-        (   number_string(N, ValStr)
-        ->  format(string(Rust), '(Value::Integer(~w), "~w".to_string())', [N, Label])
-        ;   ValStr = "true" -> format(string(Rust), '(Value::Bool(true), "~w".to_string())', [Label])
-        ;   ValStr = "false" -> format(string(Rust), '(Value::Bool(false), "~w".to_string())', [Label])
-        ;   format(string(Rust), '(Value::Atom("~w".to_string().into()), "~w".to_string())', [ValStr, Label])
-        )
+    (   rust_index_entry_split(Entry, ValStr, Label)
+    ->  rust_const_value(ValStr, VExpr),
+        format(string(Rust), '(~w, "~w".to_string())', [VExpr, Label])
     ;   format(string(Rust), '(Value::Atom("~w".to_string().into()), "unknown".to_string())', [Entry])
     ).
 
+%  A structure key is `Name/Arity`; quote_wam_constant/2 quotes it when the
+%  name needs quoting ('Foo/1'), and the runtime compares the bare text.
 parse_index_entry_structure(Entry, Rust) :-
-    (   sub_string(Entry, Before, 1, After, ":")
-    ->  sub_string(Entry, 0, Before, _, Functor),
-        sub_string(Entry, _, After, 0, Label),
+    (   rust_index_entry_split(Entry, FunctorTok, Label)
+    ->  wam_classify_constant_token(FunctorTok, Class),
+        (   Class = atom(Functor0) -> true ; Functor0 = FunctorTok ),
+        escape_rust_string(Functor0, Functor),
         format(string(Rust), '("~w".to_string(), "~w".to_string())', [Functor, Label])
     ;   format(string(Rust), '("~w".to_string(), "unknown".to_string())', [Entry])
     ).

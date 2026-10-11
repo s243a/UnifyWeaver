@@ -6540,6 +6540,70 @@ impl WamState {
         &k[fb.len() + 1..] == Self::usize_decimal(arity, &mut buf)
     }
 
+    /// D138: the value a constant index table compares. An empty
+    /// `Value::List` (a list tail peeled to its end) is the atom `[]`, as in
+    /// GetConstant; without this a SwitchOnConstant on such a tail found no
+    /// key and failed the call outright.
+    #[inline]
+    pub fn index_key(v: Value) -> Value {
+        match v {
+            Value::List(ref items) if items.is_empty() => Value::Atom("[]".into()),
+            other => other,
+        }
+    }
+
+    /// D138: jump from an indexing instruction (switch_on_*) to the 1-based
+    /// `target` its table names.
+    ///
+    /// The shared compiler's tables name three kinds of target:
+    ///   * a clause BODY label (`L_p_n_i_body`) or a dispatch chain
+    ///     (`L_p_n_<kind>_<key>_dispatch`, whose `try` pushes its own choice
+    ///     point): jump there.
+    ///   * a clause's LINEAR-CHAIN entry `L_p_n_i`, the `retry_me_else` /
+    ///     `trust_me` line in front of clause i. switch_on_constant_fallthrough
+    ///     and every second-argument form use these to mean "clauses i..N, in
+    ///     order". Those instructions assume the top choice point belongs to
+    ///     this call (pushed by the predicate's leading try_me_else), which an
+    ///     indexed jump bypasses: RetryMeElse then rewrote the CALLER's choice
+    ///     point (it resumed at clause i+1 with the caller's registers) and
+    ///     TrustMe popped it. So enter such a line as try_me_else would:
+    ///     `retry_me_else L` pushes this call's own choice point (alternative
+    ///     L) and runs clause i; `trust_me` (clause N) runs it with none.
+    #[inline]
+    pub fn enter_indexed_clause(&mut self, target: usize) -> bool {
+        let alternative = match Self::fetch_in(&self.code, target) {
+            Some(Instruction::RetryMeElse(label)) => match self.labels.get(label) {
+                Some(&pc) => Some(pc),
+                None => return false,
+            },
+            Some(Instruction::RetryMeElsePc(pc)) => Some(*pc),
+            Some(Instruction::TrustMe) => None,
+            _ => {
+                self.pc = target;
+                return true;
+            }
+        };
+        if let Some(next_pc) = alternative {
+            let clause_barrier = self.choice_points.len();
+            self.choice_points.push(ChoicePoint {
+                next_pc,
+                saved_args: self.save_regs(),
+                cp: self.cp,
+                stack: self.stack.clone(),
+                trail_len: self.trail.len(),
+                heap_len: self.heap.len(),
+                builtin_state: None,
+                cut_barrier: self.cut_barrier,
+                levels: Vec::new(),
+            });
+            // Clause i's Allocate (if any) is the next instruction: its `!`
+            // must cut back below the choice point just pushed.
+            self.pending_cut_barrier = Some((clause_barrier, target + 1));
+        }
+        self.pc = target + 1;
+        true
+    }
+
     /// D126: the fresh variable name `format!("_{}{}", tag as char, n)`
     /// (`_V<n>` from put_variable, `_H<n>` from set_variable/unify_variable)
     /// as a `Sym`, built in a stack buffer instead of a heap `String`. The
@@ -7372,6 +7436,13 @@ impl WamState {
             "retry_me_else" if args.len() == 1 =>
                 Some(Instruction::RetryMeElse(args[0].clone())),
             "trust_me" => Some(Instruction::TrustMe),
+            // D138: indexed dispatch chain entries (jump to the label).
+            "try" if args.len() == 1 =>
+                Some(Instruction::Try(args[0].clone())),
+            "retry" if args.len() == 1 =>
+                Some(Instruction::Retry(args[0].clone())),
+            "trust" if args.len() == 1 =>
+                Some(Instruction::Trust(args[0].clone())),
 
             // Indexing
             "switch_on_constant" => {
@@ -7472,6 +7543,116 @@ pub fn run_parallel(seeds: Vec<WamState>) -> Vec<Option<bool>> {
                 Some(result)
             })
             .collect()
+    }
+}
+
+#[cfg(test)]
+mod d138_first_arg_dispatch_tests {
+    // D138: an index key shared by several clauses. The indexed dispatch
+    // chain's try/retry/trust jump to the clause bodies with the chain's own
+    // choice point resuming at the next chain entry, and a table target that
+    // is a linear-chain entry (retry_me_else / trust_me) is entered with a
+    // choice point of the call's own, leaving the caller's untouched.
+    use super::*;
+    use std::collections::HashMap;
+
+    /// d(a, 1). d(b, 2). d(b, 3).  with the switch's instruction slot given.
+    fn program(switch: Instruction) -> (Vec<Instruction>, HashMap<String, usize>) {
+        let a = |s: &str| Value::atom(s);
+        let code = vec![
+            switch,                                                  // 1 d/2
+            Instruction::TryMeElse("L_d_2".to_string()),             // 2
+            Instruction::GetConstant(a("a"), "A1".to_string()),      // 3
+            Instruction::GetConstant(Value::Integer(1), "A2".to_string()),
+            Instruction::Proceed,                                    // 5
+            Instruction::RetryMeElse("L_d_3".to_string()),           // 6 L_d_2
+            Instruction::GetConstant(a("b"), "A1".to_string()),      // 7 L_d_2_body
+            Instruction::GetConstant(Value::Integer(2), "A2".to_string()),
+            Instruction::Proceed,                                    // 9
+            Instruction::TrustMe,                                    // 10 L_d_3
+            Instruction::GetConstant(a("b"), "A1".to_string()),      // 11 L_d_3_body
+            Instruction::GetConstant(Value::Integer(3), "A2".to_string()),
+            Instruction::Proceed,                                    // 13
+            Instruction::Try("L_d_2_body".to_string()),              // 14 L_d_b_dispatch
+            Instruction::Trust("L_d_3_body".to_string()),            // 15
+        ];
+        let mut labels = HashMap::new();
+        for (l, pc) in [("d/2", 1), ("L_d_2", 6), ("L_d_2_body", 7), ("L_d_3", 10),
+                        ("L_d_3_body", 11), ("L_d_b_dispatch", 14)] {
+            labels.insert(l.to_string(), pc);
+        }
+        (code, labels)
+    }
+
+    fn x() -> Value { Value::Unbound("X".to_string().into()) }
+
+    fn outer_cp(vm: &WamState) -> ChoicePoint {
+        ChoicePoint {
+            next_pc: 999,
+            saved_args: vm.save_regs(),
+            cp: 0,
+            stack: vm.stack.clone(),
+            trail_len: vm.trail.len(),
+            heap_len: vm.heap.len(),
+            builtin_state: None,
+            cut_barrier: 0,
+            levels: Vec::new(),
+        }
+    }
+
+    /// All solutions of d(Key, X) as the X bindings, with an unrelated
+    /// caller choice point (next_pc 999) underneath that must survive intact.
+    fn solutions(switch: Instruction, key: &str) -> Vec<Value> {
+        let (code, labels) = program(switch);
+        let mut vm = WamState::new(code, labels);
+        vm.reset_query();
+        let outer = outer_cp(&vm);
+        vm.choice_points.push(outer);
+        vm.backtrack_floor = 1;
+        vm.set_reg("A1", Value::atom(key));
+        vm.set_reg("A2", x());
+        vm.cp = 0;
+        vm.pc = 1;
+        let mut out = Vec::new();
+        let mut ok = vm.run();
+        while ok {
+            out.push(vm.deref_heap(&x()));
+            assert_eq!(vm.choice_points[0].next_pc, 999, "caller choice point rewritten");
+            ok = vm.backtrack() && vm.run();
+        }
+        assert_eq!(vm.choice_points.len(), 1, "caller choice point popped");
+        out
+    }
+
+    #[test]
+    fn dispatch_chain_returns_every_clause_of_a_shared_key() {
+        let sw = || Instruction::SwitchOnConstant(vec![
+            (Value::atom("a"), "default".to_string()),
+            (Value::atom("b"), "L_d_b_dispatch".to_string()),
+        ]);
+        assert_eq!(solutions(sw(), "b"), vec![Value::Integer(2), Value::Integer(3)]);
+        assert_eq!(solutions(sw(), "a"), vec![Value::Integer(1)]);
+        assert_eq!(solutions(sw(), "c"), Vec::<Value>::new());
+    }
+
+    #[test]
+    fn linear_chain_target_gets_its_own_choice_point() {
+        // b -> L_d_2 (a retry_me_else line): clauses 2..3.
+        let sw = Instruction::SwitchOnConstantFallthrough(vec![
+            (Value::atom("b"), "L_d_2".to_string()),
+        ]);
+        assert_eq!(solutions(sw, "b"), vec![Value::Integer(2), Value::Integer(3)]);
+        // b -> L_d_3 (the trust_me line): clause 3 only, no choice point.
+        let sw = Instruction::SwitchOnConstantFallthrough(vec![
+            (Value::atom("b"), "L_d_3".to_string()),
+        ]);
+        assert_eq!(solutions(sw, "b"), vec![Value::Integer(3)]);
+    }
+
+    #[test]
+    fn empty_list_is_the_nil_index_key() {
+        assert_eq!(WamState::index_key(Value::list(vec![])), Value::atom("[]"));
+        assert_eq!(WamState::index_key(Value::atom("x")), Value::atom("x"));
     }
 }
 
