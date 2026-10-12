@@ -189,6 +189,22 @@ test(end_assignments_keep_their_kind) :-
     run("{ n++ } END { while (i < 2) { j = i; i++ }; print i, j }\n", "2 1\n"),
     !.
 
+% A DOUBLE operand in a condition was compared with `icmp i64` -- a clang failure
+% (exit 4). It is an fcmp now, with i64 operands converted.
+test(double_conditions_compile, [condition(clang_available)]) :-
+    run("{ x += $2 } END { if (x > 5) print \"big\", x }\n", "big 6\n"),
+    run("{ x += $2 * 0.5; if (x > 1) print \"over\", x }\n", "over 1.5\nover 3\n"),
+    run("{ x += $2 } END { while (x > 1) x = x / 2; print x }\n", "0.75\n"),
+    !.
+
+% NR in an END branch / loop is the FINAL record count; it read the in-loop counter,
+% one past the end (7 for 6 records), or -- in a loop condition -- an undefined value.
+test(end_nr_is_the_final_count, [condition(clang_available)]) :-
+    run("{ n++ } END { if (n > 2) print NR }\n", "3\n"),
+    run("{ n++ } END { while (i < 1) { i++; print NR } }\n", "3\n"),
+    run("{ n++ } END { while (NR > i) i++; print i }\n", "3\n"),
+    !.
+
 test(the_gate_itself_accepts_that_end_block) :-
     assertion(plawk_native_codegen:plawk_end_loop_actions_ok(
         [set(var(n), int(2)),

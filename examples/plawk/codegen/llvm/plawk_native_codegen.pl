@@ -2263,7 +2263,13 @@ plawk_end_loop_print_fields(Actions, Fields) :-
         ( member(Action, Actions),
           plawk_end_loop_action_field(Action, Field)
         ),
-        Fields).
+        Fields0),
+    % NR read anywhere in END (a condition, not only a print) needs the record
+    % counter the driver emits only when its NR-usage scan sees NR among these.
+    (   sub_term(special('NR'), Actions)
+    ->  append(Fields0, [special('NR')], Fields)
+    ;   Fields = Fields0
+    ).
 
 plawk_end_loop_action_field(Action, Field) :-
     plawk_action_body_print_field(Action, Field).
@@ -2301,8 +2307,10 @@ plawk_end_loop_body_ir(Actions0, StatePlan, FieldSeparator, OutputSeparator,
 %  tables, so the shared sequence emitter's element reads (3a/3b) resolve there.
 plawk_end_loop_body_ir(Actions0, StatePlan, AssocPlan, FieldSeparator, OutputSeparator,
         EndRecord, GlobalIR, IR) :-
-    plawk_end_branch_fields_rewrite(EndRecord, Actions0, Actions),
+    plawk_end_branch_fields_rewrite(EndRecord, Actions0, Actions1),
     plawk_state_plan_slots(StatePlan, Slots),
+    plawk_final_slot_values(StatePlan, NRValues),
+    plawk_end_nr_substitute(Slots, NRValues, Actions1, Actions),
     plawk_end_copies_keep_kind(Actions, Slots),
     plawk_state_plan_tracked(StatePlan, Tracked),
     b_setval(plawk_walker_tracked, Tracked),
@@ -7604,6 +7612,7 @@ plawk_while_cond_build(cmp(Lhs, Op, special(length)), Slots, CondValues, FS, Bas
 plawk_record_cond_lhs_build(Kind, NameFragment, Op, Rhs, Slots, CondValues, FS, Base,
         Path, CondVar, Lines) :-
     \+ sub_atom(Base, 0, _, _, plawk_endif),
+    \+ plawk_cond_operand_is_double(Rhs, Slots),     % i64 icmp only
     !,
     format(atom(ReadBase), '~w_~w~w', [Base, NameFragment, Path]),
     plawk_record_i64_read(Kind, '%line', FS, ReadBase, ReadLine),
@@ -7617,6 +7626,7 @@ plawk_record_cond_lhs_build(Kind, NameFragment, Op, Rhs, Slots, CondValues, FS, 
 plawk_record_cond_rhs_build(Kind, NameFragment, Lhs, Op, Slots, CondValues, FS, Base,
         Path, CondVar, Lines) :-
     \+ sub_atom(Base, 0, _, _, plawk_endif),
+    \+ plawk_cond_operand_is_double(Lhs, Slots),     % i64 icmp only
     !,
     format(atom(ReadBase), '~w_~w~w', [Base, NameFragment, Path]),
     plawk_record_i64_read(Kind, '%line', FS, ReadBase, ReadLine),
@@ -7673,6 +7683,23 @@ plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, _FS, Base,
     format(atom(LineCmp),
         '  ~w = icmp ~w i32 %~w_sn~w_rc, 0', [CondVar, Pred, Base, Path]),
     Lines = [LineLS, LineRS, LineRC, LineCmp].
+% A comparison with a DOUBLE operand -- a double scalar slot or a double element
+% read: every operand is taken to double (an integer literal as N.0, an i64 value via
+% sitofp) and compared with an ordered fcmp. The generic clause below compares i64s
+% only; a double reached it before this clause existed and emitted `icmp i64` on a
+% double -- a clang failure (exit 4) for `{ x += $2 } END { if (x > 5) print x }`.
+plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, _FS, Base,
+        Path, CondVar, Lines) :-
+    ( plawk_cond_operand_is_double(Left, Slots) ; plawk_cond_operand_is_double(Rhs, Slots) ),
+    !,
+    \+ plawk_cmp_has_strnum_operand(Left, Rhs, Slots),
+    plawk_cond_f64_operand(Left, Slots, CondValues, Base, Path, l, LOperand, LLines),
+    plawk_cond_f64_operand(Rhs, Slots, CondValues, Base, Path, r, ROperand, RLines),
+    plawk_fcmp_pred(Op, Pred),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = fcmp ~w double ~w, ~w',
+        [CondVar, Pred, LOperand, ROperand]),
+    append([LLines, RLines, [Line]], Lines).
 plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, _FS, Base,
         Path, CondVar, Lines) :-
     % Fail-closed: if either operand is a strnum slot and this is not one of the
@@ -7691,6 +7718,30 @@ plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, _FS, Base,
 
 plawk_cond_var_is_strnum(Name, Slots) :-
     memberchk(scalar_strnum(Name), Slots).
+
+%% plawk_cond_operand_is_double(+Operand, +Slots) is semidet.
+plawk_cond_operand_is_double(var(Name), Slots) :-
+    atom(Name),
+    memberchk(scalar_double(Name), Slots).
+plawk_cond_operand_is_double(ssa_f64(_), _Slots).
+
+%% plawk_cond_f64_operand(+Operand, +Slots, +Values, +Base, +Path, +Side, -Ref, -Lines)
+%  Operand as a double SSA value (or literal).
+plawk_cond_f64_operand(int(N), _Slots, _Values, _Base, _Path, _Side, Ref, []) :-
+    integer(N),
+    !,
+    format(atom(Ref), '~w.0', [N]).
+plawk_cond_f64_operand(ssa_f64(Ref), _Slots, _Values, _Base, _Path, _Side, Ref, []) :-
+    !.
+plawk_cond_f64_operand(Operand, Slots, Values, _Base, _Path, _Side, Ref, []) :-
+    plawk_cond_operand_is_double(Operand, Slots),
+    !,
+    plawk_while_cond_operand(Operand, Slots, Values, _, _, _, Ref, _).
+plawk_cond_f64_operand(Operand, Slots, Values, Base, Path, Side, Ref, Lines) :-
+    plawk_while_cond_operand(Operand, Slots, Values, Base, Path, Side, I64, Lines0),
+    format(atom(Ref), '%~w_cond~w_~w_f', [Base, Path, Side]),
+    format(atom(Conv), '  ~w = sitofp i64 ~w to double', [Ref, I64]),
+    append(Lines0, [Conv], Lines).
 
 plawk_cmp_has_strnum_operand(Left, Rhs, Slots) :-
     ( Left = var(L), plawk_cond_var_is_strnum(L, Slots)
@@ -17779,6 +17830,8 @@ plawk_rule_body_print_field(assoc(var(_), field(N))) :- integer(N), N >= 0.
 plawk_rule_body_print_field(assoc(var(_), int(N))) :- integer(N).
 % a string-literal key (arrays PR 3d-1) -- resolved against the plan's tables
 plawk_rule_body_print_field(assoc(var(_), string(S))) :- string(S).
+% an already-computed value (only produced by substitution: END's final NR)
+plawk_rule_body_print_field(ssa(R)) :- atom(R).
 plawk_rule_body_print_field(special('NR')).
 plawk_rule_body_print_field(special('NF')).
 plawk_rule_body_print_field(environ(Key)) :- string(Key).
@@ -22719,12 +22772,24 @@ plawk_assoc_end_if_record_key(not_pat(Pattern)) :-
 % (plawk_end_if_ok/2) rather than relying on this clause to notice.
 plawk_end_if_branch_ir([print(Fields)], Slots, FinalValues, FieldSeparator,
         OutputSeparator, EndRecord, Prefix, GlobalIR, IR) :-
-    plawk_end_branch_fields_rewrite(EndRecord, Fields, RecFields),
+    plawk_end_branch_fields_rewrite(EndRecord, Fields, RecFields0),
+    plawk_end_nr_substitute(Slots, FinalValues, RecFields0, RecFields),
     maplist(plawk_substitute_print_field(Slots, FinalValues), RecFields, SubFields),
     plawk_prefixed_print_action_ir(SubFields, FieldSeparator, OutputSeparator,
         Prefix, GlobalIR-IR).
 plawk_end_if_branch_ir([], _Slots, _FinalValues, _FieldSeparator,
         _OutputSeparator, _EndRecord, _Prefix, '', '').
+
+%% plawk_end_nr_substitute(+Slots, +FinalValues, +Term0, -Term) is det.
+%  NR in END is the FINAL record count: the record-number slot's final value when the
+%  program has one, else %plawk_nr (the loop's count at EOF). Substituted as an ssa
+%  leaf before lowering. Unsubstituted, a print / condition in an END branch or loop
+%  read %current_nr -- one past the end (`{ n++ } END { if (n > 2) print NR }` printed
+%  7 for 6 records) -- or, in the shared walker's END condition, an undefined value
+%  (a clang failure).
+plawk_end_nr_substitute(Slots, FinalValues, Term0, Term) :-
+    (   plawk_record_number_value(Slots, FinalValues, V) -> true ; V = '%plawk_nr' ),
+    plawk_replace_term(Term0, special('NR'), ssa(V), Term).
 
 plawk_end_branch_fields_rewrite(end_record(_FieldSeparator), Fields, RecFields) :-
     !,
