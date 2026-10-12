@@ -164,12 +164,15 @@ test(varkey_read_concat, [condition(clang_available)]) :-
         "a\na\n", Out),
     assertion(Out == "n=1\nn=2\n2\n"), !.
 
-% Reading via `printf` is a clean not-yet (declines rather than mis-lowering).
-test(varkey_read_printf_rejected, [condition(clang_available)]) :-
+% Reading via `printf` resolves the element as `print` does (arrays PR 3d-3: the
+% walker's printf row now runs the same element-read resolution); a %d argument is
+% the numeric value.
+test(varkey_read_printf, [condition(clang_available)]) :-
     sdir(Dir),
-    build_status(Dir, 'vkrpf',
-        "{ k = $1; c[k]++; printf \"%d\\n\", c[k] } END { print c[\"a\"] }\n", St),
-    assertion(St == 3), !.
+    build_run(Dir, 'vkrpf',
+        "{ k = $1; c[k]++; printf \"%d\\n\", c[k] } END { print c[\"a\"] }\n",
+        "a\na\n", Out),
+    assertion(Out == "1\n2\n2\n"), !.
 
 % A numeric (counter) scalar key read: intern n's decimal spelling, then fetch
 % the count. `n = NR % 2` gives repeating keys 0/1 so the counts advance.

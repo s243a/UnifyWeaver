@@ -238,8 +238,9 @@ test(forin_state_declines) :-
             [ % a double table, a split (positional) table
               "{ s[$1] += $2 } END { for (k in s) { if (s[k] > max) max = s[k] }; print max }\n",
               "{ n = split($0, a, \" \"); m++ } END { for (k in a) { t += a[k] }; print t, m }\n",
-              % break in the body
-              "{ c[$1]++ } END { for (k in c) { if (c[k] > 2) break; n++ }; print n }\n"
+              % a body that ENDS in a bare break (no fall-through edge), and next / exit
+              "{ c[$1]++ } END { for (k in c) { n++; break }; print n }\n",
+              "{ c[$1]++ } END { for (k in c) { if (c[k] > 1) exit 2; n++ }; print n }\n"
             ]),
         build_status_is(Src, 3)),
     !.
@@ -248,6 +249,34 @@ test(forin_state_declines) :-
 test(mixed_end_field_keyed_read_declines) :-
     build_status_is("{ c[$1]++; n++ } END { if (c[$1] > 0) print \"x\" }\n", 3),
     build_status_is("{ c[$1]++; n++ } END { if (n > 2) print c[$1] }\n", 3),
+    !.
+
+% --- PR 3d-3: END for-in completeness ---------------------------------------
+% for-in order is unspecified, so loop output compares sorted and break tests
+% are written order-independently.
+
+test(forin_printf_bodies, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) printf \"%s %d\\n\", k, c[k] }\n",
+        "a 3\nb 2\nc 1\n"),
+    !.
+
+test(forin_compound_guards, [condition(clang_available)]) :-
+    run_sorted("{ c[$1]++ } END { for (k in c) { if (c[k] > 1 && c[k] < 3) print k, c[k] } }\n",
+        "b 2\n"),
+    run_sorted("{ c[$1]++ } END { for (k in c) if (c[k] == 1 || c[k] == 3) print k }\n",
+        "a\nc\n"),
+    !.
+
+test(forin_break_and_continue, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++ } END { for (k in c) { n++; if (n == 2) break }; print n }\n", "2\n"),
+    run_exact("{ c[$1]++ } END { for (k in c) { if (c[k] == 1) continue; n++ }; print n }\n", "2\n"),
+    !.
+
+test(forin_nested_and_braceless, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++ } END { for (k in c) n++; print n }\n", "3\n"),
+    run_exact("{ c[$1]++ } END { for (k in c) for (j in c) n++; print n }\n", "9\n"),
+    run_exact("{ c[$1]++ } END { for (k in c) { for (j in c) { if (c[j] > c[k]) n++ } }; print n }\n",
+        "3\n"),
     !.
 
 :- end_tests(plawk_array_reads).

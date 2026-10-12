@@ -2749,6 +2749,12 @@ for_in_body([if(Guard, [PrintAction], [])]) -->
     "if", identifier_boundary, ws, "(", ws, guard_expr(Guard), ws, ")", ws,
     print_action(PrintAction),
     !.
+% Any other braceless `if` body -- `for (k in c) if (k == "a" || c[k] == 1) print k`:
+% the general if statement (the same one a braced body accepts), tried only after
+% the guard grammar above so every form that parsed before parses identically.
+for_in_body([IfAction]) -->
+    if_action(IfAction),
+    !.
 for_in_body(Actions) -->
     action_block(Actions),
     !.
@@ -2760,7 +2766,15 @@ for_in_body([PrintAction]) -->
 % a braceless printf body -- `for (k in c) printf "%s %d\n", k, c[k]` (arrays PR 3c),
 % the same single action the braced body `{ printf ... }` gives
 for_in_body([PrintfAction]) -->
-    printf_action(PrintfAction).
+    printf_action(PrintfAction),
+    !.
+% a braceless nested loop or simple statement -- `for (k in c) for (j in d) n++`,
+% `for (k in c) n++` (arrays PR 3d-3): the same single action a braced body holds
+for_in_body([ForIn]) -->
+    for_in_action(ForIn),
+    !.
+for_in_body([Action]) -->
+    for_c_simple(Action).
 
 %% for_c_action(-Action)//
 %

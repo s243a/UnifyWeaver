@@ -1735,7 +1735,8 @@ plawk_mixed_end_has_control(Actions) :-
 plawk_end_planning_actions([], []).
 plawk_end_planning_actions([for_in(var(K), var(A), Body0) | Rest], Plan) :-
     !,
-    plawk_replace_term(Body0, assoc(var(A), var(K)), ssa('%plawk_forin_plan_elem'), Body),
+    plawk_replace_term(Body0, assoc(var(A), var(K)), ssa('%plawk_forin_plan_elem'), Body1),
+    plawk_end_planning_actions(Body1, Body),      % a nested for-in types its key too
     plawk_end_planning_actions(Rest, RestPlan),
     append([set(var(K), string("")) | Body], RestPlan, Plan).
 plawk_end_planning_actions([Action | Rest], [Action | RestPlan]) :-
@@ -1745,6 +1746,29 @@ plawk_replace_nth0(0, [_ | T], X, [X | T]) :- !.
 plawk_replace_nth0(N, [H | T], X, [H | T1]) :-
     N > 0, N1 is N - 1,
     plawk_replace_nth0(N1, T, X, T1).
+
+%% plawk_forin_guards_to_scalar(+Actions0, -Actions) is det.
+%  Rewrite each `if` whose guard is built only from forin_val_cmp(A, K, Op, N) (N an
+%  integer), and / or, into the equivalent scalar_if over element reads; other
+%  guards, and other actions, are kept (and recursed into).
+plawk_forin_guards_to_scalar([], []).
+plawk_forin_guards_to_scalar([if(G, T0, E0) | Rest0], [if(G1, T, E) | Rest]) :-
+    !,
+    (   plawk_forin_guard_cond(G, C) -> G1 = scalar_if(C) ; G1 = G ),
+    plawk_forin_guards_to_scalar(T0, T),
+    plawk_forin_guards_to_scalar(E0, E),
+    plawk_forin_guards_to_scalar(Rest0, Rest).
+plawk_forin_guards_to_scalar([A | Rest0], [A | Rest]) :-
+    plawk_forin_guards_to_scalar(Rest0, Rest).
+
+plawk_forin_guard_cond(forin_val_cmp(A, K, Op, N), cmp(assoc(var(A), var(K)), Op, int(N))) :-
+    atom(A), atom(K), integer(N).
+plawk_forin_guard_cond(and(X0, Y0), and(X, Y)) :-
+    plawk_forin_guard_cond(X0, X),
+    plawk_forin_guard_cond(Y0, Y).
+plawk_forin_guard_cond(or(X0, Y0), or(X, Y)) :-
+    plawk_forin_guard_cond(X0, X),
+    plawk_forin_guard_cond(Y0, Y).
 
 %% plawk_replace_term_outside_prints(+Term0, +From, +To, -Term) is det.
 %  As plawk_replace_term/4, but print / printf nodes are kept as they are: a print
@@ -19947,7 +19971,9 @@ plawk_scalar_action_sequence_pairs([printf(string(Format), Args) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_rule_body_print_action(printf(string(Format), Args)),
-      maplist(plawk_substitute_print_field(Slots, Values0), Args, SubArgs),
+      % element reads resolve as for print (arrays PR 3d-3): `printf "%d", c[k]`
+      maplist(plawk_resolve_assoc_read_field(Slots, Values0, AssocPlan), Args, Args1),
+      maplist(plawk_substitute_print_field(Slots, Values0), Args1, SubArgs),
       format(atom(PrintPrefix), '~w_printf_~w', [Prefix, OpIndex]),
       plawk_prefixed_printf_action_ir(Format, SubArgs, FieldSeparator, PrintPrefix, Pair),
       NextOpIndex is OpIndex + 1
@@ -20173,7 +20199,7 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
 % the body does not reassign k. END only (rule-body for-ins keep their print-only
 % row); break / continue / next / exit in the body decline (the phi wiring assumes
 % the body falls through).
-plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body0) | Rest],
+plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body00) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { sub_atom(Prefix, 0, _, _, end_body),
@@ -20182,9 +20208,12 @@ plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body0) | Rest],
       \+ plawk_assoc_plan_posarray_array(AssocPlan, A),
       nth0(KIdx, Slots, KSlot), plawk_slot_name(KSlot, K),
       plawk_slot_holds_text(KSlot),
-      \+ ( sub_term(T, Body0),
-            ( T == break ; T == continue ; T == next ; T == exit
-            ; nonvar(T), T = exit(_) ) ),
+      % next / exit leave the loop AND the END block: not wired here (decline)
+      \+ ( sub_term(T, Body00),
+            ( T == next ; T == exit ; nonvar(T), T = exit(_) ) ),
+      % the braced guard grammar's forin_val_cmp / and / or terms become ordinary
+      % element-read conditions (3d-3); any other guard is left to decline
+      plawk_forin_guards_to_scalar(Body00, Body0),
       plawk_walker_assigned_get(Assigned0),
       format(atom(Base), '~w_forin_~w', [Prefix, OpIndex]),
       format(atom(EntryLabel), '~w_entry', [Base]),
@@ -20216,13 +20245,26 @@ plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body0) | Rest],
                 FieldSeparator, OutputSeparator, Base, BodyLabel, RuleIndex, 0,
                 BodyIn, BodyOutValues, _InnerOpIndex, InnerExitLabel,
                 InnerNextExits), BodyPairs),
-            InnerNextExits == [],
             pairs_keys_values(BodyPairs, BodyGlobalParts, BodyLineParts),
             atomic_list_concat(BodyGlobalParts, '\n', GlobalIR),
             atomic_list_concat(BodyLineParts, '\n', BodyIR),
             plawk_branch_to_done_ir(InnerExitLabel, BodyDoneLabel, BodyDoneBrIR) )),
-      plawk_while_head_phi_ir(Slots, Values0, BodyOutValues, [],
+      % break -> after, continue -> body_done (advance the cursor). A body that ENDS
+      % in a bare break/continue has no fall-through edge into body_done: declined.
+      plawk_partition_loop_exits(InnerNextExits, Breaks, Continues, RestExits),
+      RestExits == [],
+      \+ plawk_branch_terminal_exit(InnerExitLabel),
+      format(atom(BdBase), '~w_bd', [Base]),
+      plawk_loop_after_ir(Slots, BodyOutValues, InnerExitLabel, Continues,
+          BdBase, BdValues, BdPhiIR),
+      plawk_while_head_phi_ir(Slots, Values0, BdValues, [],
           Base, EntryLabel, BodyDoneLabel, HeadPhiIR),
+      plawk_loop_after_ir(Slots, HeadValues, HeadLabel, Breaks, Base,
+          AfterValues, AfterPhiIR),
+      % phi lines only when there is something to merge, so a loop without
+      % break / continue keeps exactly the IR it had before they were wired
+      ( BdPhiIR == '' -> BdPhiPart = '' ; format(atom(BdPhiPart), '~w~n', [BdPhiIR]) ),
+      ( AfterPhiIR == '' -> AfterPhiPart = '' ; format(atom(AfterPhiPart), '~n~w', [AfterPhiIR]) ),
       format(atom(IterLine),
           '  %~w_islot = call i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %plawk_assoc_table_~w, i64 %~w_idx)',
           [Base, TableIndex, Base]),
@@ -20249,10 +20291,10 @@ plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body0) | Rest],
 ~w
 
 ~w:
-  %~w_next_idx = add i64 %~w_islot, 1
+~w  %~w_next_idx = add i64 %~w_islot, 1
   br label %~w
 
-~w:',
+~w:~w',
           [EntryLabel,
            EntryLabel,
            HeadLabel,
@@ -20267,16 +20309,18 @@ plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body0) | Rest],
            BodyIR,
            BodyDoneBrIR,
            BodyDoneLabel,
+           BdPhiPart,
            Base, Base,
            HeadLabel,
-           AfterLabel]),
+           AfterLabel,
+           AfterPhiPart]),
       % the body may run zero times: what it assigned is not definitely assigned
       b_setval(plawk_walker_assigned, Assigned0),
       NextOpIndex is OpIndex + 1
     },
     [GlobalIR-IR],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, AfterLabel, RuleIndex,
-        NextOpIndex, HeadValues, Values, FinalOpIndex, ExitLabel, NextExits).
+        NextOpIndex, AfterValues, Values, FinalOpIndex, ExitLabel, NextExits).
 % do_while_loop: like while_loop but the condition tests AFTER the body, so the
 % body always runs at least once. The head phi sits at the top of the body
 % block; the condition reads the body's OUTPUT values (the exit values), since
