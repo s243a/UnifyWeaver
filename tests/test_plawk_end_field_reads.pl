@@ -437,13 +437,12 @@ test(exit_inside_an_end_loop_still_declines) :-
         3),
     !.
 
-% The ASSOCIATIVE END-if restricts its branch prints to string literals -- a
-% pre-existing restriction unrelated to the record source
-% (plawk_assoc_end_if_branch_prints_ok/2), so a field there declines for that
-% reason, not this one. Pinned to keep the two apart.
-test(assoc_end_if_branch_field_read_declines) :-
-    build_status("{ arr[$1]++ } END { if (\"c\" in arr) print $1; else print \"no\" }\n",
-        3),
+% The ASSOCIATIVE END-if restricts its branch prints to string literals
+% (plawk_assoc_end_if_branch_prints_ok/2), so a field there declined on that route.
+% Since arrays PR 3f the program falls through to the mixed END-control fallback,
+% which reads $1 from the retained last record.
+test(assoc_end_if_branch_field_read_now_compiles, [condition(clang_available)]) :-
+    run("{ arr[$1]++ } END { if (\"c\" in arr) print $1; else print \"no\" }\n", "c\n"),
     !.
 
 test(the_assoc_branch_guard_is_what_refuses_it) :-

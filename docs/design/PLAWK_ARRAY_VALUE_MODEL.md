@@ -340,10 +340,19 @@ each newly admitted input -- not deferred to the declaration PR.
    A key read is `@wam_assoc_f64_get` (the i64 get's bits as a double, absent -> 0.0
    = all-zero bits); the iterated element is `@wam_assoc_f64_value_at`. Every such
    table carries its `plawk-f64-table` marker, so the f64 table IR check still holds.
+   (f) Pure-array END control and arithmetic deltas -- landed: an END `if` / `while`
+   / for-in in a program whose rules have NO scalar (`{ c[$1]++ } END { if (c["a"]
+   > 1) ... }`) lowers through the mixed END-control fallback (the last driver
+   clause), which plans pure-array rules too -- the END block supplies the scalar
+   half; dedicated drivers keep every program they already took. An element `+=` /
+   `-=` delta may be arithmetic over fields, literals (integer or float) and, in the
+   mixed walker, scalars (`s[$1] += $2 * 0.5`, `s[$1] += 0.5`, `c[$1] -= $2`); it is
+   evaluated as a double, so the table is double-valued like a field delta's. A
+   non-literal `-=` is `+= 0 - D`, as for scalars.
    Still open: a compound condition mixing a string comparison with `&&` / `||` (a
-   general limitation of the condition emitter); an END `if` over an element in a
-   program with NO scalar in its rules (the pure-assoc END route, counter tables
-   included).
+   general limitation of the condition emitter); a float literal in a condition
+   (`if (n >= 2.5)`, scalars included); a SUBSEP key on a double table; a bare
+   scalar delta (`c[$1] += n`).
 4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with

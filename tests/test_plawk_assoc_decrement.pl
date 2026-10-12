@@ -198,12 +198,11 @@ test(a_string_literal_key_now_works_for_add_assign_and_decrement_alike,
     run("{ c[\"x\"]-- } END { print c[\"x\"] }\n", "-4\n"),
     !.
 
-% A NON-LITERAL `-=` delta is refused rather than mis-negated -- the negation is a
-% parse-time literal negation, exactly as for the scalar `-=`. Note `+= $2` works, so
-% this is the same deliberate asymmetry recorded in
-% tests/test_plawk_negative_delta.pl.
-test(non_literal_assoc_subtract_assign_is_refused) :-
-    build_status("{ c[$1] -= $2 } END { print c[\"INFO\"] }\n", 2),
+% A NON-LITERAL `-=` delta was refused (a parse-time literal negation only). Since
+% arrays PR 3f it is `+= 0 - $2`, a double-valued table like `+= $2`; here $2 is a
+% word, so the element is 0 - 0 (gawk 5.1.0 prints 0).
+test(non_literal_assoc_subtract_assign_now_works, [condition(clang_available)]) :-
+    run("{ c[$1] -= $2 } END { print c[\"INFO\"] }\n", "0\n"),
     !.
 
 :- end_tests(plawk_assoc_decrement).

@@ -244,12 +244,13 @@ test(the_scalar_negation_helper_is_total) :-
 
 % --- the assoc half is NOT fixed here, and is attributed ------------------
 
-% `c[$1] -= $2` still declines -- because the assoc delta accepts only a bare field
-% or an integer literal, so `c[$1] += 0 - $2` declines too. Pinned as a PAIR so the
-% restriction stays attributed to the assoc delta production rather than to `-=`.
-test(a_non_literal_assoc_delta_is_refused_for_both_spellings) :-
-    build_status("{ c[$1] += 0 - $2 } END { print c[\"a\"] }\n", 2),
-    build_status("{ c[$1] -= $2 } END { print c[\"a\"] }\n", 2),
+% `c[$1] -= $2` declined because the assoc delta accepted only a bare field or an
+% integer literal, so `c[$1] += 0 - $2` declined too. Since arrays PR 3f the delta
+% may be arithmetic, and `-=` of a non-literal is `+= 0 - D` as for scalars: both
+% spellings now work, and still agree (gawk 5.1.0).
+test(a_non_literal_assoc_delta_works_for_both_spellings, [condition(clang_available)]) :-
+    run("{ c[$1] += 0 - $2 } END { print c[\"a\"] }\n", "-1\n"),
+    run("{ c[$1] -= $2 } END { print c[\"a\"] }\n", "-1\n"),
     !.
 
 % A compound assign as an END STATEMENT declines -- for `+=`, `-=` and `++` alike,

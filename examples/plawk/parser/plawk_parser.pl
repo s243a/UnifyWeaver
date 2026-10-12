@@ -3879,7 +3879,16 @@ assoc_compound_delta(NegDelta) -->
     "-=",
     ws,
     assoc_add_delta(Delta),
-    { plawk_negate_literal_delta(Delta, NegDelta) }.
+    { plawk_negate_assoc_delta(Delta, NegDelta) }.
+
+%% plawk_negate_assoc_delta(+Delta, -Negated) is semidet.
+%  A literal delta negates in place (as before). A field or ARITHMETIC delta (see
+%  assoc_add_delta//1) becomes `0 - Delta`, like the scalar `-=`: `c[$1] -= $2`
+%  was a parse error and is now a double-valued table, as `c[$1] += $2` is.
+plawk_negate_assoc_delta(Delta, Negated) :-
+    plawk_negate_literal_delta(Delta, Negated),
+    !.
+plawk_negate_assoc_delta(Delta, sub_i64(int(0), Delta)).
 add_assign_action(add(var(Name), Delta)) -->
     identifier(Name),
     ws,
@@ -3931,7 +3940,20 @@ plawk_negate_literal_delta(float_const(Mantissa, Denominator),
     integer(Mantissa),
     Negated is -Mantissa.
 
-% Delta for an assoc add-assign: a numeric field or an integer literal.
+% Delta for an assoc add-assign: a numeric field or an integer literal -- or
+% (arrays PR 3f) ARITHMETIC over fields, literals (integer or float) and scalars,
+% `s[$1] += $2 * 0.5`, or a bare float literal. Such a delta makes a double-valued
+% table, as a field delta does. Tried first, and kept only when it is not a bare
+% field / integer, so those keep the exact terms (and IR) they always had; the
+% clauses below commit on `$N`, which would otherwise stop `$2 * 0.5` at `$2`.
+assoc_add_delta(Expr) -->
+    (   i64_binary_surface_expr(Expr)
+    ;   float_literal_expr(Expr)
+    ),
+    { plawk_assoc_arith_delta(Expr) },
+    ws,
+    peek_assoc_delta_end,
+    !.
 assoc_add_delta(field(Index)) -->
     "$",
     integer_codes(IndexCodes),
@@ -3955,6 +3977,22 @@ assoc_add_delta(int(Value)) -->
     { ValueCodes \== [],
       number_codes(Value, ValueCodes)
     }.
+
+%% plawk_assoc_arith_delta(+Expr) is semidet.
+%  An arithmetic (or float-literal) `+=` delta: neither a bare field nor an integer.
+plawk_assoc_arith_delta(Expr) :-
+    Expr \= field(_),
+    Expr \= int(_),
+    (   Expr = float_const(_, _)
+    ->  true
+    ;   Expr =.. [Op, _, _],
+        memberchk(Op, [add_i64, sub_i64, mul_i64, div_i64, mod_i64])
+    ).
+
+% The delta ends the statement: `;`, `}`, a newline or end of input. Without this
+% the arithmetic clause could stop early (at a shorter parse) and commit to it.
+peek_assoc_delta_end, [C] --> [C], { memberchk(C, `;}\n`) }, !.
+peek_assoc_delta_end --> eos.
 
 % Row store (PLAWK_MULTIPASS_CACHE.md §3.6): `TABLE[$k] = RHS` stores a row
 % value in TABLE, keyed by field k. RHS is either `$0` (capture the whole
