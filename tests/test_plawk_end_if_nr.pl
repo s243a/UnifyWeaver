@@ -131,12 +131,11 @@ test(end_only_nr_if_now_compiles) :-
     build_status("END { if (NR == 3) print \"yes\" }\n", 0),
     !.
 
-% Assoc rules plus this scalar END-if select no driver: the assoc END-if route admits
-% membership conditions, while the scalar END-if route does not admit the assoc rules.
-test(assoc_end_if_with_nr_condition_declines) :-
-    build_status(
-        "{ c[$1]++ } END { if (NR == 3) print \"yes\"; else print \"no\" }\n",
-        3),
+% Assoc rules plus this scalar END-if selected no driver: the assoc END-if route
+% admits membership conditions, and the scalar END-if route did not admit the assoc
+% rules. Since arrays PR 3f the mixed END-control fallback takes pure-array rules too.
+test(assoc_end_if_with_nr_condition_now_compiles, [condition(clang_available)]) :-
+    run("{ c[$1]++ } END { if (NR == 3) print \"yes\"; else print \"no\" }\n", "yes\n"),
     !.
 
 :- end_tests(plawk_end_if_nr).

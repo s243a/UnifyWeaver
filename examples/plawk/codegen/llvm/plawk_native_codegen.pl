@@ -1651,10 +1651,12 @@ plawk_program_native_driver_ir(
             RecordIR, NextPhiIR, BreakCloseIR, end_print, CloseOkIR),
         DriverIR).
 
-%% plawk_mixed_end_control_driver_ir(+BeginClauses, +Rules, +EndActions, +InputPath,
-%%     -DriverIR) is semidet.
-%  The shared body of the two mixed END-control clauses (see them above).
-plawk_mixed_end_control_driver_ir(BeginClauses, Rules, EndActions, InputPath,
+%% plawk_mixed_end_control_driver_ir(+Gate, +BeginClauses, +Rules, +EndActions,
+%%     +InputPath, -DriverIR) is semidet.
+%  The shared body of the two mixed END-control clauses (see them above). Gate is
+%  `mixed` (the rules must be a mixed program) or `any` (a pure-array program too:
+%  the fallback clause, behind every dedicated driver).
+plawk_mixed_end_control_driver_ir(Gate, BeginClauses, Rules, EndActions, InputPath,
         DriverIR) :-
     \+ plawk_begin_has_binfmt(BeginClauses),
     plawk_field_separator(BeginClauses, FieldSeparator),
@@ -1665,7 +1667,10 @@ plawk_mixed_end_control_driver_ir(BeginClauses, Rules, EndActions, InputPath,
     plawk_end_loop_print_fields(PlanActions, PrintFields),
     plawk_end_record_source(FieldSeparator, EndActions, EndRecord, RetainIR),
     plawk_end_loop_actions_ok(EndActions, EndRecord),
-    plawk_mixed_state_plan(Rules, PrintFields, MixedPlan0),
+    (   Gate == mixed
+    ->  plawk_mixed_state_plan(Rules, PrintFields, MixedPlan0)
+    ;   plawk_mixed_state_plan_any(Rules, PrintFields, MixedPlan0)
+    ),
     MixedPlan0 = mixed_plan(_ScalarPlan0, AssocPlan, PlannedRules),
     append(Rules, [rule(end_planning, PlanActions)], PlanRules),
     plawk_mixed_scalar_state_plan(PlanRules, PrintFields, ScalarPlan),
@@ -1826,7 +1831,7 @@ plawk_program_native_driver_ir(
 ) :-
     plawk_mixed_end_has_control(EndActions),
     \+ plawk_mixed_end_has_forin(EndActions),
-    plawk_mixed_end_control_driver_ir(BeginClauses, Rules, EndActions, InputPath,
+    plawk_mixed_end_control_driver_ir(mixed, BeginClauses, Rules, EndActions, InputPath,
         DriverIR).
 
 plawk_program_native_driver_ir(
@@ -3058,14 +3063,16 @@ plawk_program_native_driver_ir(
 %% with a top-level `for (k in A)` in a mixed program. The LAST /3 clause, a
 %% fallback: the dedicated END for-in drivers come first and keep every program they
 %% handle (callers commit to the first driver that succeeds, so an earlier position
-%% would steal -- and could mis-lower -- those programs).
+%% would steal -- and could mis-lower -- those programs). Here the rules may also be
+%% a PURE-ARRAY program, for any END control (if / while / for-in): `{ c[$1]++ }
+%% END { if (c["a"] > 1) print "many a" }` -- the END block supplies the scalar half.
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules, [end(EndActions)]),
     InputPath,
     DriverIR
 ) :-
-    plawk_mixed_end_has_forin(EndActions),
-    plawk_mixed_end_control_driver_ir(BeginClauses, Rules, EndActions, InputPath,
+    plawk_mixed_end_has_control(EndActions),     % a for-in counts as control too
+    plawk_mixed_end_control_driver_ir(any, BeginClauses, Rules, EndActions, InputPath,
         DriverIR).
 
 
@@ -10724,15 +10731,24 @@ plawk_scalar_typed_slot(_Doubles, _Strings, Strnums, Name, scalar_strnum(Name)) 
     !.
 plawk_scalar_typed_slot(_Doubles, _Strings, _Strnums, Name, scalar_counter(Name)).
 
-plawk_mixed_state_plan(Rules, PrintFields, mixed_plan(ScalarPlan, AssocPlan, PlannedRules)) :-
-    plawk_mixed_scalar_state_plan(Rules, PrintFields, ScalarPlan),
-    plawk_mixed_assoc_count_plan(Rules, PrintFields, AssocPlan),
-    phrase(plawk_mixed_planned_rules(Rules, AssocPlan, 0), PlannedRules),
-    PlannedRules \== [],
+plawk_mixed_state_plan(Rules, PrintFields, MixedPlan) :-
+    plawk_mixed_state_plan_any(Rules, PrintFields, MixedPlan),
+    MixedPlan = mixed_plan(ScalarPlan, _AssocPlan, PlannedRules),
     (   plawk_state_slot_count(ScalarPlan, ScalarCount),
         ScalarCount > 0
     ;   plawk_planned_rules_have_conditionals(PlannedRules)
     ).
+
+%% plawk_mixed_state_plan_any(+Rules, +PrintFields, -MixedPlan) is semidet.
+%  The mixed plan WITHOUT the "is this program mixed" gate above (some scalar slot
+%  or a conditional rule): a pure-array program plans too. Only the END-control
+%  fallback uses it, where the END block supplies the scalar half.
+plawk_mixed_state_plan_any(Rules, PrintFields,
+        mixed_plan(ScalarPlan, AssocPlan, PlannedRules)) :-
+    plawk_mixed_scalar_state_plan(Rules, PrintFields, ScalarPlan),
+    plawk_mixed_assoc_count_plan(Rules, PrintFields, AssocPlan),
+    phrase(plawk_mixed_planned_rules(Rules, AssocPlan, 0), PlannedRules),
+    PlannedRules \== [].
 
 plawk_mixed_scalar_state_plan(Rules0, PrintFields, StatePlan) :-
     plawk_prelude_planning_rules(Rules0, Rules),
@@ -11032,8 +11048,9 @@ plawk_mixed_update_action(delete_assoc(var(_ArrayName), var(_Name))).
 plawk_mixed_update_action(split_into(field(KeyIndex), var(_ArrayName), string(Sep))) :-
     integer(KeyIndex), KeyIndex >= 0,
     string(Sep), string_length(Sep, Len), Len >= 1.
-% Field-key element writes (arrays PR 2c): `arr[$k] += D` (D a field or an
-% integer) and a numeric `arr[$k] = EXPR`; the array-kind rules decide the rest.
+% Field-key element writes (arrays PR 2c): `arr[$k] += D` (D a field, an integer
+% or -- PR 3f -- arithmetic) and a numeric `arr[$k] = EXPR`; the array-kind rules
+% decide the rest.
 plawk_mixed_update_action(Action) :-
     plawk_mixed_elem_write(Action, _ArrayName, _KeyIndex, Op),
     Op \== inc.
@@ -11093,7 +11110,8 @@ plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
     atomic_list_concat(Lines, '\n', IR).
 
 plawk_mixed_elem_f64(inc, _B, _FS, _Slots, _Values, '1.0', [], [], add).
-plawk_mixed_elem_f64(add(Delta), B, FS, _Slots, _Values, V, [], Lines, add) :-
+plawk_mixed_elem_f64(add(Delta0), B, FS, Slots, Values, V, [], Lines, add) :-
+    plawk_substitute_scalar_reads(Delta0, Slots, Values, Delta),
     plawk_assoc_f64_delta_lines(Delta, B, FS, V, Lines).
 plawk_mixed_elem_f64(set(Value0), B, FS, Slots, Values, V, Globals, Lines, set) :-
     plawk_substitute_scalar_reads(Value0, Slots, Values, Value),
@@ -11573,6 +11591,13 @@ plawk_assoc_body_action_spec(inc_assoc(var(ArrayName), Lit),
 
 plawk_assoc_add_delta_ok(field(V)) :- integer(V), V > 0.
 plawk_assoc_add_delta_ok(int(V)) :- integer(V).
+% an arithmetic / float delta (arrays PR 3f): any numeric expression; the table is
+% double-valued (plawk_program_f64_arrays/2) and the emitter evaluates it as f64
+plawk_assoc_add_delta_ok(Delta) :-
+    compound(Delta),
+    Delta \= field(_),
+    Delta \= int(_),
+    plawk_numeric_value_kind(Delta, _).
 % Row capture `arr[$k] = $0` (§3.6): store the whole current record ($0) as a
 % str-value (the record's bytes, interned) in the table at the key interned
 % from field k. The first producer of row-valued tables; a later pass reads
@@ -11811,12 +11836,24 @@ plawk_assoc_f64_delta_lines(int(V), _Base, _FieldSep, DeltaIR, []) :-
     integer(V),
     format(atom(DeltaIR), '~w.0', [V]).
 plawk_assoc_f64_delta_lines(field(K), Base, FieldSep, DeltaIR, [Line]) :-
+    !,
     integer(K),
     integer(FieldSep),
     format(atom(DeltaIR), '%~w_fd', [Base]),
     format(atom(Line),
         '  ~w = call double @wam_atom_field_f64_value(%Value %line, i64 ~w, i8 ~w)',
         [DeltaIR, K, FieldSep]).
+% An arithmetic / float delta (arrays PR 3f): the shared f64 expression emitter.
+% These routes have no module-global channel, so a delta needing a global
+% declines; a scalar leaf has no emitter clause here and declines too (the
+% mixed walker substitutes scalar reads before it calls this).
+plawk_assoc_f64_delta_lines(Delta, Base, FieldSep, DeltaIR, Lines) :-
+    compound(Delta),
+    Delta \= int(_),
+    integer(FieldSep),
+    format(atom(DBase), '~w_fx', [Base]),
+    plawk_f64_expr_ir(Delta, FieldSep, DBase, DBase, DeltaIR, [], Lines0),
+    (   is_list(Lines0) -> Lines = Lines0 ; Lines = [Lines0] ).
 
 plawk_assoc_scalar_src_lines(int(V), _Base, _FieldSep, V, []).
 plawk_assoc_scalar_src_lines(field(K), Base, FieldSep, SrcVar, [Line]) :-

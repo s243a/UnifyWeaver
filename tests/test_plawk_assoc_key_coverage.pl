@@ -232,12 +232,13 @@ test(an_integer_literal_key_now_works_and_is_the_same_key,
     run("{ c[5]++ } END { print c[\"5\"] }\n", "4\n"),
     !.
 
-% A non-literal delta at an svar key declines cleanly (`+=`) or is a parse error
-% (`-=`, whose negation is a parse-time literal negation). A FIELD key with the same
-% delta works, so this is a key-kind restriction, not a delta one.
+% A non-literal delta at an svar key declines cleanly, for `+=` and -- since arrays
+% PR 3f, where a non-literal `-=` parses as `+= 0 - D` (it was a parse error) --
+% `-=` alike. A FIELD key with the same delta works, so this is a key-kind
+% restriction, not a delta one.
 test(a_non_literal_delta_at_an_svar_key_is_refused) :-
     build_status("{ k = $1; c[k] += $2 } END { print c[\"INFO\"] }\n", 3),
-    build_status("{ k = $1; c[k] -= $2 } END { print c[\"INFO\"] }\n", 2),
+    build_status("{ k = $1; c[k] -= $2 } END { print c[\"INFO\"] }\n", 3),
     !.
 
 test(a_non_literal_delta_at_a_field_key_still_works, [condition(clang_available)]) :-

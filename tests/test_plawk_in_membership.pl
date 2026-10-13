@@ -291,24 +291,27 @@ test(end_three_field_probe_wrong_arity,
     assertion(Out == ""),
     !.
 
-% Standalone END membership is deliberately a single direct/negated probe in
-% v1. Boolean combinations stay outside this narrow driver and fail closed.
-test(end_boolean_membership_rejected,
+% Standalone END membership is deliberately a single direct/negated probe in the
+% narrow END-membership driver. A boolean combination falls through it -- since
+% arrays PR 3f to the mixed END-control fallback, which lowers it (gawk 5.1.0).
+test(end_boolean_membership,
         [condition(clang_available)]) :-
     mdir(Dir),
-    Src = "{ seen[$1]++ } END { if ((\"a\" in seen) && (\"b\" in seen)) print \"bad\" }\n",
-    build_status(Dir, 'end_boolean', Src, St),
-    assertion(St == 3),
+    Src = "{ seen[$1]++ } END { if ((\"a\" in seen) && (\"b\" in seen)) print \"both\" }\n",
+    build_run(Dir, 'end_boolean', Src, "a\nb\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "both\n"),
     !.
 
-% The condition has an explicit final-record key path, but v1 branch printing
-% remains record-independent. Reject a field output instead of reading EOF.
-test(end_membership_field_print_rejected,
+% The narrow driver's branch printing is record-independent, so it rejects a field
+% output; the mixed END-control fallback reads it from the retained last record.
+test(end_membership_field_print,
         [condition(clang_available)]) :-
     mdir(Dir),
     Src = "{ seen[$1]++ } END { if (\"a\" in seen) print $1 }\n",
-    build_status(Dir, 'end_field_print', Src, St),
-    assertion(St == 3),
+    build_run(Dir, 'end_field_print', Src, "a\nb\n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "b\n"),
     !.
 
 % Membership is also a rule pattern, not only an if condition. The first rule

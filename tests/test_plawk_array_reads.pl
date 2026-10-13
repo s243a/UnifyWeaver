@@ -75,8 +75,7 @@ test(unadmitted_reads_decline) :-
               "{ c[$1]++; if (c[$1] == \"1\") print $1 }\n",
               % a split (string) table
               "{ n = split($1, a, \",\"); if (a[1] > 0) print }\n",
-              % END condition, loop condition
-              "{ c[$1]++ } END { if (c[\"a\"] > 1) print \"many a\" }\n",
+              % a loop condition
               "{ c[$1]++; while (c[$1] < 3) c[$1]++ ; print $1, c[$1] }\n",
               % never written: no counter table to read
               "{ if (c[$1] > 1) print }\n"
@@ -172,15 +171,20 @@ test(end_literal_key_arith, [condition(clang_available)]) :-
     run_sorted("{ c[$2]++ } END { print c[5] + c[7] }\n", "2\n"),
     !.
 
-test(unadmitted_end_reads_decline) :-
-    forall(member(Src,
-            [ % END scalar `if` over an element in a program with no scalar in its
-              % rules (the pure-assoc END-if route; 3d-2)
-              "{ c[$1]++ } END { if (c[\"a\"] > 1) print \"many a\" }\n"
-            ]),
-        build_status_is(Src, 3)),
+% END control over elements in a program whose rules have NO scalar (arrays PR 3f):
+% the mixed END-control fallback plans pure-array rules too, the END block
+% supplying the scalar half.
+test(pure_array_end_control, [condition(clang_available)]) :-
+    run_exact("{ c[$1]++ } END { if (c[\"a\"] > 1) print \"many a\" }\n", "many a\n"),
+    run_exact("{ c[$1]++ } END { if (c[\"a\"] > 1) print \"big a\", c[\"a\"]; else print \"small\" }\n",
+        "big a 3\n"),
+    run_exact("{ c[$1]++ } END { while (i < 3) { i++; print i, c[\"a\"] } }\n",
+        "1 3\n2 3\n3 3\n"),
+    run_exact("{ c[$1]++ } END { if (c[\"zz\"] == 0 && c[\"b\"] == 2) print \"ok\", NR }\n",
+        "ok 6\n"),
+    run_exact("{ s[$1] += $2 } END { if (s[\"a\"] > 5) print \"big a\", s[\"a\"] }\n",
+        "big a 12\n"),
     !.
-
 % --- PR 3d-1: END control flow in a mixed (arrays + scalars) program ---------
 
 test(mixed_end_if_and_while, [condition(clang_available)]) :-
@@ -307,6 +311,26 @@ test(double_reads_in_end, [condition(clang_available)]) :-
         "c 1000\n"),
     run_sorted_on(F, "{ s[$1] += $2 } END { for (k in s) { t += s[k] }; print t }\n",
         "1003.9\n"),
+    !.
+
+% An ARITHMETIC `+=` / `-=` delta (arrays PR 3f): `s[$1] += $2 * 0.5`, a float
+% literal, a division -- evaluated as a double, so the table is double-valued like
+% a field delta's.
+test(arithmetic_element_deltas, [condition(clang_available)]) :-
+    run_sorted("{ s[$1] += $2 * 0.5 } END { for (k in s) print k, s[k] }\n",
+        "a 6\nb 4.5\nc 0.5\n"),
+    run_sorted("{ s[$1] += 0.5 } END { for (k in s) print k, s[k] }\n",
+        "a 1.5\nb 1\nc 0.5\n"),
+    run_sorted("{ s[$1] += $2 / 4 } END { for (k in s) print k, s[k] }\n",
+        "a 3\nb 2.25\nc 0.25\n"),
+    run_sorted("{ s[$1] += $2 * 2 } END { for (k in s) print k, s[k] }\n",
+        "a 24\nb 18\nc 2\n"),
+    run_sorted("{ s[\"tot\"] += $2 * 1.5 } END { print s[\"tot\"] }\n", "33\n"),
+    fractional_input(F),
+    run_sorted_on(F, "{ s[$1] -= $2 * 0.5 } END { for (k in s) print k, s[k] }\n",
+        "a -1.875\nb -0.075\nc -500\n"),
+    run_sorted_on(F, "{ s[$1] += $2 * 0.5; n++ } END { print s[\"a\"], n }\n",
+        "1.875 5\n"),
     !.
 
 :- end_tests(plawk_array_reads).
