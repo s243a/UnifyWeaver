@@ -61,8 +61,8 @@ test(special_variable_keys_decline_cleanly) :-
 
 test(special_variable_keys_decline_in_other_positions) :-
     forall(member(Src,
-            [
-              "{ a[NR] = $0 } END { print a[1] }\n",
+            [ % (`a[NR] = $0` -- the tac write -- compiles since arrays PR 5c:
+              % tests/test_plawk_array_strings.pl)
               "{ delete a[NR] }\n",
               "{ if (NR in a) print \"y\" }\n"
             ]),

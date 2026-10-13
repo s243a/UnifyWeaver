@@ -10864,7 +10864,14 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, Markers)) :-
         ( sub_term(T, Rules), compound(T),
           plawk_mixed_elem_write(T, ArrayName, _K, Op), Op \== inc ),
         ElemArrays),
-    ( ActionArrays \== [] ; SplitArrays \== [] ; ElemArrays \== [] ),
+    % string-valued element writes (arrays PR 5c) establish a str-valued table
+    findall(ArrayName,
+        ( sub_term(T, Rules), compound(T),
+          plawk_mixed_str_write(T, ArrayName, _SK, _Ps) ),
+        StrWriteArrays0),
+    sort(StrWriteArrays0, StrWriteArrays),
+    ( ActionArrays \== [] ; SplitArrays \== [] ; ElemArrays \== []
+    ; StrWriteArrays \== [] ),
     findall(ArrayName,
         ( member(Field, PrintFields),
           plawk_assoc_print_array(Field, ArrayName)
@@ -10885,7 +10892,8 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, Markers)) :-
     % action is still required above, and plawk_mixed_state_plan/3 still requires
     % a scalar slot or a conditional, so a pure-assoc or pure-scalar program keeps
     % its own driver.
-    append([ActionArrays, ElemArrays, PrintArrays, MembershipArrays], CountedNames),
+    append([ActionArrays, ElemArrays, StrWriteArrays, PrintArrays, MembershipArrays],
+        CountedNames),
     % A split target is a POSITIONAL, str-valued table (keys are raw positions
     % 1..n, values atom ids) -- a different kind from a counted table (keys are
     % interned atom ids, values counts). The mixed walker reads it by position
@@ -10900,9 +10908,11 @@ plawk_mixed_assoc_count_plan(Rules, PrintFields, assoc_plan(Tables, Markers)) :-
     % The kind markers the plan-kind predicates read (plawk_assoc_plan_str_array,
     % plawk_assoc_plan_posarray_array). Omitted when there is no split, so the plan
     % -- and the IR -- of every program without one is unchanged.
-    (   SplitArrays == []
+    (   SplitArrays == [], StrWriteArrays == []
     ->  Markers = []
-    ;   Markers = [str_arrays(SplitArrays), posarrays(SplitArrays)]
+    ;   append(SplitArrays, StrWriteArrays, StrArrays0),
+        sort(StrArrays0, StrArrays),
+        Markers = [str_arrays(StrArrays), posarrays(SplitArrays)]
     ).
 
 %% plawk_mixed_split_arrays(+Rules, -SplitArrays)
@@ -11028,6 +11038,10 @@ plawk_action_scalar_update_expr(do_while_loop(Body, Cond), Expr) :-
     (   plawk_cond_operand_expr(Cond, Expr)
     ;   plawk_actions_scalar_update_expr(Body, Expr)
     ).
+% An NR-keyed element write (`a[NR] = $0`, arrays PR 5c) reads NR for its key, so
+% the record counter must be defined.
+plawk_action_scalar_update_expr(set_row(_, special('NR')), special('NR')) :- !.
+plawk_action_scalar_update_expr(set_assoc(_, special('NR'), _), special('NR')) :- !.
 plawk_action_scalar_update_expr(Action, Expr) :-
     plawk_scalar_action_update(Action, _Name, Operation),
     plawk_scalar_operation_expr(Operation, Expr).
@@ -11128,6 +11142,64 @@ plawk_mixed_update_action(split_into(field(KeyIndex), var(_ArrayName), string(Se
 plawk_mixed_update_action(Action) :-
     plawk_mixed_elem_write(Action, _ArrayName, _KeyIndex, Op),
     Op \== inc.
+
+% A string / strnum / row element write at a field or NR key (arrays PR 5c): the
+% walker's string-store row.
+plawk_mixed_update_action(Action) :-
+    plawk_mixed_str_write(Action, _ArrayName, _Key, _Parts).
+
+%% plawk_mixed_str_write(+Action, -ArrayName, -Key, -Parts) is semidet.
+%  A string-valued element write the mixed walker stores (arrays PR 5c): `a[$k] =`
+%  or `a[NR] =` a field, literal or concatenation (PR 5a's parts), or `$0` (row
+%  capture: the record's own text, field 0). Key is field(K) or nr. No element
+%  read inside the value (the self-append stays out: it would intern every
+%  intermediate value).
+plawk_mixed_str_write(set_assoc(var(A), Key0, Value), A, Key, Parts) :-
+    atom(A),
+    plawk_mixed_str_key(Key0, Key),
+    plawk_str_value_parts(Value, Parts),
+    \+ memberchk(elem(_, _), Parts).
+plawk_mixed_str_write(set_row(var(A), Key0), A, Key, [fld(0)]) :-
+    atom(A),
+    plawk_mixed_str_key(Key0, Key).
+
+plawk_mixed_str_key(field(K), field(K)) :- integer(K), K > 0.
+plawk_mixed_str_key(special('NR'), nr).
+
+%% plawk_mixed_str_write_ir(+Prefix, +OpIndex, +TableIndex, +Key, +Parts,
+%%     +FieldSeparator, -Pair)
+%  Straight-line: the key id (field K interned, a missing field keyed "", or NR's
+%  decimal), then the shared value store.
+plawk_mixed_str_write_ir(Prefix, OpIndex, TableIndex, Key, Parts, FieldSeparator,
+        GlobalIR-IR) :-
+    integer(FieldSeparator),
+    format(atom(B), '~w_selem_~w', [Prefix, OpIndex]),
+    format(atom(KeyIdIR), '%~w_key_id', [B]),
+    (   Key = field(K)
+    ->  format(atom(SliceL),
+            '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+            [B, K, FieldSeparator]),
+        format(atom(PtrL), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
+        format(atom(LenL), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
+        format(atom(MissL), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
+        plawk_missing_key_empty_lines(B, EmptyGlobal, SafePtrL),
+        format(atom(KidL),
+            '  ~w = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 %~w_key_len)',
+            [KeyIdIR, B, B]),
+        KeyGlobals = [EmptyGlobal],
+        KeyLines = [SliceL, PtrL, LenL, MissL, SafePtrL, KidL]
+    ;   Key == nr
+    ->  format(atom(KidL), '  ~w = call i64 @wam_intern_i64_decimal(i64 %current_nr)',
+            [KeyIdIR]),
+        KeyGlobals = [],
+        KeyLines = [KidL]
+    ),
+    plawk_str_value_store_lines(B, TableIndex, KeyIdIR, Parts, FieldSeparator,
+        ValueGlobals, ValueLines),
+    append(KeyGlobals, ValueGlobals, Globals),
+    plawk_join_nonempty_ir(Globals, GlobalIR),
+    append(KeyLines, ValueLines, Lines),
+    atomic_list_concat(Lines, '\n', IR).
 
 %% plawk_mixed_elem_write(+Action, -ArrayName, -KeyIndex, -Op) is semidet.
 %  A field-key element write the mixed walker's element-write row lowers. `inc`
@@ -11645,6 +11717,13 @@ plawk_assoc_body_action_spec(set_assoc(var(ArrayName), field(KeyIndex), Value),
         assoc_set_str(ArrayName, KeyIndex, Parts)) :-
     integer(KeyIndex), KeyIndex > 0,
     plawk_str_value_parts(Value, Parts).
+% `a[NR] = ...` (arrays PR 5c, the tac idiom): keyed by NR's decimal text, as awk
+% keys `a[1]` and `a["1"]` alike.
+plawk_assoc_body_action_spec(set_assoc(var(ArrayName), special('NR'), Value),
+        assoc_set_str(ArrayName, nr, Parts)) :-
+    plawk_str_value_parts(Value, Parts).
+plawk_assoc_body_action_spec(set_row(var(ArrayName), special('NR')),
+        assoc_set_row(ArrayName, nr)).
 plawk_assoc_body_action_spec(set_assoc(var(ArrayName), subsep_key(Fields), Value),
         assoc_set_str(ArrayName, subsep_key(Comps), Parts)) :-
     plawk_subsep_key_components(Fields, Comps),
@@ -14098,46 +14177,57 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(B), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
       plawk_assoc_row_key_prologue(Key, B, FieldSeparator, ActionNextLabel,
           KeyIdIR, KeyGlobals, KeyLines),
-      format(atom(EmptyName), '~w_vempty', [B]),
-      format(atom(EmptyGlobal),
-          '@.~w = private constant [1 x i8] zeroinitializer', [EmptyName]),
-      plawk_str_parts_format_atom(Parts, FmtAtom),
-      format(atom(FmtName), '~w_vfmt', [B]),
-      llvm_emit_c_string_global(FmtName, FmtAtom, FmtGlobal, _FmtLen, FmtBytes),
-      findall(N, member(fld(N), Parts), FieldIndexes),
-      format(atom(VB), '~w_v', [B]),
-      plawk_row_cons_field_lines(FieldIndexes, VB, EmptyName, FieldSeparator, 0,
-          FieldLines, ArgFrags),
-      (   ArgFrags == []
-      ->  ArgsTail = ''
-      ;   atomic_list_concat(ArgFrags, ', ', ArgsIR),
-          atom_concat(', ', ArgsIR, ArgsTail)
-      ),
-      format(atom(FmtP),
-          '  %~w_vfmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
-          [B, FmtBytes, FmtBytes, FmtName]),
-      format(atom(Need),
-          '  %~w_vneed = call i32 (i8*, i64, i8*, ...) @snprintf(i8* null, i64 0, i8* %~w_vfmtp~w)',
-          [B, B, ArgsTail]),
-      format(atom(Need64), '  %~w_vlen = sext i32 %~w_vneed to i64', [B, B]),
-      format(atom(Size), '  %~w_vsize = add i64 %~w_vlen, 1', [B, B]),
-      format(atom(Buf), '  %~w_vbuf = call i8* @malloc(i64 %~w_vsize)', [B, B]),
-      format(atom(Snp),
-          '  %~w_vwrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_vbuf, i64 %~w_vsize, i8* %~w_vfmtp~w)',
-          [B, B, B, B, ArgsTail]),
-      format(atom(Id),
-          '  %~w_vid = call i64 @wam_intern_atom(i8* %~w_vbuf, i64 %~w_vlen)', [B, B, B]),
-      format(atom(Free), '  call void @free(i8* %~w_vbuf)', [B]),
-      format(atom(SetRes), '%~w_setrc', [B]),
-      format(atom(SetVal), '%~w_vid', [B]),
-      plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, SetVal, Set),
+      plawk_str_value_store_lines(B, TableIndex, KeyIdIR, Parts, FieldSeparator,
+          ValueGlobals, ValueLines),
+      findall(global(G), member(G, ValueGlobals), ValueGlobalLines),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
-      append([[global(EmptyGlobal), global(FmtGlobal)], KeyGlobals, [Label],
-              KeyLines, FieldLines,
-              [FmtP, Need, Need64, Size, Buf, Snp, Id, Free, Set, Next, '']], Lines)
+      append([ValueGlobalLines, KeyGlobals, [Label], KeyLines, ValueLines,
+              [Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+
+%% plawk_str_value_store_lines(+B, +TableIndex, +KeyIdIR, +Parts, +FieldSeparator,
+%%     -Globals, -Lines)
+%  Straight-line: join Parts (snprintf into a measured, malloc'd buffer), intern,
+%  free, and store the id at KeyIdIR. Shared by the assoc chain's block and the
+%  mixed walker's row (arrays PRs 5a / 5c).
+plawk_str_value_store_lines(B, TableIndex, KeyIdIR, Parts, FieldSeparator,
+        [EmptyGlobal, FmtGlobal], Lines) :-
+    format(atom(EmptyName), '~w_vempty', [B]),
+    format(atom(EmptyGlobal),
+        '@.~w = private constant [1 x i8] zeroinitializer', [EmptyName]),
+    plawk_str_parts_format_atom(Parts, FmtAtom),
+    format(atom(FmtName), '~w_vfmt', [B]),
+    llvm_emit_c_string_global(FmtName, FmtAtom, FmtGlobal, _FmtLen, FmtBytes),
+    findall(N, member(fld(N), Parts), FieldIndexes),
+    format(atom(VB), '~w_v', [B]),
+    plawk_row_cons_field_lines(FieldIndexes, VB, EmptyName, FieldSeparator, 0,
+        FieldLines, ArgFrags),
+    (   ArgFrags == []
+    ->  ArgsTail = ''
+    ;   atomic_list_concat(ArgFrags, ', ', ArgsIR),
+        atom_concat(', ', ArgsIR, ArgsTail)
+    ),
+    format(atom(FmtP),
+        '  %~w_vfmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [B, FmtBytes, FmtBytes, FmtName]),
+    format(atom(Need),
+        '  %~w_vneed = call i32 (i8*, i64, i8*, ...) @snprintf(i8* null, i64 0, i8* %~w_vfmtp~w)',
+        [B, B, ArgsTail]),
+    format(atom(Need64), '  %~w_vlen = sext i32 %~w_vneed to i64', [B, B]),
+    format(atom(Size), '  %~w_vsize = add i64 %~w_vlen, 1', [B, B]),
+    format(atom(Buf), '  %~w_vbuf = call i8* @malloc(i64 %~w_vsize)', [B, B]),
+    format(atom(Snp),
+        '  %~w_vwrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_vbuf, i64 %~w_vsize, i8* %~w_vfmtp~w)',
+        [B, B, B, B, ArgsTail]),
+    format(atom(Id),
+        '  %~w_vid = call i64 @wam_intern_atom(i8* %~w_vbuf, i64 %~w_vlen)', [B, B, B]),
+    format(atom(Free), '  call void @free(i8* %~w_vbuf)', [B]),
+    format(atom(SetRes), '%~w_setrc', [B]),
+    format(atom(SetVal), '%~w_vid', [B]),
+    plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, SetVal, Set),
+    append(FieldLines, [FmtP, Need, Need64, Size, Buf, Snp, Id, Free, Set], Lines).
 
 %% plawk_str_parts_format_atom(+Parts, -FmtAtom)
 %  The snprintf format for a string element value: literal text with `%` doubled,
@@ -14214,6 +14304,13 @@ plawk_assoc_rule_action_blocks(RuleIndex,
 %  subsep key is straight-line -- the shared builder always yields a valid key
 %  (a missing subscript is the empty string) -- and contributes its descriptor
 %  constants through Globals.
+% NR (arrays PR 5c): the record counter's decimal text, interned.
+plawk_assoc_row_key_prologue(nr, B, _FieldSeparator, _ActionNextLabel,
+        KeyIdIR, [], [KeyId]) :-
+    !,
+    format(atom(KeyIdIR), '%~w_key_id', [B]),
+    format(atom(KeyId), '  ~w = call i64 @wam_intern_i64_decimal(i64 %current_nr)',
+        [KeyIdIR]).
 plawk_assoc_row_key_prologue(KeyIndex, B, FieldSeparator, _ActionNextLabel,
         KeyIdIR, [global(EmptyGlobal)], PreLines) :-
     integer(KeyIndex),
@@ -18982,6 +19079,9 @@ plawk_resolve_assoc_read_field(Slots, Values, AssocPlan,
     (   plawk_assoc_plan_posarray_array(AssocPlan, ArrayName)
     ->  plawk_assoc_pos_read_term(AssocPlan, ArrayName, Slot, TableIndex,
             SlotValue, Resolved)
+    ;   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
+    ->  % a str-valued table (arrays PR 5c): print the element's TEXT, not its id
+        plawk_assoc_str_read_resolved_term(Slot, TableIndex, SlotValue, Resolved)
     ;   plawk_assoc_read_resolved_term(Slot, TableIndex, SlotValue, Resolved)
     ),
     !.
@@ -19009,6 +19109,8 @@ plawk_resolve_assoc_read_field(_Slots, _Values, AssocPlan,
     % a field key is TEXT, interned; a positional table is keyed by raw position
     (   plawk_assoc_plan_posarray_array(AssocPlan, ArrayName)
     ->  Resolved = assoc_unsupported_read(ArrayName)
+    ;   plawk_assoc_plan_str_array(AssocPlan, ArrayName)    % text (arrays PR 5c)
+    ->  Resolved = assoc_field_read_str(TableIndex, N)
     ;   Resolved = assoc_field_read(TableIndex, N)
     ).
 % `print arr["x"]` in the shared walker (a mixed rule body, or a mixed END block,
@@ -19038,6 +19140,16 @@ plawk_assoc_read_resolved_term(Slot, TableIndex, SlotValue,
     !.
 plawk_assoc_read_resolved_term(scalar_counter(_), TableIndex, SlotValue,
         assoc_keyid_num(TableIndex, SlotValue)).
+
+%% plawk_assoc_str_read_resolved_term(+KeySlot, +TableIndex, +SlotValue, -Resolved)
+%  The str-valued counterparts: a string / strnum key slot already holds the key
+%  id; a counter key (tac's `a[i]`) interns its decimal first.
+plawk_assoc_str_read_resolved_term(Slot, TableIndex, SlotValue,
+        assoc_keyid_str(TableIndex, SlotValue)) :-
+    ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
+    !.
+plawk_assoc_str_read_resolved_term(scalar_counter(_), TableIndex, SlotValue,
+        assoc_keyid_num_str(TableIndex, SlotValue)).
 
 %% plawk_assoc_pos_read_term(+AssocPlan, +ArrayName, +KeySlot, +TableIndex, +KeyIR, -Resolved)
 %  An element read from a POSITIONAL table: the key is the raw i64 position. Only a
@@ -20001,7 +20113,13 @@ plawk_mixed_forin_body_ir([print(Fields) | Rest], LoopVar, ArrayName, TableIndex
         Positional, KeyIR, Slots, Values, AssocPlan, FieldSeparator, OutputSeparator,
         B, N, [GlobalIR | Globals], [IR | IRs]) :-
     maplist(plawk_mixed_forin_field(LoopVar, ArrayName, TableIndex, Positional, KeyIR),
-        Fields, LoopFields),
+        Fields, LoopFields0),
+    % the iterated element of a str-valued table prints its text (arrays PR 5c)
+    (   Positional == false, plawk_assoc_plan_str_array(AssocPlan, ArrayName)
+    ->  plawk_replace_term(LoopFields0, assoc_keyid(TableIndex, KeyIR),
+            assoc_keyid_str(TableIndex, KeyIR), LoopFields)
+    ;   LoopFields = LoopFields0
+    ),
     maplist(plawk_resolve_assoc_read_field(Slots, Values, AssocPlan), LoopFields,
         ResolvedFields),
     maplist(plawk_substitute_print_field(Slots, Values), ResolvedFields, SubFields),
@@ -20170,6 +20288,20 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
       plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
           FieldSeparator, Op, Slots, Values0, Pair),
+      !,
+      NextOpIndex is OpIndex + 1
+    },
+    [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+% STRING-valued element writes in the mixed chain (arrays PR 5c): `a[$k] = $N` /
+% "lit" / a concatenation / `$0`, and the same at `a[NR]` (the tac idiom).
+plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { plawk_mixed_str_write(Action, ArrayName, Key, Parts),
+      plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      plawk_mixed_str_write_ir(Prefix, OpIndex, TableIndex, Key, Parts,
+          FieldSeparator, Pair),
       !,
       NextOpIndex is OpIndex + 1
     },
@@ -25331,6 +25463,20 @@ plawk_emit_print_expr_for_context(ssa(Value), FieldSeparator, Context,
 % pointer is swapped for an empty constant before the intern.
 plawk_emit_print_expr_for_context(assoc_field_read(TableIndex, N), FieldSeparator, Context,
         direct(Lines), [EmptyGlobal], []) :-
+    plawk_assoc_field_read_lines(i64, TableIndex, N, FieldSeparator, Context, Lines,
+        EmptyGlobal).
+% ... on a str-valued table (arrays PR 5c): the str print helper, the element's text
+plawk_emit_print_expr_for_context(assoc_field_read_str(TableIndex, N), FieldSeparator,
+        Context, direct(Lines), [EmptyGlobal], []) :-
+    plawk_assoc_field_read_lines(str, TableIndex, N, FieldSeparator, Context, Lines,
+        EmptyGlobal).
+
+%% plawk_assoc_field_read_lines(+Kind, +TableIndex, +N, +FieldSep, +Context, -Lines,
+%%     -EmptyGlobal)
+%  Intern field N (a missing field is the key "") and print the element with the
+%  table's printer for Kind (i64 count, or str text); nothing for an absent key.
+plawk_assoc_field_read_lines(Kind, TableIndex, N, FieldSeparator, Context, Lines,
+        EmptyGlobal) :-
     integer(FieldSeparator),
     plawk_print_expr_value_base(Context, assoc_field_read, Base),
     format(atom(PtrVar), '%~w_key_ptr', [Base]),
@@ -25341,7 +25487,7 @@ plawk_emit_print_expr_for_context(assoc_field_read(TableIndex, N), FieldSeparato
     format(atom(KidL),
         '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 %~w_len)', [Base, Base, Base]),
     format(atom(KeyIR), '%~w_kid', [Base]),
-    plawk_assoc_value_print_line(TableIndex, KeyIR, PrL),
+    plawk_assoc_kind_value_print_line(Kind, TableIndex, KeyIR, PrL),
     append(SrcLines, [MissL, SafePtrL, KidL, PrL], Lines).
 % `print arr["x"]` (resolved literal-key read): a module c-string for the key,
 % interned, then the table's print helper (nothing for an absent key).
@@ -25364,6 +25510,20 @@ plawk_emit_print_expr_for_context(assoc_lit_read(TableIndex, Text, Kind), _Field
 plawk_emit_print_expr_for_context(assoc_pos_str(TableIndex, KeyIR), _FieldSeparator,
         _Context, direct([Line]), [], []) :-
     plawk_assoc_str_value_print_line(TableIndex, KeyIR, Line).
+% `print arr[k]` on a str-valued table keyed by an interned id (arrays PR 5c): the
+% str print helper -- the element's text, nothing when absent.
+plawk_emit_print_expr_for_context(assoc_keyid_str(TableIndex, KeyIR), _FieldSeparator,
+        _Context, direct([Line]), [], []) :-
+    plawk_assoc_str_value_print_line(TableIndex, KeyIR, Line).
+% ... and by a COUNTER key (`for (i = NR; i > 0; i--) print a[i]`, tac): intern the
+% counter's decimal first, as awk keys `a[1]` and `a["1"]` alike.
+plawk_emit_print_expr_for_context(assoc_keyid_num_str(TableIndex, SlotValue),
+        _FieldSeparator, Context, direct([InternCall, Line]), [], []) :-
+    plawk_print_expr_value_base(Context, assoc_keyid_num_str, Base),
+    format(atom(KeyIdIR), '%~w_skeyid', [Base]),
+    format(atom(InternCall),
+        '  ~w = call i64 @wam_intern_i64_decimal(i64 ~w)', [KeyIdIR, SlotValue]),
+    plawk_assoc_str_value_print_line(TableIndex, KeyIdIR, Line).
 % `print arr[k]`: in a PRINT an absent element is awk's empty string, not 0
 % (@wam_assoc_i64_get reads 0 for a missing key, and printing that was wrong
 % output: `{ k = $1; print c[k] "|"; c[k]++ }` printed "0|" where gawk prints "|").
@@ -26099,6 +26259,8 @@ plawk_normal_print_expr_value_base(assoc_field_read, Index, Base) :-
     format(atom(Base), 'plawk_afr_~w', [Index]).
 plawk_normal_print_expr_value_base(assoc_lit_read, Index, Base) :-
     format(atom(Base), 'plawk_alr_~w', [Index]).
+plawk_normal_print_expr_value_base(assoc_keyid_num_str, Index, Base) :-
+    format(atom(Base), 'plawk_assoc_kns_~w', [Index]).
 plawk_normal_print_expr_value_base(field_dyn, Index, Base) :-
     format(atom(Base), 'plawk_field_dyn_~w', [Index]).
 plawk_normal_print_expr_value_base(field_nf, Index, Base) :-
