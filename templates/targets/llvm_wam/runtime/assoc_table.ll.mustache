@@ -572,6 +572,16 @@ entry:
   %afv.d = bitcast i64 %afv.bits to double
   ret double %afv.d
 }
+{{case wam_assoc_f64_get}}
+; `arr[k]` read on a double-valued table, by KEY (arrays PR 3e): the stored bit
+; pattern as a double. An absent key reads 0 bits = 0.0, awk's numeric reading of
+; an uninitialised element.
+define double @wam_assoc_f64_get(%WamAssocI64Table* %table, i64 %key) {
+entry:
+  %afg.bits = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 %key)
+  %afg.d = bitcast i64 %afg.bits to double
+  ret double %afg.d
+}
 {{case wam_assoc_i64_set}}
 define i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %key, i64 %value) {
 entry:

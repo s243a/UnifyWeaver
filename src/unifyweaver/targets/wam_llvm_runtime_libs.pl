@@ -116,6 +116,7 @@ wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_f64_add, assoc_table).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_f64_set, assoc_table).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_f64_print, assoc_table).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_f64_value_at, assoc_table).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_f64_get, assoc_table).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_i64_set, assoc_table).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_i64_free, assoc_table).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_i64_iter_next, assoc_table).

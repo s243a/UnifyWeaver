@@ -1735,7 +1735,11 @@ plawk_mixed_end_has_control(Actions) :-
 plawk_end_planning_actions([], []).
 plawk_end_planning_actions([for_in(var(K), var(A), Body0) | Rest], Plan) :-
     !,
-    plawk_replace_term(Body0, assoc(var(A), var(K)), ssa('%plawk_forin_plan_elem'), Body1),
+    (   plawk_f64_array(A)
+    ->  PlanLeaf = ssa_f64('%plawk_forin_plan_elem')    % a double table's element
+    ;   PlanLeaf = ssa('%plawk_forin_plan_elem')
+    ),
+    plawk_replace_term(Body0, assoc(var(A), var(K)), PlanLeaf, Body1),
     plawk_end_planning_actions(Body1, Body),      % a nested for-in types its key too
     plawk_end_planning_actions(Rest, RestPlan),
     append([set(var(K), string("")) | Body], RestPlan, Plan).
@@ -7455,16 +7459,37 @@ plawk_cond_elem_reads(cmp(L0, Op, R0), Slots, Vs, Plan, FS, Base, I0, I, cmp(L1,
     append(LL, LR, L).
 
 plawk_cond_elem_operand(assoc(var(A), Key), Slots, Vs, Plan, FS, Base, I0, I,
-        ssa(Ref), Globals, Lines) :-
+        Leaf, Globals, Lines) :-
     !,
-    plawk_counter_array(A),
+    plawk_numeric_read_array(A, Kind),
     plawk_assoc_table_index(Plan, A, TableIndex),
     format(atom(EBase), '~w_e~w', [Base, I0]),
     plawk_cond_elem_key(Key, Slots, Vs, FS, Base, EBase, KeyId, Globals, KeyLines),
     format(atom(Ref), '%~w_val', [EBase]),
-    plawk_assoc_elem_call_line(Ref, i64, i64, get, TableIndex, KeyId, ReadLine),
-    append(KeyLines, [ReadLine], Lines),
+    plawk_numeric_elem_read_lines(Kind, A, TableIndex, Ref, get, KeyId, Leaf, ReadLines),
+    append(KeyLines, ReadLines, Lines),
     I is I0 + 1.
+
+%% plawk_numeric_read_array(+Array, -Kind) is semidet.
+%  An array whose elements may be READ as numbers: a counter table (i64 cells) or a
+%  double table (f64 bit patterns, arrays PR 3e). Any other kind declines.
+plawk_numeric_read_array(A, i64) :-
+    plawk_counter_array(A),
+    !.
+plawk_numeric_read_array(A, f64) :-
+    plawk_f64_array(A).
+
+%% plawk_numeric_elem_read_lines(+Kind, +Array, +TableIndex, +Ref, +Fn, +Arg, -Leaf, -Lines)
+%  Read one element (Fn get by key id, value_at by slot) into Ref, as the expression
+%  leaf for its kind: ssa for i64, ssa_f64 for a double table -- whose read also
+%  carries the table marker the double-table IR check requires.
+plawk_numeric_elem_read_lines(i64, _A, TableIndex, Ref, Fn, Arg, ssa(Ref), [Line]) :-
+    plawk_assoc_elem_call_line(Ref, i64, i64, Fn, TableIndex, Arg, Line).
+plawk_numeric_elem_read_lines(f64, A, TableIndex, Ref, Fn, Arg, ssa_f64(Ref),
+        [Line, Marker]) :-
+    plawk_assoc_elem_call_line(Ref, double, f64, Fn, TableIndex, Arg, Line),
+    plawk_f64_table_marker(A, TableIndex, Marker0),
+    format(atom(Marker), '  ~w', [Marker0]).
 plawk_cond_elem_operand(Operand, _Slots, _Vs, _Plan, _FS, _Base, I, I, Operand, [], []).
 
 %% plawk_action_has_arith_elem_read(+Action) is semidet.
@@ -9391,10 +9416,10 @@ plawk_end_lit_arith_leaf(assoc(var(A), int(N))) :- atom(A), integer(N), !.
 plawk_end_lit_arith_leaf(Expr) :- plawk_end_lit_arith_field(Expr).
 
 %% plawk_end_lit_arith_reads(+Expr, +AssocPlan, +Base, +I0, -I, -Expr1, -Lines)
-plawk_end_lit_arith_reads(assoc(var(A), KeyTerm), AssocPlan, Base, I0, I, ssa(Ref),
+plawk_end_lit_arith_reads(assoc(var(A), KeyTerm), AssocPlan, Base, I0, I, Leaf,
         Lines) :-
     !,
-    plawk_counter_array(A),
+    plawk_numeric_read_array(A, Kind),
     \+ plawk_assoc_plan_posarray_array(AssocPlan, A),
     plawk_assoc_table_index(AssocPlan, A, TableIndex),
     (   KeyTerm = string(S) -> string_codes(S, Codes)
@@ -9414,8 +9439,8 @@ plawk_end_lit_arith_reads(assoc(var(A), KeyTerm), AssocPlan, Base, I0, I, ssa(Re
         [K, K, Len]),
     format(atom(Ref), '%~w_v~w', [Base, I0]),
     format(atom(KeyIR), '%~w_id', [K]),
-    plawk_assoc_elem_call_line(Ref, i64, i64, get, TableIndex, KeyIR, Get),
-    Lines = [Buf, Store, Ptr, Id, Get],
+    plawk_numeric_elem_read_lines(Kind, A, TableIndex, Ref, get, KeyIR, Leaf, GetLines),
+    Lines = [Buf, Store, Ptr, Id | GetLines],
     I is I0 + 1.
 plawk_end_lit_arith_reads(Expr, AssocPlan, Base, I0, I, Expr1, Lines) :-
     compound(Expr),
@@ -9443,16 +9468,16 @@ plawk_llvm_cstring_escape(Codes, Escaped) :-
 %% plawk_forin_arith_reads(+Expr, +LoopVar, +Iterated, +TableIndex, +AssocPlan,
 %%     +Base, +I0, -I, -Expr1, -Lines) is semidet.
 plawk_forin_arith_reads(assoc(var(A), var(LoopVar)), LoopVar, Iterated, TableIndex,
-        AssocPlan, Base, I0, I, ssa(Ref), [Line]) :-
+        AssocPlan, Base, I0, I, Leaf, Lines) :-
     !,
-    plawk_counter_array(A),
+    plawk_numeric_read_array(A, Kind),
     format(atom(Ref), '%~w_v~w', [Base, I0]),
     (   A == Iterated
-    ->  plawk_assoc_elem_call_line(Ref, i64, i64, value_at, TableIndex,
-            '%forin_slot', Line)
+    ->  plawk_numeric_elem_read_lines(Kind, A, TableIndex, Ref, value_at,
+            '%forin_slot', Leaf, Lines)
     ;   plawk_assoc_table_index(AssocPlan, A, LookupIndex),
-        plawk_assoc_elem_call_line(Ref, i64, i64, get, LookupIndex,
-            '%forin_key_id', Line)
+        plawk_numeric_elem_read_lines(Kind, A, LookupIndex, Ref, get,
+            '%forin_key_id', Leaf, Lines)
     ),
     I is I0 + 1.
 plawk_forin_arith_reads(Expr, LoopVar, Iterated, TableIndex, AssocPlan, Base, I0, I,
@@ -19183,6 +19208,13 @@ plawk_f64_scalar_update_expr(Expr) :-
 
 plawk_f64_scalar_read_operand_expr(var(Name)) :-
     atom(Name).
+% an element of a double-valued table, and the ssa_f64 leaf it becomes once the
+% mixed walker has read it (arrays PR 3e)
+plawk_f64_scalar_read_operand_expr(assoc(var(A), _Key)) :-
+    atom(A),
+    plawk_f64_array(A).
+plawk_f64_scalar_read_operand_expr(ssa_f64(Ref)) :-
+    atom(Ref).
 plawk_f64_scalar_read_operand_expr(float_const(Mantissa, Denominator)) :-
     integer(Mantissa),
     integer(Denominator),
@@ -20228,15 +20260,16 @@ plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body00) | Rest],
           HeadValues),
       format(atom(KeyRef), '%~w_key', [Base]),
       plawk_replace_nth0(KIdx, HeadValues, KeyRef, BodyIn),
-      (   plawk_counter_array(A),
+      (   plawk_numeric_read_array(A, ElemKind),
           \+ ( sub_term(set(var(K0), _), Body0), K0 == K )
       ->  format(atom(ElemRef), '%~w_val', [Base]),
           format(atom(SlotRef), '%~w_islot', [Base]),
-          plawk_assoc_elem_call_line(ElemRef, i64, i64, value_at, TableIndex,
-              SlotRef, ElemLine),
+          % a counter table's element is an i64 (ssa), a double table's an f64
+          % bit pattern (ssa_f64, with the table marker) -- arrays PR 3e
+          plawk_numeric_elem_read_lines(ElemKind, A, TableIndex, ElemRef, value_at,
+              SlotRef, ElemLeaf, ElemLines),
           plawk_replace_term_outside_prints(Body0, assoc(var(A), var(K)),
-              ssa(ElemRef), Body),
-          ElemLines = [ElemLine]
+              ElemLeaf, Body)
       ;   Body = Body0,
           ElemLines = []
       ),
@@ -21674,6 +21707,10 @@ plawk_expr_is_double(math_call(_Fn, _Args)).
 % is evaluated in f64. Integer operands promote via sitofp at emission, and the
 % op lowers to fdiv through plawk_i64_op_f64.
 plawk_expr_is_double(div_i64(_Left, _Right)).
+% an element read of a double-valued table (arrays PR 3e)
+plawk_expr_is_double(assoc(var(A), _Key)) :-
+    atom(A),
+    plawk_f64_array(A).
 plawk_expr_is_double(Expr) :-
     plawk_i64_binary_expr(Expr, _LLVMOp, _NamePart, Left, Right),
     ( plawk_expr_is_double(Left)
