@@ -819,8 +819,139 @@ emit_rust_clauses([Cl | Rest], ForeignPreds) :-
 %  Emit Rust code for a list of instructions.
 emit_instrs([], _, _).
 emit_instrs([Instr|Rest], Ind, ForeignPreds) :-
+    (   Instr = ite(_, _, Else)
+    ->  rust_ite_else_ax_check(Else, Rest)
+    ;   true
+    ),
     emit_one(Instr, Ind, ForeignPreds),
     emit_instrs(Rest, Ind, ForeignPreds).
+
+% ---------------------------------------------------------------------
+% R0b: the lowered if-then-else else path reads no A/X register it did not
+% write itself.
+% ---------------------------------------------------------------------
+%
+%  The runtime trail records Y registers only (R0b,
+%  docs/reports/wam_rust_r0b_register_trail_audit.md). When a lowered ITE
+%  condition fails, `vm.unwind_trail_to(_ite_mark)` undoes the condition's
+%  bindings and Y writes, but any A/X register the condition wrote (lowered
+%  `put_reg`, delegated `vm.step` arms, a nested `run()`) keeps the
+%  condition's value. That is sound only while the else branch, and the code
+%  after the ITE on the else path, writes every A/X register before reading
+%  it. The WAM compiler guarantees this today (a variable live across an ITE
+%  is permanent, so it lives in a Y register); this check makes a compiler
+%  change that breaks it fail at generation time instead of silently reading
+%  a register the condition clobbered.
+%
+%  A call/execute/proceed/fail ends the path: a callee overwrites every A/X
+%  register, so nothing after it can depend on values from before the ITE.
+%  Nested ITEs: their condition and then branch continue from the current
+%  written set, their else branch restarts from it, and the code after them
+%  sees only the registers both branches wrote.
+
+rust_ite_else_ax_check(Else, Rest) :-
+    append(Else, Rest, Path),
+    rust_ax_flow(Path, [], Result),
+    (   Result = unwritten_read(Reg, Instr)
+    ->  throw(error(lowered_ite_else_reads_ax_before_write(Reg, Instr),
+                    context(rust_ite_else_ax_check/2, _)))
+    ;   true
+    ).
+
+%% rust_ax_flow(+Instrs, +Written, -Result)
+%  Result is ok(WrittenAfter) (`stop` once a call ends the path) or
+%  unwritten_read(Reg, Instr) for the first A/X read with no prior write.
+rust_ax_flow(_, stop, ok(stop)) :- !.
+rust_ax_flow([], W, ok(W)).
+rust_ax_flow([ite(C, T, E)|Rest], W0, Result) :- !,
+    rust_ax_flow(C, W0, RC),
+    (   RC = ok(Wc)
+    ->  rust_ax_flow(T, Wc, RT),
+        (   RT = ok(Wt)
+        ->  rust_ax_flow(E, W0, RE),
+            (   RE = ok(We)
+            ->  rust_ax_meet(Wt, We, W1),
+                rust_ax_flow(Rest, W1, Result)
+            ;   Result = RE
+            )
+        ;   Result = RT
+        )
+    ;   Result = RC
+    ).
+rust_ax_flow([I|Rest], W0, Result) :-
+    rust_ax_effect(I, Reads0, Writes0, Ends),
+    maplist(rust_ax_name, Reads0, Reads),
+    maplist(rust_ax_name, Writes0, Writes),
+    (   member(R, Reads), rust_ax_reg(R), \+ memberchk(R, W0)
+    ->  Result = unwritten_read(R, I)
+    ;   Ends == true
+    ->  Result = ok(stop)
+    ;   include(rust_ax_reg, Writes, AX),
+        append(AX, W0, W1),
+        rust_ax_flow(Rest, W1, Result)
+    ).
+
+%% rust_ax_name(+Reg, -String): register operands arrive as strings from the
+%  text parser and may be atoms in a pre-parsed instruction list.
+rust_ax_name(R, S) :-
+    (   atom(R) -> atom_string(R, S)
+    ;   S = R
+    ).
+
+rust_ax_meet(stop, W, W) :- !.
+rust_ax_meet(W, stop, W) :- !.
+rust_ax_meet(W1, W2, W) :- intersection(W1, W2, W).
+
+%% rust_ax_reg(+Name) is semidet: an A or X register name ("A1", "X12").
+rust_ax_reg(Name) :-
+    string_codes(Name, [P, D|_]),
+    memberchk(P, `AX`),
+    code_type(D, digit).
+
+%% rust_ax_effect(+Instr, -Reads, -Writes, -EndsPath)
+%  Register reads and writes of one lowered instruction (any class; the
+%  caller keeps the A/X ones), and whether the path ends there.
+rust_ax_effect(get_constant(_, A), [A], [], false) :- !.
+rust_ax_effect(get_integer(_, A), [A], [], false) :- !.
+rust_ax_effect(get_nil(A), [A], [], false) :- !.
+rust_ax_effect(get_variable(X, A), [A], [X], false) :- !.
+rust_ax_effect(get_value(X, A), [X, A], [], false) :- !.
+rust_ax_effect(get_structure(_, A), [A], [], false) :- !.
+rust_ax_effect(get_list(A), [A], [], false) :- !.
+rust_ax_effect(unify_variable(X), [], [X], false) :- !.
+rust_ax_effect(unify_value(X), [X], [], false) :- !.
+rust_ax_effect(set_variable(X), [], [X], false) :- !.
+rust_ax_effect(set_value(X), [X], [], false) :- !.
+rust_ax_effect(put_constant(_, A), [], [A], false) :- !.
+rust_ax_effect(put_variable(X, A), [], [X, A], false) :- !.
+rust_ax_effect(put_value(X, A), [X], [A], false) :- !.
+rust_ax_effect(put_structure(_, A), [], [A], false) :- !.
+rust_ax_effect(put_list(A), [], [A], false) :- !.
+rust_ax_effect(builtin_call(_, N), Reads, [], false) :- !,
+    rust_arg_regs(N, Reads).
+rust_ax_effect(call_foreign(_, N), Reads, [], false) :- !,
+    rust_arg_regs(N, Reads).
+rust_ax_effect(call(_, N), Reads, [], true) :- !,
+    rust_arg_regs(N, Reads).
+rust_ax_effect(execute(P), Reads, [], true) :- !,
+    split_string(P, "/", "", Parts),
+    last(Parts, NA),
+    rust_arg_regs(NA, Reads).
+rust_ax_effect(proceed, [], [], true) :- !.
+rust_ax_effect(fail, [], [], true) :- !.
+rust_ax_effect(_, [], [], false).
+
+%% rust_arg_regs(+N, -Regs): ["A1", .., "AN"] for an arity given as text.
+rust_arg_regs(N0, Regs) :-
+    (   number(N0) -> N = N0
+    ;   catch(atom_number(N0, N), _, fail) -> true
+    ;   N = 0
+    ),
+    (   integer(N), N > 0
+    ->  numlist(1, N, Is),
+        findall(R, ( member(K, Is), format(string(R), "A~w", [K]) ), Regs)
+    ;   Regs = []
+    ).
 
 emit_one(call(PredStr, NStr), I, ForeignPreds) :-
     member(PredStr, ForeignPreds), !,
@@ -840,7 +971,10 @@ emit_one(execute(PredStr), I, ForeignPreds) :-
 % false` means "condition failed"; inside then/else, `return false`
 % returns from the lowered function. Rust's get_reg derefs through the
 % binding table, so unwinding the trail before the else branch restores
-% any partial bindings the condition made (no register snapshot needed).
+% any partial bindings the condition made. No register snapshot is needed:
+% the unwind restores Y registers but not A/X (R0b), and
+% rust_ite_else_ax_check/2 (called from emit_instrs/3) checks that the else
+% path writes every A/X register before reading it.
 emit_one(ite(Cond, Then, Else), I, ForeignPreds) :- !,
     nb_getval(rust_ite_ctr, N0), N is N0 + 1, nb_setval(rust_ite_ctr, N),
     string_concat(I, "    ", I2),

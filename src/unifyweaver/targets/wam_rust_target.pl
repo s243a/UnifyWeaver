@@ -633,11 +633,9 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, c
                     Value::List(items) => Value::List(items.cons(mid.clone())),
                     tail => Value::list(vec![mid.clone(), tail]),
                 };
+                // R0b: only the child-hops register can be a Y register;
+                // A1-A4 are argument staging and are not trailed.
                 self.trail_binding(child_hops_reg);
-                self.trail_binding("A1");
-                self.trail_binding("A2");
-                self.trail_binding("A3");
-                self.trail_binding("A4");
                 self.put_reg(child_hops_reg, child_hops.clone());
                 self.set_reg_str("A1", mid);
                 self.set_reg_str("A2", root);
@@ -947,7 +945,9 @@ wam_instruction_arm('Instruction::GetLevel(yn)', Body) :-
                 //      `!`) -- attach it to the guard CP that already exists.
                 let depth = self.choice_points.len();
                 let next_is_try = matches!(self.code.get(self.pc),
-                    Some(Instruction::TryMeElse(_)) | Some(Instruction::TryMeElsePc(_)));
+                    Some(Instruction::TryMeElse(_)) | Some(Instruction::TryMeElsePc(_))
+                    | Some(Instruction::TryMeElseArgs(_, _))
+                    | Some(Instruction::TryMeElsePcArgs(_, _)));
                 if next_is_try {
                     self.pending_level = Some((yn.clone(), depth));
                 } else if let Some(cp) = self.choice_points.last_mut() {
@@ -1178,6 +1178,48 @@ wam_instruction_arm('Instruction::TryMeElsePc(next_pc)', Body) :-
                 self.choice_points.push(ChoicePoint {
                     next_pc: *next_pc,
                     saved_args: self.save_regs(),
+                    cp: self.cp,
+                    stack: self.stack.clone(),
+                    trail_len: self.trail.len(),
+                    heap_len: self.heap.len(),
+                    builtin_state: None,
+                    cut_barrier: self.cut_barrier,
+                    levels: self.pending_level.take().into_iter().collect(),
+                });
+                self.pending_cut_barrier = Some((clause_barrier, self.pc + 1));
+                self.pc += 1; true'.
+
+% R0a (D135): the clause-entry try_me_else. Identical to the TryMeElse arm for
+% a clause label, except that the choice point saves only A1..A<arity>.
+wam_instruction_arm('Instruction::TryMeElseArgs(label, arity)', Body) :-
+    Body = '                // R0a (D135): a clause-entry choice point saves only the
+                // argument registers A1..A<arity>. On a retry
+                // restore_ax_regs still clears every other dirty A/X slot, so
+                // an unsaved temporary reads as Uninit, as before. The
+                // generator emits this only when no other A/X register is
+                // live where a retry resumes (rust_r0a_instr_options/4).
+                if let Some(&next_pc) = self.labels.get(label) {
+                    let clause_barrier = self.choice_points.len();
+                    self.choice_points.push(ChoicePoint {
+                        next_pc,
+                        saved_args: self.save_arg_regs(*arity),
+                        cp: self.cp,
+                        stack: self.stack.clone(),
+                        trail_len: self.trail.len(),
+                        heap_len: self.heap.len(),
+                        builtin_state: None,
+                        cut_barrier: self.cut_barrier,
+                        levels: self.pending_level.take().into_iter().collect(),
+                    });
+                    self.pending_cut_barrier = Some((clause_barrier, self.pc + 1));
+                    self.pc += 1; true
+                } else { false }'.
+
+wam_instruction_arm('Instruction::TryMeElsePcArgs(next_pc, arity)', Body) :-
+    Body = '                let clause_barrier = self.choice_points.len();
+                self.choice_points.push(ChoicePoint {
+                    next_pc: *next_pc,
+                    saved_args: self.save_arg_regs(*arity),
                     cp: self.cp,
                     stack: self.stack.clone(),
                     trail_len: self.trail.len(),
@@ -1581,7 +1623,6 @@ compile_execute_arith_builtin_to_rust(Code) :-
                     };
                     match lhs {
                         Some(Value::Unbound(ref var_name)) => {
-                            self.trail_binding("A1");
                             self.set_reg_str("A1", final_val.clone());
                             self.bind_var(var_name, final_val);
                             self.pc += 1; true
@@ -7185,6 +7226,12 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 // Filter: keep elements for which the test call succeeds
                 // (include) or fails (exclude). Test-call bindings are
                 // trial-only and unwound after each element.
+                //
+                // R0b: capture the output argument A3 BEFORE the element
+                // calls, as predsort/3 does. The element goal loads A1..An
+                // (call_goal_key, the callee''s put_*, lowered put_reg) and
+                // unwind_trail_to restores no A/X register, so A3 read after
+                // the loop would be whatever the last element call left there.
                 let goal = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
                     .unwrap_or(Value::Uninit);
@@ -7192,6 +7239,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 let keep_on = op == "include/3";
                 let mut kept: Vec<Value> = Vec::new();
                 for item in items.iter() {
@@ -7200,15 +7248,15 @@ compile_execute_meta_builtin_to_rust(Code) :-
                         None => return false,
                     };
                     let mark = self.trail.len();
-                    let ok = self.call_goal_once(&g);
+                    let ok = self.call_goal_once_full_save(&g);
                     self.unwind_trail_to(mark);
                     if !ok && self.thrown_ball.is_some() { return false; }
                     if ok == keep_on { kept.push(item.clone()); }
                 }
-                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
                 if self.unify(&a3, &Value::list(kept)) { self.pc += 1; true } else { false }
             }
             "partition/4" => {
+                // R0b: A3/A4 captured before the element calls (see include/3).
                 let goal = self.get_reg_raw("A1")
                     .map(|v| self.deref_heap(&self.deref_var(&v)))
                     .unwrap_or(Value::Uninit);
@@ -7216,6 +7264,8 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     Some(Value::List(items)) => items,
                     _ => return false,
                 };
+                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let a4 = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
                 let mut incl: Vec<Value> = Vec::new();
                 let mut excl: Vec<Value> = Vec::new();
                 for item in items.iter() {
@@ -7224,13 +7274,11 @@ compile_execute_meta_builtin_to_rust(Code) :-
                         None => return false,
                     };
                     let mark = self.trail.len();
-                    let ok = self.call_goal_once(&g);
+                    let ok = self.call_goal_once_full_save(&g);
                     self.unwind_trail_to(mark);
                     if !ok && self.thrown_ball.is_some() { return false; }
                     if ok { incl.push(item.clone()); } else { excl.push(item.clone()); }
                 }
-                let a3 = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
-                let a4 = self.get_reg_raw("A4").unwrap_or(Value::Uninit);
                 if self.unify(&a3, &Value::list(incl)) && self.unify(&a4, &Value::list(excl)) {
                     self.pc += 1; true
                 } else { false }
@@ -7257,6 +7305,9 @@ compile_execute_meta_builtin_to_rust(Code) :-
                 let mut acc = self.get_reg_raw(acc0_reg)
                     .map(|v| self.deref_var(&v))
                     .unwrap_or(Value::Uninit);
+                // R0b: capture the output argument before the element calls,
+                // which load A1..An (see include/3).
+                let out = self.get_reg_raw(out_reg).unwrap_or(Value::Uninit);
                 for i in 0..l1.len() {
                     let next = self.fresh_meta_var();
                     let mut extra: Vec<Value> = vec![self.deref_var(&l1[i])];
@@ -7269,10 +7320,9 @@ compile_execute_meta_builtin_to_rust(Code) :-
                         Some(g) => g,
                         None => return false,
                     };
-                    if !self.call_goal_once(&g) { return false; }
+                    if !self.call_goal_once_full_save(&g) { return false; }
                     acc = self.deref_var(&next);
                 }
-                let out = self.get_reg_raw(out_reg).unwrap_or(Value::Uninit);
                 if self.unify(&out, &acc) { self.pc += 1; true } else { false }
             }
             _ => false,
@@ -7341,8 +7391,12 @@ compile_execute_meta_builtin_to_rust(Code) :-
         // with the nested frame''s stale value, and reverse/2 then saw an
         // unbound list and failed. Drop the nested run''s Yi-register trail
         // entries here, keeping binding entries (so predsort_order can still
-        // read the comparator''s Order result) and Ai/Xi entries (restored
-        // explicitly by the caller''s save/restore).
+        // read the comparator''s Order result). Since R0b the trail holds no
+        // Ai/Xi entries (trail_binding records Y registers only), so after this
+        // filter the tail is binding entries only. A caller that needs its own
+        // A/X registers after this call reads them before it (include/3,
+        // partition/4, foldl/4,5, predsort/3) or restores them explicitly
+        // (predsort_order, catch/3).
         if self.trail.len() > trail_mark {
             let tail = self.trail.split_off(trail_mark);
             for e in tail {
@@ -7354,6 +7408,19 @@ compile_execute_meta_builtin_to_rust(Code) :-
             }
         }
         self.stack = stack_snapshot;
+        ok
+    }
+
+    /// R0a (D135): `call_goal_once` for a builtin that reads one of its
+    /// argument registers AFTER the call (include/3, exclude/3, partition/4,
+    /// foldl/4,5 read their output register once every element is done).
+    /// Clause-entry choice points pushed by the goal take the full register
+    /// save while it runs, as they did before R0a, so a retry inside the goal
+    /// restores that register exactly as before.
+    fn call_goal_once_full_save(&mut self, goal: &Value) -> bool {
+        let saved = std::mem::replace(&mut self.clause_cp_full_save, true);
+        let ok = self.call_goal_once(goal);
+        self.clause_cp_full_save = saved;
         ok
     }
 
@@ -8627,6 +8694,20 @@ wam_line_to_rust_instr(["par_aggregate", Type, EnumLabel, BodyLabel, ResultReg |
     format(string(Rust),
         'Instruction::ParAggregate("~w".to_string(), "~w".to_string(), "~w".to_string(), "~w".to_string(), vec![~w])',
         [CType, CEnumLabel, CBodyLabel, CResultReg, RegsInner]).
+% R0a (D135): the clause-entry try_me_else of a multi-clause predicate
+% (`try_me_else L_<Pred>_<Arity>_2`, emitted by wam_target's clause chain)
+% becomes TryMeElseArgs(Label, Arity) when the program-wide liveness check
+% (rust_r0a_instr_options/4) put '$r0a_clause_cp_args' in Options: its
+% choice point saves only A1..A<Arity>. Every other try_me_else (ITE guards,
+% disjunctions: L_ite_else_N; indexing chains) keeps the full dirty-set save.
+wam_line_to_rust_instr(["try_me_else", Label], Pred/Arity, Options, Rust) :-
+    memberchk('$r0a_clause_cp_args', Options),
+    format(string(Expected), "L_~w_~w_2", [Pred, Arity]),
+    text_to_string(Label, LabelS),
+    LabelS == Expected,
+    !,
+    format(string(Rust),
+        'Instruction::TryMeElseArgs("~w".to_string(), ~w)', [Label, Arity]).
 wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
     format(string(Rust),
         'Instruction::TryMeElse("~w".to_string())', [Label]).
@@ -9420,7 +9501,10 @@ compile_predicates_for_project(Predicates0, Options, Code) :-
     ( rust_f11_enabled(Options) -> nb_setval(rust_f11_flag, true) ; nb_setval(rust_f11_flag, false) ),
     classify_predicates(Predicates, Options, Classified),
     % Pass 2: collect WAM entries with cumulative PCs, build shared table
-    collect_wam_entries(Classified, 1, EmbeddedRewrites, WamEntries, AllInstrParts, AllLabelParts),
+    % R0a: decide, for the whole shared table, whether clause-entry choice
+    % points may save only A1..An (rust_r0a_instr_options/4).
+    rust_r0a_instr_options(Classified, EmbeddedRewrites, Options, InstrOpts),
+    collect_wam_entries(Classified, 1, EmbeddedRewrites, InstrOpts, WamEntries, AllInstrParts, AllLabelParts),
     % Generate shared WAM table if any WAM predicates exist
     (   WamEntries \== []
     ->  atomic_list_concat(AllLabelParts, '\n', AllLabels),
@@ -11102,37 +11186,413 @@ rust_r1c_var_to_value("put_variable", "put_value").
 rust_r1c_var_to_value("unify_variable", "unify_value").
 rust_r1c_var_to_value("set_variable", "set_value").
 
-%% collect_wam_entries(+Classified, +StartPC, -WamEntries, -AllInstrParts, -AllLabelParts)
+% ---------------------------------------------------------------------------
+% R0a (D135): arity-only register save at clause-entry choice points
+% ---------------------------------------------------------------------------
+%
+% A clause-entry choice point (the `try_me_else L_<P>_<N>_2` that opens a
+% multi-clause predicate's clause chain) used to save every dirty A/X
+% register, like every other choice point. On a retry it now restores only
+% A1..AN; restore_ax_regs still clears every other dirty slot, so an unsaved
+% temporary reads as Uninit, as before.
+%
+% Why that is enough, and what this check verifies. After a retry the
+% machine runs clause k of P and then returns to the continuation the choice
+% point saved. A register outside A1..AN differs from the full save only if
+% something reads it before writing it, either
+%
+%   (a) clause k itself: by the WAM convention a clause reads only its
+%       argument registers before it writes a temporary; or
+%   (b) the continuation of a call that (transitively) entered P: by the WAM
+%       convention no A/X register is live across a call.
+%
+% Rust code that runs a goal in a nested run() (call/N, catch/3, the \+
+% builtin, maplist, predsort, the dynamic-clause solver, lowered
+% call/execute, lowered_dispatch) reads its own Rust locals afterwards, or
+% restores a full save_regs snapshot it took itself, so its continuation is
+% the compiled code after the `call`/`builtin_call` that started it: case
+% (b). Four builtins do read an argument register after their goals ran:
+% include/3, exclude/3 and partition/4 read A3 (and A4), foldl/4,5 read A4
+% (A5). They can also be reached through call/N with a goal built at run
+% time, which no static check sees, so they run their goals with
+% `clause_cp_full_save` set and every clause choice point pushed meanwhile
+% keeps the full save (call_goal_once_full_save). The benchmark main.rs reads
+% A1 back after running dimension_n/1 and sets the flag the same way.
+%
+% The shared compiler does not keep the convention everywhere. Its
+% permanent-variable rule exposes the goals inside a first-position
+% ITE/disjunction/aggregate but not inside forall/2, \+/1 or once/1, so in
+% `p(A, B) :- forall(q(A), s(B)).` B stays in X2 and is read after
+% `call q/1`; and a count/constant aggregate collects its A1 placeholder
+% after the inner goal. In the lowered tier an ITE whose condition calls a
+% predicate restores the else branch's registers through the trail, not a
+% guard choice point, so the else branch's registers are live across that
+% call too. So the generator checks the convention instead of assuming it: a
+% liveness pass over every shared-table predicate's WAM (interpreted and
+% lowered), and the arity-only form is emitted only if
+%
+%   (a') at every retry label L_<P>_<N>_k (k >= 2), and at the predicate's
+%        entry, only A1..AN are live, and
+%   (b') after every instruction that can run predicate code (call,
+%        builtin_call, call_foreign) no A/X register is live; in a lowered
+%        predicate a call inside an ITE condition also counts the else
+%        branch's live registers.
+%
+% The decision is per program: one violation anywhere keeps the full save for
+% every clause choice point (it is printed). An instruction the pass does not
+% model also keeps the full save. ITE guards, aggregate frames, builtin/redo,
+% fact-table, foreign and dynamic choice points, lo_clause_snapshot and the
+% other lowered snapshots never use the arity-only form.
+% clause_cp_arity_save(false) turns it off.
+
+%% rust_r0a_instr_options(+Classified, +Rewrites, +Options, -InstrOpts) is det.
+rust_r0a_instr_options(_, _, Options, []) :-
+    option(clause_cp_arity_save(false), Options),
+    !.
+% Testing and measurement only: arity-only clause choice points WITHOUT the
+% check. Unsound for the shapes described above
+% (tests/test_wam_rust_r0a_clause_cps.pl shows each of them failing).
+rust_r0a_instr_options(_, _, Options, ['$r0a_clause_cp_args']) :-
+    option(clause_cp_arity_save(unchecked), Options),
+    !,
+    format(user_error,
+           '  R0a: clause_cp_arity_save(unchecked): arity-only clause choice points without the liveness check~n',
+           []).
+rust_r0a_instr_options(Classified, Rewrites, _, InstrOpts) :-
+    findall(r0a_pred(Pred/Arity, Lines, Kind),
+            ( member(C, Classified),
+              rust_r0a_classified_wam(C, Pred, Arity, WamCode, Kind),
+              atom_string(WamCode, WamStr),
+              split_string(WamStr, "\n", "", Lines0),
+              rust_rewrite_embedded_aggregate(Lines0, Pred/Arity, Rewrites, Lines) ),
+            Preds),
+    (   rust_r0a_program_unsafe(Preds, Why)
+    ->  format(user_error,
+               '  R0a: clause choice points keep the full register save: ~q~n', [Why]),
+        InstrOpts = []
+    ;   InstrOpts = ['$r0a_clause_cp_args']
+    ).
+
+rust_r0a_classified_wam(classified(_, P, A, wam, W), P, A, W, interpreted).
+rust_r0a_classified_wam(classified(_, P, A, lowered, lowered_code(_, W, _)), P, A, W, lowered).
+
+%% rust_r0a_program_unsafe(+Preds, -Why) is semidet.
+%  True (with the first reason found) when some predicate breaks (a') or (b').
+rust_r0a_program_unsafe(Preds, Why) :-
+    member(r0a_pred(PI, Lines, Kind), Preds),
+    catch(rust_r0a_pred_unsafe(PI, Lines, Kind, Why),
+          E,
+          (   E = r0a_unmodelled(Why0)
+          ->  Why = Why0
+          ;   Why = analysis_error(PI, E)
+          )),
+    !.
+
+%% rust_r0a_pred_unsafe(+PI, +Lines, +Kind, -Why) is semidet.
+rust_r0a_pred_unsafe(PI, Lines, Kind, Why) :-
+    rust_r0a_parse(Lines, PI, Instrs, Opens, Labels),
+    length(Instrs, N),
+    N > 0,
+    InstrT =.. [i|Instrs],
+    numlist(1, N, Idxs),
+    maplist(rust_r0a_effect(PI, InstrT, N, Labels), Idxs, Effs),
+    EffT =.. [e|Effs],
+    rust_r0a_liveness(EffT, N, Live),
+    (   rust_r0a_entry_violation(PI, Labels, Live, Why)
+    ->  true
+    ;   OpenT =.. [o|Opens],
+        rust_r0a_call_violation(PI, Kind, EffT, OpenT, Labels, Live, N, Why)
+    ).
+
+%% rust_r0a_parse(+Lines, +PI, -Instrs, -Opens, -Labels)
+%  Instrs: the token lists of the instruction lines, in order (index = PC
+%  offset + 1, as wam_lines_to_rust/6 numbers them). Opens: for each
+%  instruction, the ITE/disjunction else labels whose condition region it is
+%  in. Labels: an assoc from label name to the index of the next instruction.
+rust_r0a_parse(Lines, PI, Instrs, Opens, Labels) :-
+    empty_assoc(L0),
+    rust_r0a_parse(Lines, PI, 1, [], Instrs, Opens, L0, Labels).
+
+rust_r0a_parse([], _, _, _, [], [], L, L).
+rust_r0a_parse([Line|Rest], PI, I, Open, Instrs, Opens, L0, L) :-
+    wam_tokenize_line(Line, Parts0),
+    maplist(clean_comma, Parts0, Parts1),
+    exclude(==(""), Parts1, Parts),
+    (   Parts == []
+    ->  rust_r0a_parse(Rest, PI, I, Open, Instrs, Opens, L0, L)
+    ;   Parts = [First|_],
+        sub_string(First, _, 1, 0, ":")
+    ->  sub_string(First, 0, _, 1, Name),
+        put_assoc(Name, L0, I, L1),
+        exclude(==(Name), Open, Open1),
+        rust_r0a_parse(Rest, PI, I, Open1, Instrs, Opens, L1, L)
+    ;   Instrs = [Parts|Instrs1],
+        Opens = [Open|Opens1],
+        (   Parts = ["try_me_else", Else],
+            sub_string(Else, 0, _, _, "L_ite_else_")
+        ->  Open1 = [Else|Open]
+        ;   Open1 = Open
+        ),
+        I1 is I + 1,
+        rust_r0a_parse(Rest, PI, I1, Open1, Instrs1, Opens1, L0, L)
+    ).
+
+%% rust_r0a_effect(+PI, +InstrT, +N, +Labels, +I, -Effect)
+%  Effect = e(Uses, Defs, Succs, Kind): the A/X registers instruction I reads
+%  and writes (ordsets), its successor indices, and Kind = runs(Op) for an
+%  instruction that can run predicate code, plain otherwise. An unmodelled
+%  instruction throws r0a_unmodelled/1.
+rust_r0a_effect(PI, InstrT, N, Labels, I, e(Uses, Defs, Succs, Kind)) :-
+    arg(I, InstrT, [Op|Args]),
+    Next is I + 1,
+    (   rust_r0a_op(Op, Args, PI, InstrT, N, Labels, I, U0, D0, S0, Kind)
+    ->  true
+    ;   throw(r0a_unmodelled(unmodelled_instruction(PI, I, [Op|Args])))
+    ),
+    include(rust_r0a_ax_reg, U0, U1), sort(U1, Uses),
+    include(rust_r0a_ax_reg, D0, D1), sort(D1, Defs),
+    maplist(rust_r0a_succ_index(Next), S0, S1),
+    include(rust_r0a_within(N), S1, Succs).
+
+rust_r0a_within(N, S) :- S =< N.
+
+rust_r0a_succ_index(Next, next, Next) :- !.
+rust_r0a_succ_index(_, S, S).
+
+rust_r0a_ax_reg(R) :-
+    string(R),
+    string_codes(R, [C|Ds]),
+    memberchk(C, [0'A, 0'X]),
+    Ds \== [],
+    forall(member(D, Ds), code_type(D, digit)).
+
+%% rust_r0a_op(+Op, +Args, +PI, +InstrT, +N, +Labels, +I, -Uses, -Defs, -Succs, -Kind)
+rust_r0a_op("get_variable", [R, A], _, _, _, _, _, [A], [R], [next], plain).
+rust_r0a_op("get_value", [R, A], _, _, _, _, _, [R, A], [], [next], plain).
+rust_r0a_op("get_constant", [_, A], _, _, _, _, _, [A], [], [next], plain).
+rust_r0a_op("get_structure", [_, A], _, _, _, _, _, [A], [], [next], plain).
+rust_r0a_op("get_list", [A], _, _, _, _, _, [A], [], [next], plain).
+rust_r0a_op("unify_variable", [R], _, _, _, _, _, [], [R], [next], plain).
+rust_r0a_op("unify_value", [R], _, _, _, _, _, [R], [], [next], plain).
+rust_r0a_op("unify_constant", [_], _, _, _, _, _, [], [], [next], plain).
+rust_r0a_op("put_variable", [R, A], _, _, _, _, _, [], [R, A], [next], plain).
+rust_r0a_op("put_value", [R, A], _, _, _, _, _, [R], [A], [next], plain).
+rust_r0a_op("put_constant", [_, A], _, _, _, _, _, [], [A], [next], plain).
+rust_r0a_op("put_structure", [_, A], _, _, _, _, _, [], [A], [next], plain).
+rust_r0a_op("put_list", [A], _, _, _, _, _, [], [A], [next], plain).
+rust_r0a_op("set_variable", [R], _, _, _, _, _, [], [R], [next], plain).
+rust_r0a_op("set_value", [R], _, _, _, _, _, [R], [], [next], plain).
+rust_r0a_op("set_constant", [_], _, _, _, _, _, [], [], [next], plain).
+rust_r0a_op("allocate", [], _, _, _, _, _, [], [], [next], plain).
+rust_r0a_op("deallocate", [], _, _, _, _, _, [], [], [next], plain).
+rust_r0a_op("trust_me", [], _, _, _, _, _, [], [], [next], plain).
+rust_r0a_op("trust", [_], _, _, _, _, _, [], [], [next], plain).
+rust_r0a_op("cut_ite", [], _, _, _, _, _, [], [], [next], plain).
+rust_r0a_op("get_level", [_], _, _, _, _, _, [], [], [next], plain).
+rust_r0a_op("cut", [_], _, _, _, _, _, [], [], [next], plain).
+rust_r0a_op("proceed", [], _, _, _, _, _, [], [], [], plain).
+rust_r0a_op("jump", [L], PI, _, _, Labels, _, [], [], [S], plain) :-
+    rust_r0a_label(PI, Labels, L, S).
+rust_r0a_op(Op, [L], PI, _, _, Labels, _, [], [], [next, S], plain) :-
+    memberchk(Op, ["try_me_else", "retry_me_else", "try", "retry"]),
+    rust_r0a_label(PI, Labels, L, S).
+rust_r0a_op("call", [P, NS], _, _, _, _, _, Uses, [], [next], runs("call")) :-
+    rust_r0a_arg_regs(P, NS, Uses).
+rust_r0a_op("call_foreign", [P, NS], _, _, _, _, _, Uses, [], [next], runs("call_foreign")) :-
+    rust_r0a_arg_regs(P, NS, Uses).
+rust_r0a_op("builtin_call", [P, NS], _, _, _, _, _, Uses, [], Succs, Kind) :-
+    rust_r0a_arg_regs(P, NS, Uses),
+    (   P == "fail/0"
+    ->  Succs = [], Kind = plain
+    ;   Succs = [next], Kind = runs("builtin_call")
+    ).
+rust_r0a_op("execute", [P], _, _, _, _, _, Uses, [], [], plain) :-
+    rust_r0a_arg_regs(P, "", Uses).
+% begin_aggregate only records the register names. The code after
+% end_aggregate is reached only by finalisation, which backtracks into the
+% aggregate frame (a full-save choice point pushed by begin_aggregate) and
+% then reads the result register: so that code, and the result register's
+% value at begin_aggregate, are successors/uses of begin_aggregate, not of
+% end_aggregate. The value register is read by end_aggregate.
+rust_r0a_op("begin_aggregate", [_, _, R|W], PI, InstrT, N, _, I, [R|W], [], [next, After], plain) :-
+    I1 is I + 1,
+    (   rust_r0a_matching_end(InstrT, N, I1, 0, End)
+    ->  After is End + 1
+    ;   throw(r0a_unmodelled(unmatched_begin_aggregate(PI, I)))
+    ).
+rust_r0a_op("end_aggregate", [V], _, _, _, _, _, [V], [], [], plain).
+% par_aggregate runs its helpers on clones of the machine.
+rust_r0a_op("par_aggregate", [_, _, _, R|In], _, _, _, _, _, [R|In], [], [next], plain).
+% Indexing (switch_on_constant, _fallthrough, _structure, _term and their
+% second-argument _a2 forms): reads A1 (A2), jumps to any label it names or
+% falls through.
+rust_r0a_op(Op, Entries, PI, _, _, Labels, _, [A], [], [next|Targets], plain) :-
+    sub_string(Op, 0, _, _, "switch_on_"),
+    (   sub_string(Op, _, _, 0, "_a2") -> A = "A2" ; A = "A1" ),
+    foldl(rust_r0a_switch_target(PI, Labels), Entries, [], Targets).
+
+rust_r0a_switch_target(PI, Labels, Entry, Acc, Targets) :-
+    split_string(Entry, ":", "", Pieces),
+    (   Pieces = [_, _|_]
+    ->  last(Pieces, Target),
+        (   Target == "default"
+        ->  Targets = Acc
+        ;   rust_r0a_label(PI, Labels, Target, S),
+            Targets = [S|Acc]
+        )
+    ;   get_assoc(Entry, Labels, S)
+    ->  Targets = [S|Acc]
+    ;   Targets = Acc
+    ).
+
+rust_r0a_label(PI, Labels, L, S) :-
+    (   get_assoc(L, Labels, S)
+    ->  true
+    ;   throw(r0a_unmodelled(unknown_label(PI, L)))
+    ).
+
+rust_r0a_matching_end(InstrT, N, I, Depth, End) :-
+    I =< N,
+    arg(I, InstrT, [Op|_]),
+    I1 is I + 1,
+    (   Op == "end_aggregate"
+    ->  (   Depth =:= 0
+        ->  End = I
+        ;   D1 is Depth - 1,
+            rust_r0a_matching_end(InstrT, N, I1, D1, End)
+        )
+    ;   Op == "begin_aggregate"
+    ->  D1 is Depth + 1,
+        rust_r0a_matching_end(InstrT, N, I1, D1, End)
+    ;   rust_r0a_matching_end(InstrT, N, I1, Depth, End)
+    ).
+
+%% rust_r0a_arg_regs(+PredText, +ArityText, -Regs)
+%  A1..An for a call of P/n (n from ArityText, else from the P/n spelling).
+rust_r0a_arg_regs(P, NS, Regs) :-
+    (   number_string(N, NS)
+    ->  true
+    ;   sub_string(P, B, 1, _, "/"),
+        \+ ( sub_string(P, B1, 1, _, "/"), B1 > B ),
+        B2 is B + 1,
+        sub_string(P, B2, _, 0, AS),
+        number_string(N, AS)
+    ->  true
+    ;   throw(r0a_unmodelled(unknown_arity(P)))
+    ),
+    rust_r0a_a_regs(N, Regs).
+
+%% rust_r0a_a_regs(+N, -Regs): the ordset {A1..AN}.
+rust_r0a_a_regs(N, Regs) :-
+    findall(R, ( between(1, N, K), format(string(R), "A~w", [K]) ), Regs0),
+    sort(Regs0, Regs).
+
+%% rust_r0a_liveness(+EffT, +N, -Live)
+%  Backward liveness of A/X registers to a fixpoint. Live is a term whose
+%  argument I is the ordset live on entry to instruction I.
+rust_r0a_liveness(EffT, N, Live) :-
+    length(Empty, N),
+    maplist(=([]), Empty),
+    Live =.. [live|Empty],
+    rust_r0a_fix(EffT, N, Live).
+
+rust_r0a_fix(EffT, N, Live) :-
+    rust_r0a_pass(N, EffT, Live, false, Changed),
+    (   Changed == true
+    ->  rust_r0a_fix(EffT, N, Live)
+    ;   true
+    ).
+
+rust_r0a_pass(0, _, _, C, C) :- !.
+rust_r0a_pass(I, EffT, Live, C0, C) :-
+    arg(I, EffT, e(Uses, Defs, Succs, _)),
+    foldl(rust_r0a_union_live(Live), Succs, [], Out),
+    ord_subtract(Out, Defs, Out1),
+    ord_union(Out1, Uses, In),
+    arg(I, Live, Old),
+    (   In == Old
+    ->  C1 = C0
+    ;   setarg(I, Live, In),
+        C1 = true
+    ),
+    I1 is I - 1,
+    rust_r0a_pass(I1, EffT, Live, C1, C).
+
+rust_r0a_union_live(Live, S, Acc, Out) :-
+    arg(S, Live, L),
+    ord_union(Acc, L, Out).
+
+%% (a'): only A1..AN live where a retry resumes (L_<P>_<N>_k, k >= 2).
+%  The predicate's entry (instruction 1) is checked too: a call's uses are
+%  modelled as A1..An, which holds only if no callee reads more.
+rust_r0a_entry_violation(Pred/Arity, Labels, Live, clause_entry_reads(Pred/Arity, Label, Extra)) :-
+    rust_r0a_a_regs(Arity, As),
+    (   Label = entry, I = 1
+    ;   rust_r0a_retry_label(Pred, Arity, Labels, 2, Label, I)
+    ),
+    arg(I, Live, L),
+    ord_subtract(L, As, Extra),
+    Extra \== [],
+    !.
+
+%  The retry labels L_<P>_<N>_2, L_<P>_<N>_3, ... present in the predicate.
+rust_r0a_retry_label(Pred, Arity, Labels, K, Label, I) :-
+    format(string(L0), "L_~w_~w_~w", [Pred, Arity, K]),
+    get_assoc(L0, Labels, I0),
+    (   Label = L0, I = I0
+    ;   K1 is K + 1,
+        rust_r0a_retry_label(Pred, Arity, Labels, K1, Label, I)
+    ).
+
+%% (b'): nothing A/X live after an instruction that can run predicate code.
+rust_r0a_call_violation(PI, Kind, EffT, OpenT, Labels, Live, N,
+                        live_across_call(PI, I, Op, Regs)) :-
+    between(1, N, I),
+    arg(I, EffT, e(_, _, Succs, runs(Op))),
+    findall(L, ( member(S, Succs), arg(S, Live, L) ), Ls0),
+    (   Kind == lowered
+    ->  arg(I, OpenT, Open),
+        findall(L, ( member(E, Open), get_assoc(E, Labels, S), arg(S, Live, L) ), Ls1)
+    ;   Ls1 = []
+    ),
+    append(Ls0, Ls1, Ls),
+    ord_union(Ls, Regs),
+    Regs \== [],
+    !.
+
+%% collect_wam_entries(+Classified, +StartPC, +Rewrites, +InstrOpts,
+%%                     -WamEntries, -AllInstrParts, -AllLabelParts)
 %  Iterates over classified predicates, collecting WAM code with cumulative PCs.
-%  WamEntries is a list of wam_entry(Pred, Arity, StartPC) terms.
-collect_wam_entries([], _, _, [], [], []).
-collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC, Rewrites,
+%  WamEntries is a list of wam_entry(Pred, Arity, StartPC) terms. InstrOpts are
+%  the program-wide instruction options (R0a: see rust_r0a_instr_options/4).
+collect_wam_entries([], _, _, _, [], [], []).
+collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC, Rewrites, InstrOpts,
                     [wam_entry(Pred, Arity, PC)|RestEntries],
                     AllInstrs, AllLabels) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines0),
     rust_rewrite_embedded_aggregate(Lines0, Pred/Arity, Rewrites, Lines),
-    wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
+    wam_lines_to_rust(Lines, PC, Pred/Arity, InstrOpts, InstrParts, LabelParts),
     % Count instructions to compute next PC
     length(InstrParts, InstrCount),
     NextPC is PC + InstrCount,
-    collect_wam_entries(Rest, NextPC, Rewrites, RestEntries, RestInstrs, RestLabels),
+    collect_wam_entries(Rest, NextPC, Rewrites, InstrOpts, RestEntries, RestInstrs, RestLabels),
     append(InstrParts, RestInstrs, AllInstrs),
     append(LabelParts, RestLabels, AllLabels).
-collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode, _))|Rest], PC, Rewrites,
+collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode, _))|Rest], PC, Rewrites, InstrOpts,
                     [wam_entry(Pred, Arity, PC)|RestEntries],
                     AllInstrs, AllLabels) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines0),
     rust_rewrite_embedded_aggregate(Lines0, Pred/Arity, Rewrites, Lines),
-    wam_lines_to_rust(Lines, PC, Pred/Arity, [], InstrParts, LabelParts),
+    wam_lines_to_rust(Lines, PC, Pred/Arity, InstrOpts, InstrParts, LabelParts),
     length(InstrParts, InstrCount),
     NextPC is PC + InstrCount,
-    collect_wam_entries(Rest, NextPC, Rewrites, RestEntries, RestInstrs, RestLabels),
+    collect_wam_entries(Rest, NextPC, Rewrites, InstrOpts, RestEntries, RestInstrs, RestLabels),
     append(InstrParts, RestInstrs, AllInstrs),
     append(LabelParts, RestLabels, AllLabels).
-collect_wam_entries([_|Rest], PC, Rewrites, Entries, Instrs, Labels) :-
-    collect_wam_entries(Rest, PC, Rewrites, Entries, Instrs, Labels).
+collect_wam_entries([_|Rest], PC, Rewrites, InstrOpts, Entries, Instrs, Labels) :-
+    collect_wam_entries(Rest, PC, Rewrites, InstrOpts, Entries, Instrs, Labels).
 
 %% generate_predicate_codes(+Classified, +WamEntries, +Options, -PredCodes)
 %  Generates Rust code for each classified predicate. Options is threaded so the

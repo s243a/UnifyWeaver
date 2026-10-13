@@ -129,7 +129,12 @@ fn main() {
         vm.reset_query();
         vm.pc = pc;
         vm.set_reg("A1", Value::Unbound("_N".to_string().into()));
-        if vm.run() {
+        // R0a (D135): A1 is read back from the register after the run, so
+        // clause choice points keep the full register save during it.
+        vm.clause_cp_full_save = true;
+        let ok = vm.run();
+        vm.clause_cp_full_save = false;
+        if ok {
             match vm.get_reg("A1").map(|v| vm.deref_var(&v)) {
                 Some(Value::Integer(i)) => i as f64,
                 Some(Value::Float(f)) => f,

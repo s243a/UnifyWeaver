@@ -480,6 +480,9 @@ fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<Strin
             Instruction::TryMeElse(label) => {
                 labels.get(label).copied().map(Instruction::TryMeElsePc)
             }
+            Instruction::TryMeElseArgs(label, arity) => {
+                labels.get(label).copied().map(|pc| Instruction::TryMeElsePcArgs(pc, *arity))
+            }
             Instruction::RetryMeElse(label) => {
                 labels.get(label).copied().map(Instruction::RetryMeElsePc)
             }
