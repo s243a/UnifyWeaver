@@ -13980,7 +13980,7 @@ plawk_assoc_rule_action_blocks(RuleIndex,
 % skip, then build the row as the chosen fields joined by the field separator
 % (so a reader's field projection recovers them), intern it, and store the id.
 % The join is a single snprintf with a compile-time format ("%.*s<sep>..."),
-% each field made null-safe (empty on a missing field), into a fixed buffer.
+% each field made null-safe (empty on a missing field), into a measured heap buffer.
 plawk_assoc_rule_action_blocks(RuleIndex,
         [assoc_set_row_cons_action(Index, _ArrayName, TableIndex, KeyIndex, Fields) | Rest],
         NextLabel, FieldSeparator) -->
@@ -14004,27 +14004,17 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       plawk_row_cons_field_lines(Fields, B, EmptyName, FieldSeparator, 0,
           FieldLines, ArgFrags),
       atomic_list_concat(ArgFrags, ', ', ArgsIR),
-      format(atom(BufA), '  %~w_buf = alloca [4096 x i8]', [B]),
-      format(atom(BufP),
-          '  %~w_bufp = getelementptr [4096 x i8], [4096 x i8]* %~w_buf, i64 0, i64 0',
-          [B, B]),
+      atom_concat(', ', ArgsIR, ArgsTail),
       format(atom(FmtP),
           '  %~w_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
           [B, _FmtBytes, _FmtBytes, FmtName]),
-      format(atom(Snp),
-          '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_bufp, i64 4096, i8* %~w_fmtp, ~w)',
-          [B, B, B, ArgsIR]),
-      format(atom(RowLen), '  %~w_row_len = call i64 @strlen(i8* %~w_bufp)', [B, B]),
-      format(atom(RowId),
-          '  %~w_row_id = call i64 @wam_intern_atom(i8* %~w_bufp, i64 %~w_row_len)',
-          [B, B, B]),
+      plawk_snprintf_heap_intern_lines(B, ArgsTail, SetVal, InternLines),
       format(atom(SetRes), '%~w_setrc', [B]),
-      format(atom(SetVal), '%~w_row_id', [B]),
       plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, SetVal, Set),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(EmptyGlobal), global(FmtGlobal)], KeyGlobals, [Label],
-              KeyLines, FieldLines,
-              [BufA, BufP, FmtP, Snp, RowLen, RowId, Set, Next, '']], Lines)
+              KeyLines, FieldLines, [FmtP], InternLines,
+              [Set, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
@@ -20805,7 +20795,7 @@ plawk_scalar_update_operation_ir_(set(Expr), _Slot, FieldSeparator, Prefix, Slot
 
 % Build a string RHS into an interned atom id (returned as the SSA value).
 % A bare literal interns its own global; a concat snprintf's its `%.*s` field
-% slots and literal segments into a 4096-byte stack buffer, then interns the
+% slots and literal segments into a measured heap buffer, then interns the
 % result (the assignment mirror of the print concat).
 % `sprintf("fmt", args...)`: reuse the printf format engine (arg lowering +
 % format rewrite) to snprintf into the buffer, then intern -- the string mirror
@@ -20826,25 +20816,13 @@ plawk_str_build_ir(sprintf(string(Format), Args), FieldSeparator, Base, IdValueI
     format(atom(FmtP),
         '  %~w_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
         [Base, FmtBytes, FmtBytes, FmtName]),
-    format(atom(BufA), '  %~w_buf = alloca [4096 x i8]', [Base]),
-    format(atom(BufP),
-        '  %~w_bufp = getelementptr [4096 x i8], [4096 x i8]* %~w_buf, i64 0, i64 0',
-        [Base, Base]),
     ( CallArgsIR == ''
-    -> format(atom(Snp),
-           '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_bufp, i64 4096, i8* %~w_fmtp)',
-           [Base, Base, Base])
-    ;  format(atom(Snp),
-           '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_bufp, i64 4096, i8* %~w_fmtp, ~w)',
-           [Base, Base, Base, CallArgsIR])
+    -> ArgsTail = ''
+    ;  atom_concat(', ', CallArgsIR, ArgsTail)
     ),
-    format(atom(LenL), '  %~w_len = call i64 @strlen(i8* %~w_bufp)', [Base, Base]),
-    format(atom(IdL),
-        '  %~w_id = call i64 @wam_intern_atom(i8* %~w_bufp, i64 %~w_len)',
-        [Base, Base, Base]),
-    format(atom(IdValueIR), '%~w_id', [Base]),
+    plawk_snprintf_heap_intern_lines(Base, ArgsTail, IdValueIR, InternLines),
     GlobalParts = [FmtGlobal | ArgGlobalParts],
-    append(ArgSetupParts, [FmtP, BufA, BufP, Snp, LenL, IdL], SetupLines).
+    append([ArgSetupParts, [FmtP], InternLines], SetupLines).
 plawk_str_build_ir(string(Value), _FieldSeparator, Base, IdValueIR,
         [GlobalIR], [PtrLine, IdLine]) :-
     format(atom(StrName), '~w_lit', [Base]),
@@ -20918,22 +20896,35 @@ plawk_str_build_ir(concat(Parts), FieldSeparator, Base, IdValueIR,
     ;  atomic_list_concat(ArgFrags, ', ', ArgsJoined),
        atom_concat(', ', ArgsJoined, ArgsSuffix)
     ),
-    format(atom(BufA), '  %~w_buf = alloca [4096 x i8]', [Base]),
-    format(atom(BufP),
-        '  %~w_bufp = getelementptr [4096 x i8], [4096 x i8]* %~w_buf, i64 0, i64 0',
-        [Base, Base]),
     format(atom(FmtP),
         '  %~w_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
         [Base, FmtBytes, FmtBytes, FmtName]),
+    plawk_snprintf_heap_intern_lines(Base, ArgsSuffix, IdValueIR, InternLines),
+    append([FieldLines, [FmtP], InternLines], SetupLines).
+
+%% plawk_snprintf_heap_intern_lines(+Base, +ArgsTail, -IdValueIR, -Lines)
+%  Format `%Base_fmtp` with ArgsTail (`''` or `, ARGS`) into a heap buffer sized
+%  by a measuring snprintf, intern the text (the intern copies), and free the
+%  buffer. A fixed stack buffer here truncated at 4095 bytes, and an alloca in a
+%  rule body grows the stack every record (a crash after a few thousand).
+%  The interned length is strlen's, so a value stops at an embedded NUL as before.
+plawk_snprintf_heap_intern_lines(Base, ArgsTail, IdValueIR,
+        [Need, Need64, Size, Buf, Snp, LenL, IdL, Free]) :-
+    format(atom(Need),
+        '  %~w_need = call i32 (i8*, i64, i8*, ...) @snprintf(i8* null, i64 0, i8* %~w_fmtp~w)',
+        [Base, Base, ArgsTail]),
+    format(atom(Need64), '  %~w_need64 = sext i32 %~w_need to i64', [Base, Base]),
+    format(atom(Size), '  %~w_size = add i64 %~w_need64, 1', [Base, Base]),
+    format(atom(Buf), '  %~w_bufp = call i8* @malloc(i64 %~w_size)', [Base, Base]),
     format(atom(Snp),
-        '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_bufp, i64 4096, i8* %~w_fmtp~w)',
-        [Base, Base, Base, ArgsSuffix]),
+        '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_bufp, i64 %~w_size, i8* %~w_fmtp~w)',
+        [Base, Base, Base, Base, ArgsTail]),
     format(atom(LenL), '  %~w_len = call i64 @strlen(i8* %~w_bufp)', [Base, Base]),
     format(atom(IdL),
         '  %~w_id = call i64 @wam_intern_atom(i8* %~w_bufp, i64 %~w_len)',
         [Base, Base, Base]),
-    format(atom(IdValueIR), '%~w_id', [Base]),
-    append(FieldLines, [BufA, BufP, FmtP, Snp, LenL, IdL], SetupLines).
+    format(atom(Free), '  call void @free(i8* %~w_bufp)', [Base]),
+    format(atom(IdValueIR), '%~w_id', [Base]).
 
 % The snprintf format for a string-concat: `%.*s` per field slot, literal
 % segments inline (with `%` escaped). No separator -- operands are adjacent.
