@@ -147,6 +147,17 @@ wam_llvm_runtime_chunk(builtin_dispatch, wam_awk_strtod, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_awk_f64_to_i64, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_awk_field_int_value, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_f64_value, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_reserve, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_data, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_commit, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_len, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_set, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_grow, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_dup, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_free, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_key, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_eq_id, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_sv_cstr, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_stream_fail_value, streams).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_stream_open_value, streams).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_stream_open_fd_value, streams).

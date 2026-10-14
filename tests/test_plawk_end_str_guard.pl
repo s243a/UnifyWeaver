@@ -179,12 +179,15 @@ test(slot_kinds_that_hold_text) :-
 % the input path and strcmps the EOF sentinel -- so a bare-name assertion would
 % pass no matter what the guard emitted.
 
-% An END equality guard interns the literal and compares atom ids.
+% An END equality guard interns the literal and compares it with the slot's value
+% through @wam_sv_eq_id: an id match for an atom, the bytes for an owned string
+% handle (docs/design/PLAWK_STRING_STORAGE.md section 3).
 test(end_equality_ir_compares_interned_ids) :-
     plawk_parse_string("{ s = $1 } END { if (s == \"c\") print s }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_endif_litid = call i64 @wam_intern_atom'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_endif_cond = icmp eq i64'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_endif_eq = call i1 @wam_sv_eq_id'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_endif_cond = icmp eq i1 %plawk_endif_eq, true'))),
     !.
 
 % An END ordering guard resolves the id to text and strcmps.
