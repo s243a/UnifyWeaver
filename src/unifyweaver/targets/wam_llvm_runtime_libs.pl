@@ -100,6 +100,7 @@ wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_i64_exists, assoc_table).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_i64_print, assoc_table).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_str_print, assoc_table).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_i64_delete, assoc_table).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_assoc_sv_delete, assoc_table).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_str_split_into, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_str_split_into_re, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_fields_new, fields).

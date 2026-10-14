@@ -774,13 +774,16 @@ plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
     !,
     plawk_program_counter_arrays(Program, Counters),
     plawk_program_string_arrays(Program, Strings),
+    plawk_program_text_arrays(Program, Texts),
     setup_call_cleanup(
         ( nb_setval(plawk_counter_arrays, Counters),
           nb_setval(plawk_string_arrays, Strings),
+          nb_setval(plawk_text_arrays, Texts),
           nb_setval(plawk_counter_arrays_scope, active) ),
         once(plawk_program_native_driver_ir(Program, InputPath, DriverIR)),
         ( nb_setval(plawk_counter_arrays, []),
           nb_setval(plawk_string_arrays, []),
+          nb_setval(plawk_text_arrays, []),
           nb_setval(plawk_counter_arrays_scope, idle) )).
 plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
     \+ ( nb_current(plawk_f64_arrays, Active), Active \== [] ),
@@ -862,6 +865,35 @@ plawk_string_array(Array) :-
     nb_current(plawk_string_arrays, Arrays),
     is_list(Arrays),
     memberchk(Array, Arrays).
+
+%% plawk_program_text_arrays(+Program, -Texts) is det.
+%  TEXT-valued arrays: every write (deletes aside) stores text -- a string or
+%  strnum element write, a row capture or a row constructor. Their cells may own
+%  string handles (docs/design/PLAWK_STRING_STORAGE.md section 4, S3), so a delete
+%  frees the cell (@wam_assoc_sv_delete). A split target is not one: its pieces
+%  are interned atoms.
+plawk_program_text_arrays(Program, Texts) :-
+    plawk_array_effects(Program, Effects),
+    findall(A, ( member(write(A, How), Effects), How \== delete ), As0),
+    sort(As0, As),
+    findall(A,
+        ( member(A, As),
+          forall(( member(write(A, How), Effects), How \== delete ),
+                 plawk_text_write(How)) ),
+        Texts).
+
+plawk_text_write(row).
+plawk_text_write(set(Value)) :- plawk_str_value_kind(Value, _).
+
+plawk_text_array(Array) :-
+    nb_current(plawk_text_arrays, Arrays),
+    is_list(Arrays),
+    memberchk(Array, Arrays).
+
+%% plawk_assoc_delete_kind(+ArrayName, -Kind)
+%  The delete entry for an array's table: `sv` frees an owned handle first.
+plawk_assoc_delete_kind(ArrayName, sv) :- plawk_text_array(ArrayName), !.
+plawk_assoc_delete_kind(_ArrayName, i64).
 
 plawk_counter_array(Array) :-
     nb_current(plawk_counter_arrays, Arrays),
@@ -6833,9 +6865,11 @@ plawk_str_value_kind(Value, string) :-
 
 %% plawk_str_value_parts(+Value, -Parts) is semidet.
 %  A string-shaped element value as the parts the store joins: fld(N) for field
-%  N (N > 0; `= $0` is row capture, its own term), lit(S) for a string literal.
-%  Only fields and literals for now -- a scalar or an element inside the
-%  concatenation declines.
+%  N (N > 0; `= $0` is row capture, its own term), lit(S) for a string literal,
+%  and -- inside a concatenation -- elem(A, Key) for an element read. Every write
+%  site admits elem only as the write's OWN element, the self-append
+%  `a[k] = a[k] X` (plawk_str_self_parts/4; docs/design/PLAWK_STRING_STORAGE.md,
+%  S3); any other element read, or a scalar, declines.
 plawk_str_value_parts(field(N), [fld(N)]) :- integer(N), N > 0, !.
 plawk_str_value_parts(string(S), [lit(S)]) :- string(S), !.
 plawk_str_value_parts(concat(Ps), Parts) :-
@@ -6844,6 +6878,19 @@ plawk_str_value_parts(concat(Ps), Parts) :-
 
 plawk_str_value_part(field(N), fld(N)) :- integer(N), N > 0.
 plawk_str_value_part(string(S), lit(S)) :- string(S).
+plawk_str_value_part(assoc(var(A), Key), elem(A, Key)) :- atom(A).
+
+%% plawk_str_self_parts(+Parts0, +ArrayName, +Key, -Parts) is semidet.
+%  Every element part must be the write's own element (same array, same key
+%  term); it becomes `self`. Any other element read inside the value declines.
+plawk_str_self_parts(Parts0, ArrayName, Key, Parts) :-
+    maplist(plawk_str_self_part(ArrayName, Key), Parts0, Parts).
+
+plawk_str_self_part(ArrayName, Key, elem(A, K), self) :-
+    !,
+    A == ArrayName,
+    K == Key.
+plawk_str_self_part(_ArrayName, _Key, Part, Part).
 
 %% plawk_array_kinds_ok(+Program) is semidet.
 %  The §5.2 mixing rules, for every array that has an element write
@@ -8979,9 +9026,11 @@ plawk_forin_end_guard_lines(guard_value_lex_f(Op, M, D), TableIndex, Lines, Cond
     plawk_forin_str_f_guard_lines(Op, M, D, 2, TableIndex, Lines, CondVar).
 
 % String equality (`arr[k] == "x"` / `!= "x"`): intern the literal into an atom
-% id (from a module-level constant) and icmp it against the element's stored id.
-% Interning is canonical, so equal strings share an id -- no strcmp needed. The
-% intern is idempotent (a hash lookup), so doing it per iteration is correct.
+% id (from a module-level constant) and compare it with the element's value
+% through @wam_sv_eq_id: an id match is equality (interning is canonical), and a
+% cell owning a string handle (docs/design/PLAWK_STRING_STORAGE.md S3) compares
+% its bytes. The intern is idempotent (a hash lookup), so doing it per iteration
+% is correct.
 plawk_forin_end_guard_lines(guard_value_streq(Op, Text), TableIndex, Lines, CondVar,
         GuardGlobal) :-
     plawk_forin_cmp_pred(Op, Pred),
@@ -8994,10 +9043,12 @@ plawk_forin_end_guard_lines(guard_value_streq(Op, Text), TableIndex, Lines, Cond
         '  %forin_glit = call i64 @wam_intern_atom(i8* %forin_glitp, i64 ~w)',
         [StringLen]),
     plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
+    format(atom(EqLine),
+        '  %forin_geq = call i1 @wam_sv_eq_id(i64 %forin_gval, i64 %forin_glit)', []),
     format(atom(CmpLine),
-        '  %forin_gcmp = icmp ~w i64 %forin_gval, %forin_glit', [Pred]),
+        '  %forin_gcmp = icmp ~w i1 %forin_geq, true', [Pred]),
     CondVar = '%forin_gcmp',
-    Lines = [PtrLine, LitLine, ValLine, CmpLine].
+    Lines = [PtrLine, LitLine, ValLine, EqLine, CmpLine].
 % String ordering (`arr[k] < "x"` etc.): resolve the element text and strcmp it
 % against the literal (a NUL-terminated module constant), testing the sign
 % against 0 with the ordering predicate -- the same lowering the scalar string
@@ -11234,8 +11285,12 @@ plawk_mixed_update_action(Action) :-
 plawk_mixed_str_write(set_assoc(var(A), Key0, Value), A, Key, Parts) :-
     atom(A),
     plawk_mixed_str_key(Key0, Key),
-    plawk_str_value_parts(Value, Parts),
-    \+ memberchk(elem(_, _), Parts).
+    plawk_str_value_parts(Value, Parts0),
+    (   Key = field(_)
+    ->  plawk_str_self_parts(Parts0, A, Key0, Parts)
+    ;   Parts = Parts0,
+        \+ memberchk(elem(_, _), Parts)
+    ).
 plawk_mixed_str_write(set_row(var(A), Key0), A, Key, [fld(0)]) :-
     atom(A),
     plawk_mixed_str_key(Key0, Key).
@@ -11793,22 +11848,26 @@ plawk_assoc_body_action_spec(set_assoc(var(ArrayName), field(KeyIndex), Value),
 plawk_assoc_body_action_spec(set_assoc(var(ArrayName), field(KeyIndex), Value),
         assoc_set_str(ArrayName, KeyIndex, Parts)) :-
     integer(KeyIndex), KeyIndex > 0,
-    plawk_str_value_parts(Value, Parts).
+    plawk_str_value_parts(Value, Parts0),
+    plawk_str_self_parts(Parts0, ArrayName, field(KeyIndex), Parts).
 % `a[NR] = ...` (arrays PR 5c, the tac idiom): keyed by NR's decimal text, as awk
-% keys `a[1]` and `a["1"]` alike.
+% keys `a[1]` and `a["1"]` alike. NR is a fresh key every record, so no self part.
 plawk_assoc_body_action_spec(set_assoc(var(ArrayName), special('NR'), Value),
         assoc_set_str(ArrayName, nr, Parts)) :-
-    plawk_str_value_parts(Value, Parts).
+    plawk_str_value_parts(Value, Parts),
+    \+ memberchk(elem(_, _), Parts).
 plawk_assoc_body_action_spec(set_row(var(ArrayName), special('NR')),
         assoc_set_row(ArrayName, nr)).
 plawk_assoc_body_action_spec(set_assoc(var(ArrayName), subsep_key(Fields), Value),
         assoc_set_str(ArrayName, subsep_key(Comps), Parts)) :-
     plawk_subsep_key_components(Fields, Comps),
-    plawk_str_value_parts(Value, Parts).
+    plawk_str_value_parts(Value, Parts0),
+    plawk_str_self_parts(Parts0, ArrayName, subsep_key(Fields), Parts).
 plawk_assoc_body_action_spec(set_assoc(var(ArrayName), Lit, Value),
         assoc_set_str(ArrayName, subsep_key(Comps), Parts)) :-
     plawk_assoc_literal_key_comps(Lit, Comps),
-    plawk_str_value_parts(Value, Parts).
+    plawk_str_value_parts(Value, Parts0),
+    plawk_str_self_parts(Parts0, ArrayName, Lit, Parts).
 % Associative add-assign `arr[$k] += DELTA`: fold DELTA (a field value or an
 % integer constant) into the table at the key interned from field k. The
 % general form of `arr[$k]++` and the pass-1 half of per-key normalise. v1
@@ -13911,7 +13970,7 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_action2(Index, _ArrayName, Tabl
 % key builder always yields a valid key, and the runtime delete is a no-op when
 % that key is absent -- so there is no missing-key skip.
 plawk_assoc_rule_action_blocks(RuleIndex,
-        [assoc_delete_n_action(Index, _ArrayName, TableIndex, Comps) | Rest],
+        [assoc_delete_n_action(Index, ArrayName, TableIndex, Comps) | Rest],
         NextLabel, FieldSeparator) -->
     { integer(FieldSeparator),
       ( Rest == []
@@ -13925,7 +13984,8 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(KeyId), '%~w_key_id', [Base]),
       plawk_subsep_key_n_ir(Base, '%line', Comps, FieldSeparator, KeyId,
           GlobalDecl, KeyLines),
-      plawk_assoc_elem_void_line(delete, TableIndex, KeyId, i64, Del),
+      plawk_assoc_delete_kind(ArrayName, DelKind),
+      plawk_assoc_elem_void_line(delete, TableIndex, KeyId, DelKind, Del),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(GlobalDecl), Label], KeyLines, [Del, Next, '']], Lines)
     },
@@ -13973,7 +14033,7 @@ plawk_assoc_rule_action_blocks(RuleIndex,
 % `delete arr[$k]`: same key-intern as the counted inc (a missing field is the
 % key "", as in awk), but call the void backward-shift delete instead of the inc;
 % the runtime delete is itself a no-op if the interned key is not in the table.
-plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest], NextLabel, FieldSeparator) -->
+plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, ArrayName, TableIndex, KeyIndex) | Rest], NextLabel, FieldSeparator) -->
     { ( Rest == []
       -> ActionNextLabel = NextLabel
       ;  NextIndex is Index + 1,
@@ -14004,7 +14064,8 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, _ArrayName
           '  %assoc_rule_~w_action_~w_key_id = call i64 @wam_intern_atom(i8* %assoc_rule_~w_action_~w_key_sptr, i64 %assoc_rule_~w_action_~w_key_len)',
           [RuleIndex, Index, RuleIndex, Index, RuleIndex, Index]),
       format(atom(EcArg22), '%assoc_rule_~w_action_~w_key_id', [RuleIndex, Index]),
-      plawk_assoc_elem_void_line(delete, TableIndex, EcArg22, i64, Del),
+      plawk_assoc_delete_kind(ArrayName, DelKind),
+      plawk_assoc_elem_void_line(delete, TableIndex, EcArg22, DelKind, Del),
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [global(EmptyGlobal), Label, Slice, Ptr, Len, Missing, Branch, '', HaveLabel, SafePtr, KeyId, Del, Next, ''],
@@ -14017,7 +14078,7 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_action(Index, _ArrayName
 % at plan time, so there is no literal to intern and no global to emit. Simpler than the
 % interning sibling below for exactly that reason.
 plawk_assoc_rule_action_blocks(RuleIndex,
-        [assoc_delete_int_action(Index, _ArrayName, TableIndex, N) | Rest],
+        [assoc_delete_int_action(Index, ArrayName, TableIndex, N) | Rest],
         NextLabel, FieldSeparator) -->
     { ( Rest == []
       -> ActionNextLabel = NextLabel
@@ -14027,12 +14088,13 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       ),
       format(atom(Base), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
       format(atom(Label), '~w:', [Base]),
-      plawk_assoc_elem_void_line(delete, TableIndex, N, i64, Del),
+      plawk_assoc_delete_kind(ArrayName, DelKind),
+      plawk_assoc_elem_void_line(delete, TableIndex, N, DelKind, Del),
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [Label, Del, Next, ''],
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
-plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_lit_action(Index, _ArrayName, TableIndex, Str) | Rest], NextLabel, FieldSeparator) -->
+plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_lit_action(Index, ArrayName, TableIndex, Str) | Rest], NextLabel, FieldSeparator) -->
     { ( Rest == []
       -> ActionNextLabel = NextLabel
       ;  NextIndex is Index + 1,
@@ -14050,7 +14112,8 @@ plawk_assoc_rule_action_blocks(RuleIndex, [assoc_delete_lit_action(Index, _Array
           '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_ptr, i64 ~w)',
           [Base, Base, StrLen]),
       format(atom(EcArg23), '%~w_key_id', [Base]),
-      plawk_assoc_elem_void_line(delete, TableIndex, EcArg23, i64, Del),
+      plawk_assoc_delete_kind(ArrayName, DelKind),
+      plawk_assoc_elem_void_line(delete, TableIndex, EcArg23, DelKind, Del),
       format(atom(Next), '  br label %~w', [ActionNextLabel])
     },
     [global(GlobalLine), Label, Ptr, KeyId, Del, Next, ''],
@@ -14200,10 +14263,12 @@ plawk_assoc_rule_action_blocks(RuleIndex,
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
-% Row capture `arr[$k] = $0`: same key-intern (missing field -> ""), then intern
-% the whole current record (field 0, a stable copy of the transient line) and
-% store that atom id as the table's value (str-value / replace semantics via
-% @wam_assoc_i64_set). A later pass resolves the id back to the row's bytes.
+% Row capture `arr[$k] = $0`: same key-intern (missing field -> ""), then copy
+% the whole current record (field 0, a stable copy of the transient line) into
+% the cell's owned string handle -- the old one's buffer reused (@wam_sv_set),
+% docs/design/PLAWK_STRING_STORAGE.md section 4 -- and store it (replace
+% semantics via @wam_assoc_i64_set). A later pass resolves it back to the row's
+% bytes through @wam_atom_to_string, as it did the interned id.
 plawk_assoc_rule_action_blocks(RuleIndex,
         [assoc_set_row_action(Index, _ArrayName, TableIndex, KeyIndex) | Rest],
         NextLabel, FieldSeparator) -->
@@ -14218,21 +14283,23 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       plawk_assoc_row_key_prologue(KeyIndex, B, FieldSeparator, ActionNextLabel,
           KeyIdIR, KeyGlobals, KeyLines),
       % the row value: the whole record ($0 is %line, the record atom). The
-      % transient line buffer is reused, so intern a stable copy of its bytes
-      % (atom -> string -> re-intern) and store that id as the table's value.
+      % transient line buffer is reused, so copy its bytes into the cell's own
+      % handle and store that as the table's value.
       format(atom(RowLineId), '  %~w_row_lineid = extractvalue %Value %line, 1', [B]),
       format(atom(RowPtr),
           '  %~w_row_ptr = call i8* @wam_atom_to_string(i64 %~w_row_lineid)', [B, B]),
       format(atom(RowLen), '  %~w_row_len = call i64 @strlen(i8* %~w_row_ptr)', [B, B]),
+      format(atom(OldIR), '%~w_row_old', [B]),
+      plawk_assoc_elem_call_line(OldIR, i64, i64, get, TableIndex, KeyIdIR, OldL),
       format(atom(RowId),
-          '  %~w_row_id = call i64 @wam_intern_atom(i8* %~w_row_ptr, i64 %~w_row_len)',
-          [B, B, B]),
+          '  %~w_row_id = call i64 @wam_sv_set(i64 ~w, i8* %~w_row_ptr, i64 %~w_row_len)',
+          [B, OldIR, B, B]),
       format(atom(SetRes), '%~w_setrc', [B]),
       format(atom(SetVal), '%~w_row_id', [B]),
       plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, SetVal, Set),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([KeyGlobals, [Label], KeyLines,
-              [RowLineId, RowPtr, RowLen, RowId, Set, Next, '']], Lines)
+              [RowLineId, RowPtr, RowLen, OldL, RowId, Set, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
@@ -14266,45 +14333,89 @@ plawk_assoc_rule_action_blocks(RuleIndex,
 
 %% plawk_str_value_store_lines(+B, +TableIndex, +KeyIdIR, +Parts, +FieldSeparator,
 %%     -Globals, -Lines)
-%  Straight-line: join Parts (snprintf into a measured, malloc'd buffer), intern,
-%  free, and store the id at KeyIdIR. Shared by the assoc chain's block and the
-%  mixed walker's row (arrays PRs 5a / 5c).
+%  Straight-line: join Parts into the element's OWNED string handle and store it
+%  at KeyIdIR (docs/design/PLAWK_STRING_STORAGE.md section 4, S3). The cell's old
+%  value (0 when absent) is fetched first:
+%  - `a[k] = a[k] X` (a leading `self`, not read again): X is formatted onto the
+%    end of the old text in place (@wam_sv_grow, capacity doubling), so n appends
+%    cost O(total bytes) -- interning each new value held O(n^2) bytes;
+%  - any other `self` (`a[k] = X a[k]`): a fresh handle, the old one freed after
+%    the format has read it;
+%  - no `self`: the old handle's buffer reused when big enough (@wam_sv_reserve).
+%  A lone field (`a[k] = $N`) is copied straight from its slice (@wam_sv_set), no
+%  format. Shared by the assoc chain's block and the mixed walker's row (arrays
+%  PRs 5a / 5c).
+plawk_str_value_store_lines(B, TableIndex, KeyIdIR, [fld(N)], FieldSeparator,
+        [], Lines) :-
+    !,
+    format(atom(OldIR), '%~w_vold', [B]),
+    plawk_assoc_elem_call_line(OldIR, i64, i64, get, TableIndex, KeyIdIR, OldL),
+    format(atom(VB), '~w_v', [B]),
+    format(atom(PtrVar), '%~w_ptr', [VB]),
+    format(atom(LenVar), '%~w_len', [VB]),
+    plawk_field_text_lines(N, FieldSeparator, VB, PtrVar, LenVar, SrcLines),
+    format(atom(H), '%~w_h', [VB]),
+    format(atom(SetL), '  ~w = call i64 @wam_sv_set(i64 ~w, i8* ~w, i64 ~w)',
+        [H, OldIR, PtrVar, LenVar]),
+    format(atom(SetRes), '%~w_setrc', [B]),
+    plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, H, Set),
+    append([[OldL], SrcLines, [SetL, Set]], Lines).
 plawk_str_value_store_lines(B, TableIndex, KeyIdIR, Parts, FieldSeparator,
         [EmptyGlobal, FmtGlobal], Lines) :-
     format(atom(EmptyName), '~w_vempty', [B]),
     format(atom(EmptyGlobal),
         '@.~w = private constant [1 x i8] zeroinitializer', [EmptyName]),
-    plawk_str_parts_format_atom(Parts, FmtAtom),
+    format(atom(OldIR), '%~w_vold', [B]),
+    plawk_assoc_elem_call_line(OldIR, i64, i64, get, TableIndex, KeyIdIR, OldL),
+    (   Parts = [self | FmtParts], \+ memberchk(self, FmtParts)
+    ->  Mode = append
+    ;   memberchk(self, Parts)
+    ->  Mode = fresh, FmtParts = Parts
+    ;   Mode = reuse, FmtParts = Parts
+    ),
+    plawk_str_parts_format_atom(FmtParts, FmtAtom),
     format(atom(FmtName), '~w_vfmt', [B]),
     llvm_emit_c_string_global(FmtName, FmtAtom, FmtGlobal, _FmtLen, FmtBytes),
-    findall(N, member(fld(N), Parts), FieldIndexes),
+    findall(N, member(fld(N), FmtParts), FieldIndexes),
     format(atom(VB), '~w_v', [B]),
     plawk_row_cons_field_lines(FieldIndexes, VB, EmptyName, FieldSeparator, 0,
-        FieldLines, ArgFrags),
+        FieldLines, FieldFrags),
+    format(atom(OldS), '  %~w_vold_s = call i8* @wam_sv_cstr(i64 ~w)', [B, OldIR]),
+    format(atom(SelfFrag), 'i8* %~w_vold_s', [B]),
+    plawk_str_parts_arg_frags(FmtParts, FieldFrags, SelfFrag, ArgFrags),
     (   ArgFrags == []
     ->  ArgsTail = ''
     ;   atomic_list_concat(ArgFrags, ', ', ArgsIR),
         atom_concat(', ', ArgsIR, ArgsTail)
     ),
     format(atom(FmtP),
-        '  %~w_vfmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        '  %~w_v_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
         [B, FmtBytes, FmtBytes, FmtName]),
-    format(atom(Need),
-        '  %~w_vneed = call i32 (i8*, i64, i8*, ...) @snprintf(i8* null, i64 0, i8* %~w_vfmtp~w)',
-        [B, B, ArgsTail]),
-    format(atom(Need64), '  %~w_vlen = sext i32 %~w_vneed to i64', [B, B]),
-    format(atom(Size), '  %~w_vsize = add i64 %~w_vlen, 1', [B, B]),
-    format(atom(Buf), '  %~w_vbuf = call i8* @malloc(i64 %~w_vsize)', [B, B]),
-    format(atom(Snp),
-        '  %~w_vwrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_vbuf, i64 %~w_vsize, i8* %~w_vfmtp~w)',
-        [B, B, B, B, ArgsTail]),
-    format(atom(Id),
-        '  %~w_vid = call i64 @wam_intern_atom(i8* %~w_vbuf, i64 %~w_vlen)', [B, B, B]),
-    format(atom(Free), '  call void @free(i8* %~w_vbuf)', [B]),
+    (   Mode == append
+    ->  plawk_snprintf_sv_append_lines(VB, OldIR, ArgsTail, H, ValueLines),
+        Tail = []
+    ;   Mode == fresh
+    ->  plawk_snprintf_sv_set_lines(VB, 0, ArgsTail, H, SetLines),
+        ValueLines = [OldS | SetLines],
+        format(atom(FreeL), '  call void @wam_sv_free(i64 ~w)', [OldIR]),
+        Tail = [FreeL]
+    ;   plawk_snprintf_sv_set_lines(VB, OldIR, ArgsTail, H, ValueLines),
+        Tail = []
+    ),
     format(atom(SetRes), '%~w_setrc', [B]),
-    format(atom(SetVal), '%~w_vid', [B]),
-    plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, SetVal, Set),
-    append(FieldLines, [FmtP, Need, Need64, Size, Buf, Snp, Id, Free, Set], Lines).
+    plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, H, Set),
+    append([[OldL], FieldLines, [FmtP], ValueLines, [Set], Tail], Lines).
+
+%% plawk_str_parts_arg_frags(+Parts, +FieldFrags, +SelfFrag, -ArgFrags)
+%  The snprintf arguments in PART order: each field part takes the next field
+%  pair, a self part the old value's text, a literal none.
+plawk_str_parts_arg_frags([], [], _SelfFrag, []).
+plawk_str_parts_arg_frags([fld(_) | Ps], [F | Fs], SelfFrag, [F | As]) :-
+    plawk_str_parts_arg_frags(Ps, Fs, SelfFrag, As).
+plawk_str_parts_arg_frags([self | Ps], Fs, SelfFrag, [SelfFrag | As]) :-
+    plawk_str_parts_arg_frags(Ps, Fs, SelfFrag, As).
+plawk_str_parts_arg_frags([lit(_) | Ps], Fs, SelfFrag, As) :-
+    plawk_str_parts_arg_frags(Ps, Fs, SelfFrag, As).
 
 %% plawk_str_parts_format_atom(+Parts, -FmtAtom)
 %  The snprintf format for a string element value: literal text with `%` doubled,
@@ -14314,15 +14425,17 @@ plawk_str_parts_format_atom(Parts, FmtAtom) :-
     atomic_list_concat(Frags, FmtAtom).
 
 plawk_str_part_format(fld(_), '%.*s').
+plawk_str_part_format(self, '%s').
 plawk_str_part_format(lit(S), Frag) :-
     split_string(S, "%", "", Pieces),
     atomic_list_concat(Pieces, '%%', Frag).
 
 % Row constructor `arr[$k] = row($a, $b, ...)`: same key-intern + missing-key
 % skip, then build the row as the chosen fields joined by the field separator
-% (so a reader's field projection recovers them), intern it, and store the id.
-% The join is a single snprintf with a compile-time format ("%.*s<sep>..."),
-% each field made null-safe (empty on a missing field), into a measured heap buffer.
+% (so a reader's field projection recovers them) and store it. The join is a
+% single snprintf with a compile-time format ("%.*s<sep>..."), each field made
+% null-safe (empty on a missing field), into the cell's owned string handle, its
+% old buffer reused when big enough (docs/design/PLAWK_STRING_STORAGE.md S3).
 plawk_assoc_rule_action_blocks(RuleIndex,
         [assoc_set_row_cons_action(Index, _ArrayName, TableIndex, KeyIndex, Fields) | Rest],
         NextLabel, FieldSeparator) -->
@@ -14350,12 +14463,14 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(FmtP),
           '  %~w_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
           [B, _FmtBytes, _FmtBytes, FmtName]),
-      plawk_snprintf_heap_intern_lines(B, ArgsTail, SetVal, InternLines),
+      format(atom(OldIR), '%~w_row_old', [B]),
+      plawk_assoc_elem_call_line(OldIR, i64, i64, get, TableIndex, KeyIdIR, OldL),
+      plawk_snprintf_sv_set_lines(B, OldIR, ArgsTail, SetVal, OwnLines),
       format(atom(SetRes), '%~w_setrc', [B]),
       plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, SetVal, Set),
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(EmptyGlobal), global(FmtGlobal)], KeyGlobals, [Label],
-              KeyLines, FieldLines, [FmtP], InternLines,
+              KeyLines, FieldLines, [FmtP, OldL], OwnLines,
               [Set, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
@@ -20322,7 +20437,8 @@ plawk_scalar_action_sequence_pairs([delete_assoc(var(ArrayName), var(Name)) | Re
       ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ; Slot = scalar_counter(_) ),
       !,
       nth0(SlotIndex, Values0, SlotValue),
-      plawk_assoc_delete_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue, Pair),
+      plawk_assoc_delete_operation_keyid_ir(Prefix, OpIndex, ArrayName, TableIndex, Slot,
+          SlotValue, Pair),
       NextOpIndex is OpIndex + 1
     },
     [Pair],
@@ -22791,13 +22907,16 @@ plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotVal
     atomic_list_concat(AllLines, '\n', IR).
 
 % `delete arr[x]` with a scalar key resolved to its slot value: a straight-line
-% void delete on the key id (the runtime delete is a no-op for an absent key).
+% void delete on the key id (the runtime delete is a no-op for an absent key; a
+% text table's frees the cell's owned string, plawk_assoc_delete_kind/2).
 % Key-id resolution mirrors the inc case (@wam_sv_key for string/strnum, decimal
 % intern for a counter).
-plawk_assoc_delete_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue, ''-IR) :-
+plawk_assoc_delete_operation_keyid_ir(Prefix, OpIndex, ArrayName, TableIndex, Slot,
+        SlotValue, ''-IR) :-
     format(atom(BaseName), '~w_assoc_~w', [Prefix, OpIndex]),
     plawk_assoc_scalar_key_id(Slot, SlotValue, BaseName, KeyIdIR, SetupLines),
-    plawk_assoc_elem_void_line(delete, TableIndex, KeyIdIR, i64, DeleteLine),
+    plawk_assoc_delete_kind(ArrayName, DelKind),
+    plawk_assoc_elem_void_line(delete, TableIndex, KeyIdIR, DelKind, DeleteLine),
     append(SetupLines, [DeleteLine], AllLines),
     atomic_list_concat(AllLines, '\n', IR).
 

@@ -1,7 +1,8 @@
 # plawk string storage: builders, ownership, and memory
 
-Status: sections 2 and 3 landed for scalars (plan steps S1, S2); array
-elements and split pieces are the plan (section 4).
+Status: sections 2 and 3 landed for scalars and text-valued array elements
+(plan steps S1-S3). Split pieces and the remaining interning writers are the
+plan (section 4, S4).
 
 Related: `PLAWK_SCALAR_VALUE_MODEL.md` (string / strnum slots hold an atom id, `0` =
 unset), `PLAWK_ARRAY_VALUE_MODEL.md` (str-valued tables, plan item 4),
@@ -54,7 +55,7 @@ before. Element writes (arrays PR 5a) already used this pattern.
 This fixes correctness only: the builders still intern, so the memory rows above
 are unchanged.
 
-## 3. Owned string handles (landed for scalars)
+## 3. Owned string handles (landed)
 
 Keep the i64 representation and the single read path. Add a second kind of
 id: an **owned string handle**.
@@ -144,12 +145,33 @@ Every consumer of a string id that does not go through `@wam_atom_to_string`:
    | `{ last = $0 }` | 3M records | 263 MB | 2 MB |
    | `{ x = $2 }` | 1M records | 73 MB | 2 MB |
    | `{ s = s $2 }` | 30000 records | 5.2 GB, 77 s | 2.3 MB, 0.01 s |
-3. **S3 -- str-valued array elements.**
-   - Element writes (`a[k] = $N`, `= "lit"`, `= PARTS`, row capture `= $0`,
-     `row(...)`) store handles through `@wam_sv_set`, and deletes free them.
-   - The self-append `a[k] = a[k] X` lands on `@wam_sv_grow`; this is arrays
-     plan item 4(b). The measured patch is kept out of tree until then.
-   - This builds on arrays PRs 5a and 5c, the str-valued element writes.
+3. **S3 -- text-valued array elements: landed.**
+   - The element store (`plawk_str_value_store_lines/7`, shared by the
+     array-only chain and the mixed walker) fetches the cell's old value. It then
+     formats the parts into that handle, reusing the buffer when it is big
+     enough. A lone field, `a[k] = $N`, is copied straight from its slice.
+   - Row capture (`= $0`) uses `@wam_sv_set`; the row constructor (`row(...)`)
+     formats into the cell's handle.
+   - **Self-append** (arrays plan item 4(b)). `a[k] = a[k] X` and
+     `a[k] = a[k] X Y` are recognised when the element read is the write's own
+     array and key term (`plawk_str_self_parts/4`). The rest is formatted onto the
+     end in place with `@wam_sv_grow`. A self read elsewhere (`a[k] = X a[k]`)
+     builds a fresh handle and frees the old one. Any other element read in the
+     value declines.
+   - **Deletes.** A delete on a TEXT array (`plawk_program_text_arrays/2`: every
+     write a string or strnum write, a row capture or a row constructor) calls
+     `@wam_assoc_sv_delete`, which frees the cell's handle. The tag cannot be
+     tested blind: a double's bit pattern can carry it (0.5 is `0x3FE0...`).
+   - **Equality.** The END for-in guard `a[k] == "x"` compared the cell's id
+     with the literal's; it now uses `@wam_sv_eq_id`.
+
+   Measured peak RSS (gawk is about 4 MB):
+
+   | program | input | before | after |
+   |---|---|---|---|
+   | `{ a[$1] = $2 }` (10 keys) | 1M records | 73 MB | 2.2 MB (0.23 s; gawk 0.21 s) |
+   | `{ a[$1] = $0 }` (10 keys) | 1M records | about 73 MB | 2.2 MB |
+   | `{ a[$1] = a[$1] $2 }` | 30000 records | declined (the patch: 373 MB at 8000) | 2.5 MB, 0.01 s |
 4. **S4 -- split pieces and the remaining interning writers.**
    - `split` interns each piece, so `split($0, p)` per record grows with the
      distinct pieces; the split target becomes a handle table.

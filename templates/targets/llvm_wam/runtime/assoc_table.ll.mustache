@@ -441,6 +441,23 @@ del.nomove:
 del.done:
   ret void
 }
+{{case wam_assoc_sv_delete}}
+; Delete from a TEXT-valued table (PLAWK_STRING_STORAGE.md section 4, S3): the
+; cell may own a string handle, freed before the entry goes (@wam_sv_free is a
+; no-op on an atom id). Only for tables plawk knows hold text -- a double's bit
+; pattern can carry the handle tag, so a numeric table must use the i64 delete.
+define void @wam_assoc_sv_delete(%WamAssocI64Table* %table, i64 %key) {
+entry:
+  %sd.ex = call i1 @wam_assoc_i64_exists(%WamAssocI64Table* %table, i64 %key)
+  br i1 %sd.ex, label %sd.has, label %sd.done
+sd.has:
+  %sd.v = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 %key)
+  call void @wam_sv_free(i64 %sd.v)
+  call void @wam_assoc_i64_delete(%WamAssocI64Table* %table, i64 %key)
+  br label %sd.done
+sd.done:
+  ret void
+}
 {{case wam_assoc_i64_inc}}
 define i64 @wam_assoc_i64_inc(%WamAssocI64Table* %table, i64 %key, i64 %delta) {
 entry:
