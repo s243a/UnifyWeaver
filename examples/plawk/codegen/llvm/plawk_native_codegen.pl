@@ -2842,14 +2842,18 @@ plawk_program_native_driver_ir(
 % `END { for (k in arr) acc += OPERAND ; print acc }`. The for-in loop
 % threads a second phi (the accumulator) beside the slot index; the trailing
 % print reads the accumulated total after the loop. Distinct two-action END
-% shape, so ordering among the END clauses is unambiguous.
+% shape, so ordering among the END clauses is unambiguous. A leading reset
+% `acc = 0` (the cardinality idiom `n = 0; for (k in a) n++`) is the loop's
+% starting value -- acc is END-only in an array-only program -- and makes acc
+% assigned; without it, acc is unset until the first iteration, so an empty
+% array prints nothing (gawk).
 plawk_program_native_driver_ir(
-    program(BeginClauses, Rules,
-        [end([for_in(var(LoopVar), var(ArrayName), [add(var(Acc), Operand)]),
-              print(PrintFields)])]),
+    program(BeginClauses, Rules, [end(EndActions)]),
     InputPath,
     DriverIR
 ) :-
+    plawk_end_accum_shape(EndActions, LoopVar, ArrayName, Acc, Operand,
+        PrintFields, Reset),
     plawk_forin_end_accum_plan(Rules, ArrayName, Operand, AssocPlan),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
@@ -2862,7 +2866,7 @@ plawk_program_native_driver_ir(
     plawk_assoc_record_counter(Rules, [], AssocChainIR, RecordLoopPhiIR, RecordIR),
     plawk_assoc_rule_controls(AssocPlan, AssocRuleControls),
     plawk_assoc_break_close_ir(AssocRuleControls, BreakCloseIR),
-    plawk_forin_end_accum_ir(LoopVar, ArrayName, Acc, Operand, PrintFields,
+    plawk_forin_end_accum_ir(LoopVar, ArrayName, Acc, Operand, PrintFields, Reset,
         AssocPlan, FieldSeparator, OutputSeparator, EndPrintIR),
     format(atom(SurfaceGlobalIR), '~w~n~w~n~w',
         [BeginGlobalIR, StringGlobalIR, AssocRuleGlobalIR]),
@@ -8949,25 +8953,27 @@ plawk_forin_end_guard_lines(guard_value_f(Op, M, D), TableIndex, Lines, CondVar,
     Lines = [FvLine, ValLine, WidenLine, CmpLine].
 
 %% plawk_forin_end_accum_ir(+LoopVar, +ArrayName, +Acc, +Operand,
-%%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
+%%     +PrintFields, +Reset, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
 %
 %  Emit the END accumulate for-in (stage 2): walk the iterated table's
 %  occupied slots carrying a scalar accumulator as a second loop phi, add
 %  the per-entry operand (the value `arr[k]`, the key `k`, or a constant) to
 %  it each iteration, then -- after the loop -- print the fields (the
 %  accumulator variable resolves to the folded total, string literals print
-%  verbatim) and free every table.
+%  verbatim) and free every table. Reset (`acc = 0` first) decides how an
+%  accumulator that never iterated prints: 0 after a reset, nothing without one
+%  (plawk_forin_accum_fmt_lines/7).
 % Summing the values of a DOUBLE-valued array (`for (k in c) s += c[k]` after
 % `c[$1] += $2`): a double accumulator over @wam_assoc_f64_value_at, printed the
 % awk way. The i64 accumulator below would read the stored bit patterns as integers.
 plawk_forin_end_accum_ir(_LoopVar, ArrayName, Acc, forin_val(ArrayName), PrintFields,
-        AssocPlan, _Descriptor, OutputSeparator, IR) :-
+        Reset, AssocPlan, _Descriptor, OutputSeparator, IR) :-
     plawk_f64_array(ArrayName),
     !,
     plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
     PrintFields = [_ | _],
-    phrase(plawk_forin_accum_f64_print_lines(PrintFields, Acc, OutputSeparator, 0),
-        PrintLines),
+    phrase(plawk_forin_accum_f64_print_lines(PrintFields, Acc, Reset,
+        OutputSeparator, 0), PrintLines),
     atomic_list_concat(PrintLines, '\n', PrintIR),
     phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
     atomic_list_concat(FreeLines, '\n', FreeIR),
@@ -8997,10 +9003,10 @@ forin_after:
   ret i32 0',
         [TableIndex, TableIndex, PrintIR, FreeIR]).
 plawk_forin_end_accum_ir(_LoopVar, ArrayName, Acc, Operand, PrintFields,
-        AssocPlan, _Descriptor, OutputSeparator, IR) :-
+        Reset, AssocPlan, _Descriptor, OutputSeparator, IR) :-
     plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
     plawk_forin_accum_operand_line(Operand, TableIndex, OperandVar, OperandLine),
-    phrase(plawk_forin_accum_print_lines(PrintFields, Acc, OutputSeparator, 0),
+    phrase(plawk_forin_accum_print_lines(PrintFields, Acc, Reset, OutputSeparator, 0),
         PrintLines),
     atomic_list_concat(PrintLines, '\n', PrintIR),
     phrase(plawk_assoc_free_lines(AssocPlan), FreeLines),
@@ -9047,43 +9053,77 @@ plawk_forin_accum_operand_line(int(Value), _TableIndex, Value, '').
 %  variable prints the folded total (%forin_acc); string literals print
 %  verbatim. Distinct label prefix (forin_out_*) -- there is no per-entry
 %  print in an accumulate body, so nothing else uses these names.
-plawk_forin_accum_print_lines([], _Acc, _OutputSeparator, _Index) -->
+plawk_forin_accum_print_lines([], _Acc, _Reset, _OutputSeparator, _Index) -->
     [].
-plawk_forin_accum_print_lines([var(Acc) | Rest], Acc, OutputSeparator, Index) -->
+plawk_forin_accum_print_lines([var(Acc) | Rest], Acc, Reset, OutputSeparator, Index) -->
     plawk_forin_accum_separator_lines(Index, OutputSeparator),
     { format(atom(FmtVar), 'forin_out_fmt_~w', [Index]),
       format(atom(PrintVar), 'forin_out_printed_~w', [Index]),
       llvm_emit_printf_i64(plawk_surface_print_i64, FmtVar, PrintVar,
-          '%forin_acc', [FmtPtr, PrintCall]),
+          '%forin_acc', [FmtPtr0, PrintCall]),
+      plawk_forin_accum_fmt_lines(Reset, FmtPtr0, Index, '[4 x i8]',
+          plawk_surface_print_i64, 3, FmtLines),
       NextIndex is Index + 1
     },
-    [FmtPtr, PrintCall],
-    plawk_forin_accum_print_lines(Rest, Acc, OutputSeparator, NextIndex).
-plawk_forin_accum_print_lines([string(Value) | Rest], Acc, OutputSeparator, Index) -->
+    FmtLines,
+    [PrintCall],
+    plawk_forin_accum_print_lines(Rest, Acc, Reset, OutputSeparator, NextIndex).
+plawk_forin_accum_print_lines([string(Value) | Rest], Acc, Reset, OutputSeparator, Index) -->
     plawk_forin_accum_separator_lines(Index, OutputSeparator),
     plawk_end_string_print_lines(Value, Index),
     { NextIndex is Index + 1 },
-    plawk_forin_accum_print_lines(Rest, Acc, OutputSeparator, NextIndex).
+    plawk_forin_accum_print_lines(Rest, Acc, Reset, OutputSeparator, NextIndex).
 
-plawk_forin_accum_f64_print_lines([], _Acc, _OutputSeparator, _Index) -->
+plawk_forin_accum_f64_print_lines([], _Acc, _Reset, _OutputSeparator, _Index) -->
     [].
-plawk_forin_accum_f64_print_lines([var(Acc) | Rest], Acc, OutputSeparator, Index) -->
+plawk_forin_accum_f64_print_lines([var(Acc) | Rest], Acc, Reset, OutputSeparator, Index) -->
     plawk_forin_accum_separator_lines(Index, OutputSeparator),
-    { format(atom(FmtPtr),
+    { format(atom(FmtPtr0),
           '  %forin_out_fmt_~w = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
           [Index]),
       format(atom(PrintCall),
           '  %forin_out_printed_~w = call i32 @wam_print_awk_number(i8* %forin_out_fmt_~w, double %forin_acc)',
           [Index, Index]),
+      plawk_forin_accum_fmt_lines(Reset, FmtPtr0, Index, '[3 x i8]',
+          plawk_surface_print_f64, 2, FmtLines),
       NextIndex is Index + 1
     },
-    [FmtPtr, PrintCall],
-    plawk_forin_accum_f64_print_lines(Rest, Acc, OutputSeparator, NextIndex).
-plawk_forin_accum_f64_print_lines([string(Value) | Rest], Acc, OutputSeparator, Index) -->
+    FmtLines,
+    [PrintCall],
+    plawk_forin_accum_f64_print_lines(Rest, Acc, Reset, OutputSeparator, NextIndex).
+plawk_forin_accum_f64_print_lines([string(Value) | Rest], Acc, Reset, OutputSeparator, Index) -->
     plawk_forin_accum_separator_lines(Index, OutputSeparator),
     plawk_end_string_print_lines(Value, Index),
     { NextIndex is Index + 1 },
-    plawk_forin_accum_f64_print_lines(Rest, Acc, OutputSeparator, NextIndex).
+    plawk_forin_accum_f64_print_lines(Rest, Acc, Reset, OutputSeparator, NextIndex).
+
+%% plawk_forin_accum_fmt_lines(+Reset, +FmtPtr, +Index, +ArrayType, +FmtGlobal,
+%%     +NulOffset, -Lines)
+%  The accumulator's print format. After a reset it is always assigned: the
+%  number format, as is. Without one it is unset until the first iteration, so
+%  an empty array (the cursor still 0 after the loop) selects the format's own
+%  NUL -- an empty format prints nothing.
+plawk_forin_accum_fmt_lines(true, FmtPtr, _Index, _ArrayType, _FmtGlobal, _Nul,
+        [FmtPtr]).
+plawk_forin_accum_fmt_lines(false, _FmtPtr, Index, ArrayType, FmtGlobal, Nul,
+        [RanL, SelL]) :-
+    format(atom(RanL), '  %forin_out_ran_~w = icmp ne i64 %forin_idx, 0', [Index]),
+    format(atom(SelL),
+        '  %forin_out_fmt_~w = select i1 %forin_out_ran_~w, i8* getelementptr (~w, ~w* @.~w, i64 0, i64 0), i8* getelementptr (~w, ~w* @.~w, i64 0, i64 ~w)',
+        [Index, Index, ArrayType, ArrayType, FmtGlobal, ArrayType, ArrayType,
+         FmtGlobal, Nul]).
+
+%% plawk_end_accum_shape(+EndActions, -LoopVar, -ArrayName, -Acc, -Operand,
+%%     -PrintFields, -Reset)
+%  `for (k in arr) acc += OPERAND; print ...`, optionally after a reset
+%  `acc = 0` (Reset = true).
+plawk_end_accum_shape([set(var(Acc), int(0)) | Actions], LoopVar, ArrayName, Acc,
+        Operand, PrintFields, true) :-
+    !,
+    Actions = [for_in(var(LoopVar), var(ArrayName), [add(var(Acc), Operand)]),
+        print(PrintFields)].
+plawk_end_accum_shape([for_in(var(LoopVar), var(ArrayName), [add(var(Acc), Operand)]),
+        print(PrintFields)], LoopVar, ArrayName, Acc, Operand, PrintFields, false).
 
 plawk_forin_accum_separator_lines(0, _OutputSeparator) -->
     !,
