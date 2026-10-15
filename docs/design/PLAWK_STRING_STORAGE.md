@@ -1,8 +1,7 @@
 # plawk string storage: builders, ownership, and memory
 
-Status: sections 2 and 3 landed for scalars and text-valued array elements
-(plan steps S1-S3). Split pieces and the remaining interning writers are the
-plan (section 4, S4).
+Status: sections 2 and 3 landed for scalars, text-valued array elements, split
+pieces, sub/gsub results and getline reads (plan steps S1-S4).
 
 Related: `PLAWK_SCALAR_VALUE_MODEL.md` (string / strnum slots hold an atom id, `0` =
 unset), `PLAWK_ARRAY_VALUE_MODEL.md` (str-valued tables, plan item 4),
@@ -125,8 +124,8 @@ Every consumer of a string id that does not go through `@wam_atom_to_string`:
    - `s = s X` appends in place (`@wam_sv_grow`).
    - A form that reads the target elsewhere (`s = X s`, `sprintf("%s%s", s, x)`)
      builds a fresh handle and frees the old one.
-   - A literal, `ENVIRON`, `ARGV` or a `gsub` result is an atom id, and the old
-     value is freed.
+   - A literal, `ENVIRON` or `ARGV` is an atom id, and the old value is freed.
+     (A `gsub` result was too, until S4.)
    - A copy (`y = x`, the END for-in key copied out) uses `@wam_sv_dup`.
    - **Keys.** A string or strnum variable used as a key, in
      `plawk_assoc_scalar_key_id/5` (`c[k]++`, `delete c[k]`, conditions) and in
@@ -172,12 +171,45 @@ Every consumer of a string id that does not go through `@wam_atom_to_string`:
    | `{ a[$1] = $2 }` (10 keys) | 1M records | 73 MB | 2.2 MB (0.23 s; gawk 0.21 s) |
    | `{ a[$1] = $0 }` (10 keys) | 1M records | about 73 MB | 2.2 MB |
    | `{ a[$1] = a[$1] $2 }` | 30000 records | declined (the patch: 373 MB at 8000) | 2.5 MB, 0.01 s |
-4. **S4 -- split pieces and the remaining interning writers.**
-   - `split` interns each piece, so `split($0, p)` per record grows with the
-     distinct pieces; the split target becomes a handle table.
-   - The `gsub` / `sub` result, `getline var` and `ENVIRON` / `ARGV` reads are
-     still interned. The last two are bounded; the first two grow per record
-     like S2's writers did.
+4. **S4 -- split pieces and the remaining per-record writers: landed.**
+   - **split.** Each piece is a handle (`@wam_str_split_into[_re]` store
+     `@wam_sv_set` results). The table clear at the start of every split frees the
+     occupied entries' handles. That is safe only if a split target holds nothing
+     else, so `plawk_array_kinds_ok/1` now gives a split target no other write
+     but `delete`. `split(...); a[$1]++` used to build: it mixes key kinds (an
+     interned key's atom id can equal a position) and printed a piece's id as a
+     count. A split target is therefore a text array (`plawk_text_write(split)`),
+     so `delete p[k]` frees the piece, and S3's text comparisons
+     (`@wam_sv_eq_id` in the for-in guard) cover its pieces; S4 builds on S3.
+   - **sub / gsub.** `@wam_regex_gsub` returns a handle. The stream editor
+     (`{ gsub(...); print $0 }`) frees every step's result after the print. A
+     field edit frees its results after the join, because `@wam_fields_set` keeps
+     only a slice into the result. A variable target keeps the result as its new
+     value (S2 already freed the old one).
+   - **getline var.** The file, main-input and command forms seed the out slot
+     with the target's value. On a line the runtime stores the line there with
+     `@wam_sv_set`, reusing the target's buffer; on EOF or an error the slot is
+     untouched, so the target keeps its value. The file and main-input forms read
+     through `@wam_stream_read_line_impl` with an owned slot; the shared
+     `@wam_stream_read_line_value` is a wrapper that still interns. A line is
+     told from the EOF marker by its handle tag, so an input line whose text is
+     `end_of_file` is now a line; it used to read as end of input. The slots are
+     globals: the file form's per-record `alloca` grew the stack, and 2M
+     `getline x < f` crashed. The record-target forms (`getline < f`,
+     `cmd | getline`) free the line after copying it into `$0`.
+   - `ENVIRON` / `ARGV` reads stay interned; they are bounded.
+
+   Measured on 2M distinct records, peak RSS (gawk is about 4 MB on each):
+
+   | program | before | after |
+   |---|---|---|
+   | `{ n = split($1, p, ","); print n, p[1], p[n] }` | 367 MB | 2.2 MB |
+   | `{ gsub(/k/, "K"); sub(/x/, "y"); print $0 }` | 286 MB | 2.3 MB |
+   | `BEGIN { FS = "," } { gsub(/v/, "V", $2); print $0 }` | 113 MB | 2.2 MB |
+   | `{ s = $1; gsub(/k/, "K", s); print s }` | 142 MB | 2.2 MB |
+   | `{ getline x; print x }` | 73 MB | 1.9 MB |
+   | `{ getline x < "f" } END { print x }` | crashed (stack) | 2.1 MB |
+   | `{ "cat f" \| getline x } END { print x }` | 144 MB | 2.1 MB |
 
 Each step is verified against gawk, on the IR corpus (the changed programs are
 exactly the touched class), and by a memory bound in its tests. Under

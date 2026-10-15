@@ -868,10 +868,9 @@ plawk_string_array(Array) :-
 
 %% plawk_program_text_arrays(+Program, -Texts) is det.
 %  TEXT-valued arrays: every write (deletes aside) stores text -- a string or
-%  strnum element write, a row capture or a row constructor. Their cells may own
-%  string handles (docs/design/PLAWK_STRING_STORAGE.md section 4, S3), so a delete
-%  frees the cell (@wam_assoc_sv_delete). A split target is not one: its pieces
-%  are interned atoms.
+%  strnum element write, a row capture, a row constructor or a split. Their cells
+%  may own string handles (docs/design/PLAWK_STRING_STORAGE.md section 4, S3 and
+%  S4), so a delete frees the cell (@wam_assoc_sv_delete).
 plawk_program_text_arrays(Program, Texts) :-
     plawk_array_effects(Program, Effects),
     findall(A, ( member(write(A, How), Effects), How \== delete ), As0),
@@ -883,6 +882,7 @@ plawk_program_text_arrays(Program, Texts) :-
         Texts).
 
 plawk_text_write(row).
+plawk_text_write(split).
 plawk_text_write(set(Value)) :- plawk_str_value_kind(Value, _).
 
 plawk_text_array(Array) :-
@@ -1149,8 +1149,9 @@ print_line:
 % sub/gsub stream editor: a single text-mode rule `Pattern { sub/gsub(re,repl);
 % ...; print $0 }`. Each substitution rewrites the whole record ($0) via
 % @wam_regex_gsub (a per-site compiled ERE; `&` in the replacement expands to the
-% matched text), folding a running interned-atom id; the trailing `print $0`
-% emits the result. v1 scope: the target is $0, a single rule with no END, and
+% matched text), folding a running string value; the trailing `print $0` emits the
+% result. Each step's result is an owned handle, freed once the record is printed
+% (PLAWK_STRING_STORAGE.md, S4). v1 scope: the target is $0, a single rule with no END, and
 % the print-the-record idiom. sub/gsub into a scalar/field, and capturing the
 % substitution count (`n = gsub(...)`), are follow-ons.
 plawk_program_native_driver_ir(
@@ -1167,6 +1168,7 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_gsub_actions_ir(SubActions, GsubGlobalIR, GsubBodyIR, FinalIdVar),
+    plawk_gsub_free_ir(SubActions, GsubFreeIR),
     % The rewritten record, then the ORS -- `%s` on the record plus the shared
     % plawk_ors_terminator_ir/4, not a "%s\n" global (which ignored ORS).
     plawk_ors_terminator_ir(gsx_ors_fmt, gsx_ors_ptr, gsx_ors_pr, GsubTermLines),
@@ -1175,8 +1177,9 @@ plawk_program_native_driver_ir(
 '  %gsx_out = call i8* @wam_atom_to_string(i64 ~w)
   %gsx_out_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0
   %gsx_out_pr = call i32 (i8*, ...) @printf(i8* %gsx_out_fmt, i8* %gsx_out)
+~w
 ~w',
-        [FinalIdVar, GsubTermIR]),
+        [FinalIdVar, GsubTermIR, GsubFreeIR]),
     format(atom(RecordIR),
 '~w
   br i1 %is_match, label %print_line, label %continue_loop
@@ -1222,6 +1225,15 @@ plawk_gsub_actions_ir(SubActions, GlobalIR, BodyIR, FinalIdVar) :-
     pairs_keys_values(Parts, GlobalParts, BodyParts),
     plawk_join_nonempty_ir(GlobalParts, GlobalIR),
     atomic_list_concat(BodyParts, '\n', BodyIR).
+
+%% plawk_gsub_free_ir(+SubActions, -FreeIR)
+%  Free every step's result handle (`%gsx_<i>_id`), after the print has read the last.
+plawk_gsub_free_ir(SubActions, FreeIR) :-
+    findall(Line,
+        ( nth0(Index, SubActions, _),
+          format(atom(Line), '  call void @wam_sv_free(i64 %gsx_~w_id)', [Index]) ),
+        Lines),
+    atomic_list_concat(Lines, '\n', FreeIR).
 
 plawk_gsub_fold([], _Index, CurId, [], CurId).
 plawk_gsub_fold([regex_sub(Global, Regex, Repl) | Rest], Index, CurId,
@@ -1280,6 +1292,7 @@ plawk_program_native_driver_ir(
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_field_assign_sets_ir(SetFields, AssignGlobalIR, SetBodyIR),
+    plawk_field_gsub_free_ir(SetFields, GsubFreeIR),
     plawk_field_ofs_global(OutputSeparator, FieldOfsGlobal, OfsArrLen, OfsSepLen),
     % The OFS-joined record, then the ORS via the shared terminator. OFS
     % separates the record's fields; ORS terminates the record -- two separate
@@ -1298,10 +1311,10 @@ print_line:
   %fa_out_pr = call i32 (i8*, ...) @printf(i8* %fa_out_fmt, i8* %fa_joined)
 ~w
   call void @free(i8* %fa_joined)
-  call void @wam_fields_free(%WamFieldBuf* %fa_fb)
+  call void @wam_fields_free(%WamFieldBuf* %fa_fb)~w
   br label %continue_loop',
         [GuardCallIR, FieldSeparator, SetBodyIR, OfsArrLen, OfsArrLen, OfsSepLen,
-         FieldAssignTermIR]),
+         FieldAssignTermIR, GsubFreeIR]),
     plawk_ors_global_line(BeginClauses, OrsGlobalLine),
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
@@ -1320,6 +1333,17 @@ print_line:
         driver_blocks(RuntimeGlobals, BeginIR, '', lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
         DriverIR).
+
+%% plawk_field_gsub_free_ir(+SetFields, -FreeIR)
+%  A field sub/gsub result is an owned handle that the field buffer points into
+%  (@wam_fields_set keeps the slice), so it is freed only after the join.
+%  Each line carries its own leading newline, so a program without one adds nothing.
+plawk_field_gsub_free_ir(SetFields, FreeIR) :-
+    findall(Line,
+        ( nth0(Index, SetFields, regex_sub_field(_, _, _, _)),
+          format(atom(Line), '\n  call void @wam_sv_free(i64 %fa_gs_~w_id)', [Index]) ),
+        Lines),
+    atomic_list_concat(Lines, FreeIR).
 
 %% plawk_field_assign_body(+Actions, -SetFields, -PrintAction)
 %
@@ -1365,8 +1389,9 @@ plawk_field_assign_fold([regex_sub_field(Global, Regex, Repl, N) | Rest], Index,
 %
 %  `sub/gsub(/re/, repl, $N)`: read field N's current slice from the buffer, run
 %  @wam_regex_gsub over it (per-site pattern/cache; `&` expands to the match),
-%  resolve the interned result to text, and store it back into field N. Rebuilds
-%  $0 at the join, like a field assignment.
+%  resolve the result handle to text, and store it back into field N. Rebuilds
+%  $0 at the join, like a field assignment; the handle is freed after the join
+%  (plawk_field_gsub_free_ir/2).
 plawk_field_gsub_one(Global, Regex, Repl, N, Index, GlobalPart, BodyPart) :-
     format(atom(PatName), 'fa_gs_~w_pat', [Index]),
     format(atom(ReplName), 'fa_gs_~w_repl', [Index]),
@@ -6897,9 +6922,14 @@ plawk_str_self_part(_ArrayName, _Key, Part, Part).
 %  (`arr[k] = expr`): all its writes classify, they agree after numeric widening
 %  (counter + double -> double), it is not imported (an escaping array needs a
 %  declaration, §6.2), and the program has no array use the effect enumeration does
-%  not know (§6.3). Programs without an element write are not affected.
+%  not know (§6.3). Programs without an element write are not affected, except
+%  that a split target's only other write is `delete`: its pieces are owned
+%  string handles (PLAWK_STRING_STORAGE.md, S4), which `++` / `+=` would treat
+%  as numbers and the next split would then free.
 plawk_array_kinds_ok(Program) :-
     plawk_array_effects(Program, Effects),
+    forall(member(write(A, split), Effects),
+        forall(member(write(A, How), Effects), memberchk(How, [split, delete]))),
     (   \+ memberchk(write(_, set(_)), Effects)
     ->  true
     ;   plawk_array_unknown_uses(Program, []),
@@ -10624,8 +10654,9 @@ plawk_scalar_strnum_field_source(set(var(Name), field(FieldIndex)), Name) :-
 % numericness -- a field copy, a command-line argument (`x = ARGV[N]`), or a
 % getline read (`getline var < "file"`, main-input, or command-output). These are
 % POSIX strnums: their runtime content decides numeric vs lexical comparison.
-% All store an interned atom id into the slot (via set_str for argv/getline, via
-% the field-intern for a field), so they share the scalar_strnum representation.
+% All store a string value into the slot -- an owned handle for a field copy or
+% a getline read, an interned atom id for an argument -- so they share the
+% scalar_strnum representation.
 plawk_scalar_strnum_source(Action, Name) :-
     plawk_scalar_strnum_field_source(Action, Name).
 plawk_scalar_strnum_source(set(var(Name), argv_at(N)), Name) :-
@@ -19790,27 +19821,31 @@ plawk_scalar_action_sequence_pairs([dynrec_bind(Vars, Call, Types) | Rest], Slot
 % shared @plawk_gsub_count global; a following load moves that count into the
 % CountName i64 slot. Placed before the generic set-action clause so its
 % specific head wins.
-% Emit the getline IR for one site: the filename constant, an alloca for the
-% line id, the call to @wam_getline_file (which keys the open handle by filename
+% Emit the getline IR for one site: the filename constant, a global slot seeded
+% with Var's value (the runtime stores the line there as an owned handle reusing
+% Var's buffer; a global, because an alloca in a rule body grows the stack every
+% record), the call to @wam_getline_file (which keys the open handle by filename
 % in a process-wide registry, so sites reading the same file share it), and the
 % awk EOF-preserve select (Var keeps its old value unless a line was actually
 % read). VarNext / StNext are the new Var / status SSA values. GlobalIR carries
-% just the filename constant.
+% the filename constant and the slot.
 plawk_getline_ir(Prefix, OpIndex, File, VarInput, VarNext, StNext, GlobalIR, IR) :-
     format(atom(Base), '~w_getline_~w', [Prefix, OpIndex]),
     format(atom(PathName), '~w_path', [Base]),
-    llvm_emit_c_string_global(PathName, File, GlobalIR, PathLen, PathBytes),
+    llvm_emit_c_string_global(PathName, File, PathGlobalIR, PathLen, PathBytes),
+    format(atom(SlotGlobalIR), '@~w_lineid = private global i64 0', [Base]),
+    atomic_list_concat([PathGlobalIR, SlotGlobalIR], '\n', GlobalIR),
     format(atom(StNext), '%~w_status', [Base]),
     format(atom(VarNext), '%~w_var', [Base]),
     format(atom(IR),
 '  %~w_pathp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
-  %~w_lineid = alloca i64
-  ~w = call i64 @wam_getline_file(i8* %~w_pathp, i64 ~w, i64* %~w_lineid)
-  %~w_line = load i64, i64* %~w_lineid
+  store i64 ~w, i64* @~w_lineid
+  ~w = call i64 @wam_getline_file(i8* %~w_pathp, i64 ~w, i64* @~w_lineid)
+  %~w_line = load i64, i64* @~w_lineid
   %~w_got = icmp eq i64 ~w, 1
   ~w = select i1 %~w_got, i64 %~w_line, i64 ~w',
         [Base, PathBytes, PathBytes, PathName,
-         Base,
+         VarInput, Base,
          StNext, Base, PathLen, Base,
          Base, Base,
          Base, StNext,
@@ -19836,7 +19871,8 @@ plawk_getline_record_ir(Prefix, OpIndex, File, StNext, GlobalIR, IR) :-
 % registry by the literal command string and advances the shared logical
 % NR/FNR slot on success. The record-target runtime helper replaces the
 % reserved transient `$0` buffer only for status 1; the scalar-target helper
-% writes an interned line id through its out pointer. Both therefore preserve
+% writes the line through its out pointer as an owned handle reusing the
+% buffer of the value seeded there. Both therefore preserve
 % their destination on EOF/error.
 plawk_getline_pipe_record_ir(Prefix, OpIndex, Command, NrInput, StNext,
         NrNext, GlobalIR, IR) :-
@@ -19908,22 +19944,21 @@ plawk_getline_main_record_ir(Prefix, OpIndex, NrInput, StNext, NrNext, IR) :-
          NrNext, Base, Base, NrInput]).
 
 plawk_getline_main_var_ir(Prefix, OpIndex, VarInput, NrInput, VarNext, StNext,
-        NrNext, IR) :-
+        NrNext, GlobalIR, IR) :-
     format(atom(Base), '~w_getline_main_var_~w', [Prefix, OpIndex]),
     format(atom(VarNext), '%~w_var', [Base]),
     format(atom(StNext), '%~w_status', [Base]),
     format(atom(NrNext), '%~w_nr', [Base]),
+    format(atom(GlobalIR), '@~w_lineid = private global i64 0', [Base]),
     format(atom(IR),
-'  %~w_lineid = alloca i64
-  store i64 ~w, i64* %~w_lineid
-  ~w = call i64 @wam_getline_main_var(%Value %handle, i64* %~w_lineid)
-  %~w_line = load i64, i64* %~w_lineid
+'  store i64 ~w, i64* @~w_lineid
+  ~w = call i64 @wam_getline_main_var(%Value %handle, i64* @~w_lineid)
+  %~w_line = load i64, i64* @~w_lineid
   %~w_got = icmp eq i64 ~w, 1
   ~w = select i1 %~w_got, i64 %~w_line, i64 ~w
   %~w_nr_inc = add i64 ~w, 1
   ~w = select i1 %~w_got, i64 %~w_nr_inc, i64 ~w',
-        [Base,
-         VarInput, Base,
+        [VarInput, Base,
          StNext, Base,
          Base, Base,
          Base, StNext,
@@ -20041,13 +20076,13 @@ plawk_scalar_action_sequence_pairs([getline_main_var_capture(Status, Var) | Rest
       plawk_record_number_slot(Slots, NrIndex),
       nth0(NrIndex, Values0, NrInput),
       plawk_getline_main_var_ir(Prefix, OpIndex, VarInput, NrInput,
-          VarNext, StNext, NrNext, IR),
+          VarNext, StNext, NrNext, GlobalIR, IR),
       replace_nth0(VarIndex, Values0, VarNext, Values1),
       replace_nth0(StIndex, Values1, StNext, Values2),
       replace_nth0(NrIndex, Values2, NrNext, Values3),
       NextOpIndex is OpIndex + 1
     },
-    [''-IR],
+    [GlobalIR-IR],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values3, Values, FinalOpIndex, ExitLabel, NextExits).
 % Bare `getline var`: update Var and NR/FNR, discard status.
@@ -20058,12 +20093,12 @@ plawk_scalar_action_sequence_pairs([getline_main_var(Var) | Rest], Slots, AssocP
       plawk_record_number_slot(Slots, NrIndex),
       nth0(NrIndex, Values0, NrInput),
       plawk_getline_main_var_ir(Prefix, OpIndex, VarInput, NrInput,
-          VarNext, _StNext, NrNext, IR),
+          VarNext, _StNext, NrNext, GlobalIR, IR),
       replace_nth0(VarIndex, Values0, VarNext, Values1),
       replace_nth0(NrIndex, Values1, NrNext, Values2),
       NextOpIndex is OpIndex + 1
     },
-    [''-IR],
+    [GlobalIR-IR],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values2, Values, FinalOpIndex, ExitLabel, NextExits).
 
@@ -21192,9 +21227,9 @@ plawk_scalar_update_operation_ir_(add(Expr), _Slot, FieldSeparator, Prefix, Slot
 % intern to an atom id, and that id becomes the slot's new i64 value. Reads /
 % `print` resolve the id back to text.
 % `gsub(/re/, "repl", var)`: substitute over the slot's CURRENT value
-% (InputValue -> text via @wam_atom_to_string), producing a fresh interned id; the
-% old value is freed after the substitution has read it (an owned handle; an atom
-% id is a no-op).
+% (InputValue -> text via @wam_atom_to_string), producing a fresh owned handle the
+% slot keeps; the old value is freed after the substitution has read it (an owned
+% handle; an atom id is a no-op).
 % The discarded count goes to the shared @plawk_gsub_count scratch.
 plawk_scalar_update_operation_ir_(set_str(gsub_str(Global, Regex, Repl)), scalar_string(_Name),
         _FieldSeparator, Prefix, SlotIndex, OpIndex, InputValue, NextValue, GlobalIR-IR) :-

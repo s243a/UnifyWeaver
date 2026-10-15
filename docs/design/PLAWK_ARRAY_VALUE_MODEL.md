@@ -177,6 +177,7 @@ destinations.
 | number + strnum | **declines** (input `007`: gawk prints `a["raw"]` as `007` and `a["sum"]` as `7`; promoting the array to double loses `007`) |
 | string + strnum | **declines** (the `1 0` example above) |
 | row + anything else | declines |
+| split target + any write but `delete` | **declines** (its pieces are owned string handles that the next `split` frees, and `a[$1]++` would add a second key kind; `PLAWK_STRING_STORAGE.md`, S4) |
 
 A read never influences the kind. With per-element metadata these rules could relax;
 without it, declining is the only way to keep gawk's observable behaviour.
