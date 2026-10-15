@@ -143,8 +143,8 @@ one of two ways.
 | `c[k] = 5`, `= $2 * 2`, `= 7 / 2` (literals, arithmetic, `length`, `int`) | number: counter for integer arithmetic; double once a field, a float literal or a division takes part (`plawk_set_value_kind/2`) | supported (field keys), with or without scalar work |
 | `c[k] = n * 10` (a scalar inside arithmetic) | double (the scalar's numeric reading; an integral double prints as an integer) | supported beside scalar work |
 | `c[k] = n` (a BARE scalar copy) | the scalar's kind -- but it may copy an unset value (§3) | declines |
-| `c[k] = "text"`, concatenation, `sprintf`, string builtins | string | planned |
-| `c[k] = $N` (an unmodified text-input field) | strnum | planned |
+| `c[k] = "text"`, a concatenation of fields and literals | string | supported in array-only rules (field / SUBSEP / literal keys); `sprintf`, string builtins, scalars or elements inside the concatenation planned |
+| `c[k] = $N` (an unmodified text-input field) | strnum | supported in array-only rules (field / SUBSEP / literal keys) |
 | `c[k] = $N` (a binary-input field) | its `BINFMT` type (i64 or f64 number) | planned |
 | `c[k] = $0` (unmodified text record) | strnum, encoded as `atom` | row capture supported |
 | `split(src, a, sep)` pieces | strnum, positional key -- for ANY source, literals included (`BEGIN { split("10 9", a); print typeof(a[1]), (a[1] > a[2]) }` prints `strnum 1`) | supported |
@@ -355,6 +355,20 @@ each newly admitted input -- not deferred to the declaration PR.
    scalar delta (`c[$1] += n`).
 4. String and strnum element writes (`a[k] = "x"`, `a[k] = $N`, `a[k] = a[k] $2`) with
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
+   (a) Array-only rules -- landed: `a[KEY] = $N` (strnum), `= "lit"` and a
+   concatenation of fields and literals (string), at a field, SUBSEP or literal key,
+   store the joined text as an interned atom id (a str-valued table, like row
+   capture). The value is built by one snprintf (a literal part is format text with
+   `%` doubled) into a buffer sized by a measuring snprintf and heap-allocated, so
+   it is never truncated. `plawk_array_kind_agrees/2` admits `[string]` and
+   `[strnum]` (the latter without a split write: split's keys are positions). A
+   for-in value guard on a STRING array compares lexically (the comparator's string
+   kind byte), on a strnum array numerically when the text looks numeric. An END
+   fold (`for (k in a) t += a[k]`) over any str-valued table declines -- it summed
+   atom ids on row capture before. Still open: (b) the self-append `a[k] = a[k] X`
+   (an element read inside the value), (c) `a[NR] = $0` with a numeric END loop
+   (tac), (d) these writes beside scalar work (the mixed walker), numeric reads of
+   strnum values (`print a[k] * 2`, a strnum fold).
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
    reason messages.
 

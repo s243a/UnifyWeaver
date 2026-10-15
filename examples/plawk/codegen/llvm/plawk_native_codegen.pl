@@ -773,11 +773,14 @@ plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
     \+ nb_current(plawk_counter_arrays_scope, active),
     !,
     plawk_program_counter_arrays(Program, Counters),
+    plawk_program_string_arrays(Program, Strings),
     setup_call_cleanup(
         ( nb_setval(plawk_counter_arrays, Counters),
+          nb_setval(plawk_string_arrays, Strings),
           nb_setval(plawk_counter_arrays_scope, active) ),
         once(plawk_program_native_driver_ir(Program, InputPath, DriverIR)),
         ( nb_setval(plawk_counter_arrays, []),
+          nb_setval(plawk_string_arrays, []),
           nb_setval(plawk_counter_arrays_scope, idle) )).
 plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
     \+ ( nb_current(plawk_f64_arrays, Active), Active \== [] ),
@@ -839,6 +842,26 @@ plawk_program_counter_arrays(Program, Counters) :-
           forall(( member(write(A, How), Effects), How \== delete ),
                  plawk_array_write_kind(How, counter)) ),
         Counters).
+
+%% plawk_program_string_arrays(+Program, -Strings) is det.
+%  STRING-kind arrays (arrays PR 5a): every write a string element write (`= "x"`,
+%  a concatenation). Their values compare as strings -- never numerically, even
+%  when the text looks like a number (`a[$1] = $2 ""` then `a[k] > 4` compares
+%  "10" < "4"), unlike a strnum array's (`a[$1] = $2`).
+plawk_program_string_arrays(Program, Strings) :-
+    plawk_array_effects(Program, Effects),
+    findall(A, member(write(A, set(_)), Effects), As0),
+    sort(As0, As),
+    findall(A,
+        ( member(A, As),
+          forall(( member(write(A, How), Effects), How \== delete ),
+                 plawk_array_write_kind(How, string)) ),
+        Strings).
+
+plawk_string_array(Array) :-
+    nb_current(plawk_string_arrays, Arrays),
+    is_list(Arrays),
+    memberchk(Array, Arrays).
 
 plawk_counter_array(Array) :-
     nb_current(plawk_counter_arrays, Arrays),
@@ -2851,6 +2874,11 @@ plawk_program_native_driver_ir(
     DriverIR
 ) :-
     plawk_forin_end_accum_plan(Rules, ArrayName, Operand, AssocPlan),
+    % a STR-valued table (row capture, a string / strnum element write) stores atom
+    % ids: the i64 fold would sum the ids, not the values (`a[$1] = $0` then
+    % `t += a[k]` printed a sum of registry ids). Decline instead.
+    \+ ( plawk_assoc_plan_str_array(AssocPlan, StrArray),
+          sub_term(T, Operand), T == StrArray ),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR),
@@ -6786,7 +6814,32 @@ plawk_array_write_kind(add(int(_)), counter) :- !.
 plawk_array_write_kind(add(_), double).
 plawk_array_write_kind(split, strnum).
 plawk_array_write_kind(row, row).
+% a string / strnum element write (arrays PR 5a): `= $N` is strnum (unmodified
+% text input), `= "lit"` and any concatenation are string
+plawk_array_write_kind(set(Value), Kind) :- plawk_str_value_kind(Value, Kind), !.
 plawk_array_write_kind(set(Value), Kind) :- plawk_set_value_kind(Value, Kind).
+
+%% plawk_str_value_kind(+Value, -Kind) is semidet.
+%  The semantic kind of a string-shaped element value (section 5.1): a bare
+%  text field is strnum; a string literal or a concatenation is string.
+plawk_str_value_kind(field(N), strnum) :- integer(N), N > 0, !.
+plawk_str_value_kind(Value, string) :-
+    Value \= field(_),
+    plawk_str_value_parts(Value, _).
+
+%% plawk_str_value_parts(+Value, -Parts) is semidet.
+%  A string-shaped element value as the parts the store joins: fld(N) for field
+%  N (N > 0; `= $0` is row capture, its own term), lit(S) for a string literal.
+%  Only fields and literals for now -- a scalar or an element inside the
+%  concatenation declines.
+plawk_str_value_parts(field(N), [fld(N)]) :- integer(N), N > 0, !.
+plawk_str_value_parts(string(S), [lit(S)]) :- string(S), !.
+plawk_str_value_parts(concat(Ps), Parts) :-
+    Ps = [_, _ | _],
+    maplist(plawk_str_value_part, Ps, Parts).
+
+plawk_str_value_part(field(N), fld(N)) :- integer(N), N > 0.
+plawk_str_value_part(string(S), lit(S)) :- string(S).
 
 %% plawk_array_kinds_ok(+Program) is semidet.
 %  The §5.2 mixing rules, for every array that has an element write
@@ -6810,7 +6863,12 @@ plawk_array_kind_agrees(A, Effects) :-
           ( plawk_array_write_kind(How, Kind) -> true ; Kind = unclassified ) ),
         Kinds0),
     sort(Kinds0, Kinds),
-    ( Kinds == [counter] ; Kinds == [double] ; Kinds == [counter, double] ).
+    (   Kinds == [counter] ; Kinds == [double] ; Kinds == [counter, double]
+    ;   Kinds == [string]                                   % arrays PR 5a
+    ;   % strnum element writes alone: split also writes strnum, but its keys are
+        % positions 1..n, a different key space from interned field keys
+        Kinds == [strnum], \+ memberchk(write(A, split), Effects)
+    ).
 
 %% Array EFFECTS -- the one enumeration of every read, write, import and
 %% declaration of every array in a program (docs/design/PLAWK_ARRAY_VALUE_MODEL.md
@@ -8488,6 +8546,7 @@ plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays) :-
           ( member(dynassoc(A, str(_Call)), ActionSpecs)
           ; member(dynassoc(A, posarray_str(_Call)), ActionSpecs)
           ; member(assoc_set_row(A, _Key), ActionSpecs)   % row-valued (str)
+          ; member(assoc_set_str(A, _Key3, _Ps), ActionSpecs)  % string (5a)
           ; member(assoc_set_row_cons(A, _Key2, _Fs), ActionSpecs)  % row (str)
           ; member(assoc_split(A, _Ski, _Ssep), ActionSpecs)   % split pieces (str)
           )
@@ -8869,17 +8928,15 @@ plawk_forin_end_guard_lines(guard_key(Op, V), _TableIndex, Lines, CondVar, '') :
 % strnum (numeric if the element looks like a number, else lexical -- POSIX
 % duality), testing the sign against 0 with the comparison predicate.
 plawk_forin_end_guard_lines(guard_value_strnum(Op, V), TableIndex, Lines, CondVar, '') :-
-    plawk_forin_cmp_pred(Op, Pred),
-    plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
-    format(atom(StrLine),
-        '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
-    format(atom(RcLine),
-        '  %forin_gval_rc = call i32 @wam_strnum_cmp_int(i8* %forin_gval_s, i8 1, i64 ~w)',
-        [V]),
-    format(atom(CmpLine),
-        '  %forin_gcmp = icmp ~w i32 %forin_gval_rc, 0', [Pred]),
-    CondVar = '%forin_gcmp',
-    Lines = [ValLine, StrLine, RcLine, CmpLine].
+    plawk_forin_str_int_guard_lines(Op, V, 1, TableIndex, Lines, CondVar).
+% a STRING-kind table (arrays PR 5a): lexical against the integer's text
+plawk_forin_end_guard_lines(guard_value_lex(Op, V), TableIndex, Lines, CondVar, '') :-
+    plawk_forin_str_int_guard_lines(Op, V, 2, TableIndex, Lines, CondVar).
+plawk_forin_end_guard_lines(guard_value_strnum_f(Op, M, D), TableIndex, Lines, CondVar, '') :-
+    plawk_forin_str_f_guard_lines(Op, M, D, 1, TableIndex, Lines, CondVar).
+plawk_forin_end_guard_lines(guard_value_lex_f(Op, M, D), TableIndex, Lines, CondVar, '') :-
+    plawk_forin_str_f_guard_lines(Op, M, D, 2, TableIndex, Lines, CondVar).
+
 % String equality (`arr[k] == "x"` / `!= "x"`): intern the literal into an atom
 % id (from a module-level constant) and icmp it against the element's stored id.
 % Interning is canonical, so equal strings share an id -- no strcmp needed. The
@@ -8921,21 +8978,6 @@ plawk_forin_end_guard_lines(guard_value_strord(Op, Text), TableIndex, Lines, Con
         '  %forin_gcmp = icmp ~w i32 %forin_gval_rc, 0', [Pred]),
     CondVar = '%forin_gcmp',
     Lines = [PtrLine, ValLine, StrLine, RcLine, CmpLine].
-% Str-valued element vs a float literal (`arr[k] < 3.5`): build the double
-% (M/D), resolve the element text, and compare via @wam_strnum_cmp_double
-% (numeric vs the double, else lexical against its %g form).
-plawk_forin_end_guard_lines(guard_value_strnum_f(Op, M, D), TableIndex, Lines, CondVar, '') :-
-    plawk_forin_cmp_pred(Op, Pred),
-    format(atom(FvLine), '  %forin_gfv = fdiv double ~w.0, ~w.0', [M, D]),
-    plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
-    format(atom(StrLine),
-        '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
-    format(atom(RcLine),
-        '  %forin_gval_rc = call i32 @wam_strnum_cmp_double(i8* %forin_gval_s, i8 1, double %forin_gfv)', []),
-    format(atom(CmpLine),
-        '  %forin_gcmp = icmp ~w i32 %forin_gval_rc, 0', [Pred]),
-    CondVar = '%forin_gcmp',
-    Lines = [FvLine, ValLine, StrLine, RcLine, CmpLine].
 % i64 counter element vs a float literal: widen the count and fcmp.
 plawk_forin_end_guard_lines(guard_value_f(Op, M, D), TableIndex, Lines, CondVar, '') :-
     plawk_forin_fcmp_pred(Op, FPred),
@@ -8947,6 +8989,38 @@ plawk_forin_end_guard_lines(guard_value_f(Op, M, D), TableIndex, Lines, CondVar,
         '  %forin_gcmp = fcmp ~w double %forin_gval_d, %forin_gfv', [FPred]),
     CondVar = '%forin_gcmp',
     Lines = [FvLine, ValLine, WidenLine, CmpLine].
+
+%% plawk_forin_str_int_guard_lines(+Op, +V, +KindByte, +TableIndex, -Lines, -CondVar)
+%  A str-valued element vs an integer through @wam_strnum_cmp_int; KindByte 1 is
+%  strnum (numeric when the text looks numeric), 2 a string (always lexical).
+plawk_forin_str_int_guard_lines(Op, V, Kind, TableIndex, Lines, CondVar) :-
+    plawk_forin_cmp_pred(Op, Pred),
+    plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
+    format(atom(StrLine),
+        '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
+    format(atom(RcLine),
+        '  %forin_gval_rc = call i32 @wam_strnum_cmp_int(i8* %forin_gval_s, i8 ~w, i64 ~w)',
+        [Kind, V]),
+    format(atom(CmpLine),
+        '  %forin_gcmp = icmp ~w i32 %forin_gval_rc, 0', [Pred]),
+    CondVar = '%forin_gcmp',
+    Lines = [ValLine, StrLine, RcLine, CmpLine].
+%% plawk_forin_str_f_guard_lines(+Op, +M, +D, +KindByte, +TableIndex, -Lines, -CondVar)
+% Str-valued element vs a float literal (`arr[k] < 3.5`): build the double
+% (M/D), resolve the element text, and compare via @wam_strnum_cmp_double
+% (numeric vs the double, else lexical against its %g form).
+plawk_forin_str_f_guard_lines(Op, M, D, Kind, TableIndex, Lines, CondVar) :-
+    plawk_forin_cmp_pred(Op, Pred),
+    format(atom(FvLine), '  %forin_gfv = fdiv double ~w.0, ~w.0', [M, D]),
+    plawk_assoc_elem_call_line('%forin_gval', i64, i64, value_at, TableIndex, '%forin_slot', ValLine),
+    format(atom(StrLine),
+        '  %forin_gval_s = call i8* @wam_atom_to_string(i64 %forin_gval)', []),
+    format(atom(RcLine),
+        '  %forin_gval_rc = call i32 @wam_strnum_cmp_double(i8* %forin_gval_s, i8 ~w, double %forin_gfv)', [Kind]),
+    format(atom(CmpLine),
+        '  %forin_gcmp = icmp ~w i32 %forin_gval_rc, 0', [Pred]),
+    CondVar = '%forin_gcmp',
+    Lines = [FvLine, ValLine, StrLine, RcLine, CmpLine].
 
 %% plawk_forin_end_accum_ir(+LoopVar, +ArrayName, +Acc, +Operand,
 %%     +PrintFields, +AssocPlan, +Descriptor, +OutputSeparator, -IR)
@@ -11449,6 +11523,7 @@ plawk_assoc_spec_table_name(assoc_add_n(ArrayName, _Comps, _Delta), ArrayName).
 plawk_assoc_spec_table_name(assoc_delete(ArrayName, _K), ArrayName).
 plawk_assoc_spec_table_name(assoc_delete_n(ArrayName, _Comps), ArrayName).
 plawk_assoc_spec_table_name(assoc_set_row(ArrayName, _K), ArrayName).
+plawk_assoc_spec_table_name(assoc_set_str(ArrayName, _K, _Ps), ArrayName).
 plawk_assoc_spec_table_name(assoc_set_row_cons(ArrayName, _K, _Fs), ArrayName).
 plawk_assoc_spec_table_name(assoc_guarded_print(Pattern, _Fields), ArrayName) :-
     plawk_membership_array(Pattern, ArrayName).
@@ -11562,6 +11637,22 @@ plawk_assoc_body_action_spec(set_assoc(var(ArrayName), field(KeyIndex), Value),
     integer(KeyIndex), KeyIndex > 0,
     plawk_set_value_kind(Value, Kind),
     memberchk(Kind, [counter, double]).
+% `arr[KEY] = STRING` -- a string / strnum element write (arrays PR 5a): a bare
+% field, a string literal or a concatenation of fields and literals, joined and
+% interned, the atom id stored (replace semantics) -- a str-valued table like a
+% row capture's. Field, SUBSEP and literal keys, with row capture's key prologue.
+plawk_assoc_body_action_spec(set_assoc(var(ArrayName), field(KeyIndex), Value),
+        assoc_set_str(ArrayName, KeyIndex, Parts)) :-
+    integer(KeyIndex), KeyIndex > 0,
+    plawk_str_value_parts(Value, Parts).
+plawk_assoc_body_action_spec(set_assoc(var(ArrayName), subsep_key(Fields), Value),
+        assoc_set_str(ArrayName, subsep_key(Comps), Parts)) :-
+    plawk_subsep_key_components(Fields, Comps),
+    plawk_str_value_parts(Value, Parts).
+plawk_assoc_body_action_spec(set_assoc(var(ArrayName), Lit, Value),
+        assoc_set_str(ArrayName, subsep_key(Comps), Parts)) :-
+    plawk_assoc_literal_key_comps(Lit, Comps),
+    plawk_str_value_parts(Value, Parts).
 % Associative add-assign `arr[$k] += DELTA`: fold DELTA (a field value or an
 % integer constant) into the table at the key interned from field k. The
 % general form of `arr[$k]++` and the pass-1 half of per-key normalise. v1
@@ -12520,6 +12611,13 @@ plawk_assoc_planned_actions([assoc_set_row(ArrayName, KeyIndex) | Rest],
     },
     [assoc_set_row_action(Index, ArrayName, TableIndex, KeyIndex)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
+plawk_assoc_planned_actions([assoc_set_str(ArrayName, Key, Parts) | Rest],
+        Tables, StrArrays, PosArrays, Index) -->
+    { nth0(TableIndex, Tables, ArrayName),
+      NextIndex is Index + 1
+    },
+    [assoc_set_str_action(Index, ArrayName, TableIndex, Key, Parts)],
+    plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([assoc_set_row_cons(ArrayName, KeyIndex, Fields) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
     { nth0(TableIndex, Tables, ArrayName),
@@ -12674,16 +12772,22 @@ plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, str(Text)), _IsStr, GuardPlan) 
 % A float-literal RHS (`arr[k] < 3.5`): on a str-valued table go through strnum
 % against the double (numeric vs the value, else lexical against %g of it); on an
 % i64 counter table widen the count to double and fcmp.
-plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, float_const(M, D)), IsStr,
+% On a STRING-kind table (arrays PR 5a) the comparison is lexical against the
+% number's text: the same comparators with the string kind byte.
+plawk_forin_guard_plan(forin_val_cmp(A, _K, Op, float_const(M, D)), IsStr,
         GuardPlan) :-
     !,
-    ( IsStr == true
+    (   IsStr == true, plawk_string_array(A)
+    ->  GuardPlan = guard_value_lex_f(Op, M, D)
+    ;   IsStr == true
     ->  GuardPlan = guard_value_strnum_f(Op, M, D)
     ;   GuardPlan = guard_value_f(Op, M, D)
     ).
-plawk_forin_guard_plan(forin_val_cmp(_A, _K, Op, V), IsStr, GuardPlan) :-
+plawk_forin_guard_plan(forin_val_cmp(A, _K, Op, V), IsStr, GuardPlan) :-
     integer(V),
-    ( IsStr == true
+    (   IsStr == true, plawk_string_array(A)
+    ->  GuardPlan = guard_value_lex(Op, V)
+    ;   IsStr == true
     ->  GuardPlan = guard_value_strnum(Op, V)
     ;   GuardPlan = guard_value(Op, V)
     ).
@@ -13976,6 +14080,77 @@ plawk_assoc_rule_action_blocks(RuleIndex,
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% A string / strnum element write `arr[KEY] = PARTS` (arrays PR 5a): row capture's
+% key prologue, then the parts joined by one snprintf (a literal part is format
+% text, `%` doubled; a field part is a null-safe `%.*s`). The buffer is SIZED by a
+% measuring snprintf and heap-allocated -- no fixed cap, so a long value is never
+% truncated -- interned (the intern copies), freed, and the id stored.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_set_str_action(Index, _ArrayName, TableIndex, Key, Parts) | Rest],
+        NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(B), 'assoc_rule_~w_action_~w', [RuleIndex, Index]),
+      plawk_assoc_row_key_prologue(Key, B, FieldSeparator, ActionNextLabel,
+          KeyIdIR, KeyGlobals, KeyLines),
+      format(atom(EmptyName), '~w_vempty', [B]),
+      format(atom(EmptyGlobal),
+          '@.~w = private constant [1 x i8] zeroinitializer', [EmptyName]),
+      plawk_str_parts_format_atom(Parts, FmtAtom),
+      format(atom(FmtName), '~w_vfmt', [B]),
+      llvm_emit_c_string_global(FmtName, FmtAtom, FmtGlobal, _FmtLen, FmtBytes),
+      findall(N, member(fld(N), Parts), FieldIndexes),
+      format(atom(VB), '~w_v', [B]),
+      plawk_row_cons_field_lines(FieldIndexes, VB, EmptyName, FieldSeparator, 0,
+          FieldLines, ArgFrags),
+      (   ArgFrags == []
+      ->  ArgsTail = ''
+      ;   atomic_list_concat(ArgFrags, ', ', ArgsIR),
+          atom_concat(', ', ArgsIR, ArgsTail)
+      ),
+      format(atom(FmtP),
+          '  %~w_vfmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+          [B, FmtBytes, FmtBytes, FmtName]),
+      format(atom(Need),
+          '  %~w_vneed = call i32 (i8*, i64, i8*, ...) @snprintf(i8* null, i64 0, i8* %~w_vfmtp~w)',
+          [B, B, ArgsTail]),
+      format(atom(Need64), '  %~w_vlen = sext i32 %~w_vneed to i64', [B, B]),
+      format(atom(Size), '  %~w_vsize = add i64 %~w_vlen, 1', [B, B]),
+      format(atom(Buf), '  %~w_vbuf = call i8* @malloc(i64 %~w_vsize)', [B, B]),
+      format(atom(Snp),
+          '  %~w_vwrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_vbuf, i64 %~w_vsize, i8* %~w_vfmtp~w)',
+          [B, B, B, B, ArgsTail]),
+      format(atom(Id),
+          '  %~w_vid = call i64 @wam_intern_atom(i8* %~w_vbuf, i64 %~w_vlen)', [B, B, B]),
+      format(atom(Free), '  call void @free(i8* %~w_vbuf)', [B]),
+      format(atom(SetRes), '%~w_setrc', [B]),
+      format(atom(SetVal), '%~w_vid', [B]),
+      plawk_assoc_elem_write_line(set, i64, SetRes, TableIndex, KeyIdIR, SetVal, Set),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      append([[global(EmptyGlobal), global(FmtGlobal)], KeyGlobals, [Label],
+              KeyLines, FieldLines,
+              [FmtP, Need, Need64, Size, Buf, Snp, Id, Free, Set, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+
+%% plawk_str_parts_format_atom(+Parts, -FmtAtom)
+%  The snprintf format for a string element value: literal text with `%` doubled,
+%  `%.*s` per field part.
+plawk_str_parts_format_atom(Parts, FmtAtom) :-
+    maplist(plawk_str_part_format, Parts, Frags),
+    atomic_list_concat(Frags, FmtAtom).
+
+plawk_str_part_format(fld(_), '%.*s').
+plawk_str_part_format(lit(S), Frag) :-
+    split_string(S, "%", "", Pieces),
+    atomic_list_concat(Pieces, '%%', Frag).
+
 % Row constructor `arr[$k] = row($a, $b, ...)`: same key-intern + missing-key
 % skip, then build the row as the chosen fields joined by the field separator
 % (so a reader's field projection recovers them), intern it, and store the id.
@@ -17282,6 +17457,8 @@ plawk_assoc_plan_str_array(assoc_plan(_Tables, Rules), ArrayName) :-
     member(assoc_rule(_RuleIndex, _Pattern, Actions, _Control), Rules),
     ( member(assoc_set_row_action(_Index, ArrayName, _TableIndex, _Ki), Actions)
     ; member(assoc_set_row_cons_action(_Index2, ArrayName, _TableIndex2, _Ki2, _Fs),
+        Actions)
+    ; member(assoc_set_str_action(_Index3, ArrayName, _TableIndex3, _Ki3, _Ps),
         Actions)
     ),
     !.

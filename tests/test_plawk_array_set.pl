@@ -80,10 +80,8 @@ test(double_write_uses_the_f64_entry) :-
 % Kinds this PR does not admit, and mixes the rules forbid, decline (never exit 4)
 test(unadmitted_kinds_and_mixes_decline) :-
     forall(member(Src,
-            [ % a bare field copy is strnum (PR 4)
-              "{ c[$1] = $2 } END { for (k in c) print k, c[k] }\n",
-              % a string (PR 4)
-              "{ c[$1] = \"x\" } END { for (k in c) print k, c[k] }\n",
+            [ % (a bare field copy -- strnum -- and a string compile since arrays
+              % PR 5a: tests/test_plawk_array_strings.pl)
               % number + strnum (split pieces): no dual storage
               "{ c[$1] = 5; split($1, c, \",\") } END { for (k in c) print k, c[k] }\n",
               % number + row
