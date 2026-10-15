@@ -11,7 +11,12 @@
 % sized by a measuring snprintf, so a long value is never truncated. A strnum
 % array compares numerically when the text looks numeric, a STRING array always
 % lexically. Mixing kinds in one array declines (section 5.2), and so does a
-% numeric fold over a str-valued table. gawk 5.1.0 (LC_ALL=C).
+% numeric fold over a str-valued table.
+%
+% PR 5c: the same writes beside scalar work (the mixed walker), and at an NR key
+% -- `a[NR] = $0` with a numeric END loop is tac. A counter key reads by its
+% decimal text (awk keys `a[1]` and `a["1"]` alike); a str-valued element prints
+% its text, nothing when absent. gawk 5.1.0 (LC_ALL=C).
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -93,6 +98,46 @@ test(mixed_kinds_and_numeric_folds_decline) :-
         build_status_is(Src, 3)),
     !.
 
+% tac and its relatives: output ORDER is the point, so these compare exactly.
+test(tac_and_nr_keys, [condition(clang_available)]) :-
+    run_exact("{ a[NR] = $0 } END { for (i = NR; i >= 1; i--) print a[i] }\n",
+        "a 7\nb 4\nc 1\na 2\nb 5\na 3\n"),
+    run_exact("{ a[NR] = $0 } END { i = NR; while (i > 0) { print a[i]; i-- } }\n",
+        "a 7\nb 4\nc 1\na 2\nb 5\na 3\n"),
+    run_exact("{ n++; a[NR] = $1 \"=\" $2 } END { for (i = 1; i <= n; i++) print a[i] }\n",
+        "a=3\nb=5\na=2\nc=1\nb=4\na=7\n"),
+    run_exact("{ a[NR] = $2 } END { for (i = 1; i <= NR; i++) print i, a[i] }\n",
+        "1 3\n2 5\n3 2\n4 1\n5 4\n6 7\n"),
+    run_exact("{ a[NR] = $0 } END { print a[1], a[3] }\n", "a 3 a 2\n"),
+    run_sorted("{ a[NR] = $0 } END { for (k in a) print k, a[k] }\n",
+        "1 a 3\n2 b 5\n3 a 2\n4 c 1\n5 b 4\n6 a 7\n"),
+    !.
+
+% Beside scalar work (the mixed walker): END for-in and literal-key prints, a rule
+% body's field-keyed print, and a counter-keyed read of an absent element.
+test(string_writes_beside_scalars, [condition(clang_available)]) :-
+    run_sorted("{ a[$1] = $2; n++ } END { for (k in a) print k, a[k], n }\n",
+        "a 7 6\nb 4 6\nc 1 6\n"),
+    run_exact("{ a[$1] = $2; n++ } END { print a[\"a\"], a[\"zz\"], n }\n", "7  6\n"),
+    run_exact("{ a[$1] = $2; n++; print $1, a[$1] \"|\", a[\"zz\"] \"|\" }\n",
+        "a 3| |\nb 5| |\na 2| |\nc 1| |\nb 4| |\na 7| |\n"),
+    run_exact("{ a[$1] = $0; n++ } END { for (i = 1; i <= 3; i++) print i, a[i] \"|\" }\n",
+        "1 |\n2 |\n3 |\n"),
+    !.
+
+% No numeric read of a str-valued table in the mixed walker yet: each declines
+% rather than reading an atom id as a number.
+test(numeric_reads_of_string_tables_decline) :-
+    forall(member(Src,
+            [ "{ a[$1] = $2; n++ } END { for (k in a) { t += a[k] }; print t }\n",
+              "{ a[$1] = $2; n++; t += a[$1] } END { print t }\n",
+              "{ a[$1] = $2; n++; if (a[$1] > 9) print $1 }\n",
+              "{ a[NR] = $2 } END { for (i = 1; i <= NR; i++) t += a[i]; print t }\n",
+              "{ a[$1] = $2; n++ } END { for (k in a) print k, a[k] * 2 }\n"
+            ]),
+        build_status_is(Src, 3)),
+    !.
+
 :- end_tests(plawk_array_strings).
 
 % --- helpers ---------------------------------------------------------------
@@ -105,6 +150,33 @@ odir(Dir) :-
 run_sorted(Src, Expected) :-
     input(Input),
     run_sorted_on(Input, Src, Expected).
+
+run_exact(Src, Expected) :-
+    input(Input),
+    run_out(Input, Src, Out),
+    (   Out == Expected
+    ->  true
+    ;   format(user_error, "~n~w~n  got      ~q~n  expected ~q~n", [Src, Out, Expected]),
+        fail
+    ).
+
+run_out(Input, Src, Out) :-
+    odir(Dir),
+    directory_file_path(Dir, 'ase_bin', Bin),
+    ( exists_file(Bin) -> delete_file(Bin) ; true ),
+    directory_file_path(Dir, 'ase', Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    atom_concat(Prog0, '_in.txt', In),
+    setup_call_cleanup(open(In, write, SI, [encoding(utf8)]),
+        write(SI, Input), close(SI)),
+    build_status_of(Prog, Bin, BuildStatus),
+    assertion(BuildStatus == 0),
+    process_create(Bin, [In], [stdout(pipe(PS)), stderr(std), process(Pid)]),
+    read_string(PS, _, Out),
+    close(PS),
+    process_wait(Pid, exit(0)).
 
 run_sorted_on(Input, Src, Expected) :-
     odir(Dir),

@@ -365,10 +365,21 @@ each newly admitted input -- not deferred to the declaration PR.
    for-in value guard on a STRING array compares lexically (the comparator's string
    kind byte), on a strnum array numerically when the text looks numeric. An END
    fold (`for (k in a) t += a[k]`) over any str-valued table declines -- it summed
-   atom ids on row capture before. Still open: (b) the self-append `a[k] = a[k] X`
-   (an element read inside the value), (c) `a[NR] = $0` with a numeric END loop
-   (tac), (d) these writes beside scalar work (the mixed walker), numeric reads of
-   strnum values (`print a[k] * 2`, a strnum fold).
+   atom ids on row capture before.
+   (c) NR keys and the mixed walker -- landed: `a[NR] = $0` / `a[NR] = PARTS`
+   intern NR's decimal as the key (both chains), and the mixed walker stores these
+   writes at a field or NR key, so tac (`for (i = NR; i >= 1; i--) print a[i]`) and
+   string writes beside scalar work compile. A str-valued element read in a print --
+   by a string / strnum key slot, a COUNTER key (its decimal interned), a field key
+   or the for-in loop key -- prints the element's text (nothing when absent);
+   these reads used to assume an i64 table. Numeric reads of a str-valued table in
+   the mixed walker (`t += a[k]`, `a[$1] > 9`, `a[k] * 2`) decline.
+   Still open: (b) the self-append `a[k] = a[k] X` -- measured, not shipped: each
+   append interns the whole new value and the atom table never frees, so n appends
+   to one key hold O(n^2) bytes (8000 records: 373 MB vs gawk's 4 MB); it needs a
+   mutable, non-interned string cell, and interning is what makes string equality
+   an id compare, so that cell is a design change. (d) numeric reads of strnum
+   values (`print a[k] * 2`, a strnum fold, rule-body conditions).
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
    reason messages.
 
