@@ -2520,10 +2520,14 @@ begin_assignment_name('SUBSEP') -->
 % Exact END cardinality idiom: initialise an accumulator to zero, increment it
 % once for each occupied associative-array entry, then print it. Lower directly
 % to the established for-in accumulation AST; sharing Acc across all three
-% parser terms ensures that near-misses are not silently normalised.
+% parser terms ensures that near-misses are not silently normalised. The reset
+% stays in the AST: dropping it made a program with scalar rules print the
+% rule-time value plus the count (`{ n = 7; c[$1]++ } END { n = 0; ... }` printed
+% 10), and nothing for an empty array (gawk prints 0).
 %
 %   END { n = 0; for (k in seen) n++; print n }
-end_clauses([end([for_in(var(LoopVar), var(ArrayName),
+end_clauses([end([set(var(Acc), int(0)),
+                  for_in(var(LoopVar), var(ArrayName),
                   [add(var(Acc), int(1))]),
                   print([var(Acc)])])]) -->
     "END", ws, "{", ws,

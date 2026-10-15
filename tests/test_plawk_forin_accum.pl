@@ -80,12 +80,17 @@ test(labeled_sum_runs, [condition(clang_available)]) :-
     assertion(Out == "sum 6\n"),
     !.
 
-% Empty hash: the loop runs zero iterations, the accumulator stays 0.
+% Empty hash: the loop runs zero iterations, so the accumulator is never assigned
+% and prints as awk's uninitialised value -- an empty line (gawk), not 0. A reset
+% first (`total = 0`) would make it 0.
 test(empty_hash_sum_zero, [condition(clang_available)]) :-
     fa_dir(Dir),
     Src = "/never/ { c[$1]++ }\nEND { for (k in c) total += c[k] ; print total }\n",
     build_run_text(Dir, 'emp', Src, "a\nb\n", Out),
-    assertion(Out == "0\n"),
+    assertion(Out == "\n"),
+    Src0 = "/never/ { c[$1]++ }\nEND { total = 0; for (k in c) total++ ; print total }\n",
+    build_run_text(Dir, 'emp0', Src0, "a\nb\n", Out0),
+    assertion(Out0 == "0\n"),
     !.
 
 :- end_tests(plawk_forin_accum).
