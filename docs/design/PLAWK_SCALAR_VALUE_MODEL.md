@@ -42,8 +42,16 @@ plawk types every scalar **statically**, into one storage kind (chosen by
 |---|---|---|
 | `scalar_counter(N)` | `i64` | `n++`, `n = 3` |
 | `scalar_double(N)` | `double` | `t += $2`, `x = 1.5` |
-| `scalar_string(N)` | interned atom id (`i64`) | `s = "a" "b"`, `sub/gsub` target |
-| `scalar_strnum(N)` | interned atom id of the field bytes | `x = $1` |
+| `scalar_string(N)` | string value (`i64`): atom id or owned handle | `s = "a" "b"`, `sub/gsub` target |
+| `scalar_strnum(N)` | string value (`i64`) holding the field bytes | `x = $1` |
+
+A **string value** is an interned atom id (a literal, `ENVIRON` / `ARGV`, a
+for-in key, a `gsub` result) or an **owned handle** (`2^61 | ptr`) for text built
+at run time (a field copy, a concatenation, `sprintf`). Every reader resolves
+either kind through `@wam_atom_to_string`. A handle belongs to exactly one slot:
+an overwrite reuses or frees it, and a copy duplicates it. String equality
+therefore compares text, never ids; used as an array key, a value is interned
+first. See `PLAWK_STRING_STORAGE.md`.
 
 The storage kind is **not** the whole type. Semantically a slot holds
 
@@ -57,8 +65,8 @@ and `unset` is represented **outside** the storage value:
   *monotonic* (false → true, never back), so it needs no SSA threading through the
   record loop's phis: a plain store wherever a write is emitted is correct, inside
   branches and loops included.
-- **string / strnum slots**: the interned atom id `0` is the unset sentinel; it
-  renders as `""`. No mark is needed.
+- **string / strnum slots**: the value `0` is the unset sentinel; it renders as
+  `""`. No mark is needed.
 
 The type zero is therefore *not* a second value of the type. It is how the `unset`
 case **reads in a numeric context**, which is exactly awk's rule. The empty string

@@ -7560,8 +7560,9 @@ plawk_arith_elem_reads_args([A | As], Ctx, Slots, Vs, Plan, FS, Base, I0, I,
 % SUBSEP list of them) go through the one SUBSEP key builder -- a lone component is
 % the component's own text, so `c[$1]` and `c["a"]` reach the ids `c[$1]++` and
 % `c["a"]++` stored. A field key needs a current text record, so it declines in
-% END (Base plawk_endif...) and in binary mode. A scalar key uses the slot's id
-% (string / strnum) or the interned decimal of a counter.
+% END (Base plawk_endif...) and in binary mode. A scalar key uses the slot's value
+% as a key id (string / strnum, through @wam_sv_key) or the interned decimal of a
+% counter.
 plawk_cond_elem_key(var(Name), Slots, Vs, _FS, _Base, EBase, KeyId, [], Lines) :-
     !,
     nth0(Idx, Slots, Slot),
@@ -7739,6 +7740,32 @@ plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, _FS, Base,
     format(atom(LineCmp),
         '  ~w = icmp ~w i32 %~w_sn~w_rc, 0', [CondVar, Pred, Base, Path]),
     Lines = [LineLS, LineRS, LineRC, LineCmp].
+% string-vs-string (or string-vs-strnum) slot comparison: a string operand makes
+% the comparison lexical (awk's rule), so both values resolve to text
+% (@wam_sv_cstr: unset reads "") and @wam_strnum_cmp gets kind 2 for a string, 1
+% for a strnum. The generic i64 clause below compared the slots' ids -- never an
+% order (`s < t` ordered by intern id), and not equality once a slot can hold an
+% owned handle (docs/design/PLAWK_STRING_STORAGE.md section 3).
+plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, _FS, Base,
+        Path, CondVar, Lines) :-
+    plawk_cond_var_text_kind(L, Slots, LK),
+    plawk_cond_var_text_kind(R, Slots, RK),
+    ( LK =:= 2 ; RK =:= 2 ),
+    !,
+    plawk_while_cond_operand(var(L), Slots, CondValues, Base, Path, l, LId, _),
+    plawk_while_cond_operand(var(R), Slots, CondValues, Base, Path, r, RId, _),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(LineLS),
+        '  %~w_st~w_ls = call i8* @wam_sv_cstr(i64 ~w)', [Base, Path, LId]),
+    format(atom(LineRS),
+        '  %~w_st~w_rs = call i8* @wam_sv_cstr(i64 ~w)', [Base, Path, RId]),
+    format(atom(LineRC),
+        '  %~w_st~w_rc = call i32 @wam_strnum_cmp(i8* %~w_st~w_ls, i8 ~w, i8* %~w_st~w_rs, i8 ~w)',
+        [Base, Path, Base, Path, LK, Base, Path, RK]),
+    format(atom(LineCmp),
+        '  ~w = icmp ~w i32 %~w_st~w_rc, 0', [CondVar, Pred, Base, Path]),
+    Lines = [LineLS, LineRS, LineRC, LineCmp].
 % A comparison with a DOUBLE operand -- a double scalar slot or a double element
 % read: every operand is taken to double (an integer literal as N.0, an i64 value via
 % sitofp) and compared with an ordered fcmp. The generic clause below compares i64s
@@ -7763,7 +7790,10 @@ plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, _FS, Base,
     % refuse to emit a raw i64 icmp on an atom id (which would silently
     % mis-compare). The clause fails, the scalar driver declines the program, and
     % it falls back -- strnum-vs-non-strnum-var and strnum-vs-float are follow-ons.
+    % The same for a STRING slot: its value is an atom id or an owned handle, not
+    % a number (`t = $2 ""; u = $2; if (t > u)` compared t's id with u's value).
     \+ plawk_cmp_has_strnum_operand(Left, Rhs, Slots),
+    \+ ( member(var(SV), [Left, Rhs]), memberchk(scalar_string(SV), Slots) ),
     plawk_while_cond_operand(Left, Slots, CondValues, Base, Path, l, LOperand, LLines),
     plawk_while_cond_operand(Rhs, Slots, CondValues, Base, Path, r, ROperand, RLines),
     plawk_icmp_pred(Op, Pred),
@@ -7774,6 +7804,10 @@ plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, _FS, Base,
 
 plawk_cond_var_is_strnum(Name, Slots) :-
     memberchk(scalar_strnum(Name), Slots).
+
+% the comparison kind byte of a text slot: 2 for a string, 1 for a strnum
+plawk_cond_var_text_kind(Name, Slots, 2) :- memberchk(scalar_string(Name), Slots), !.
+plawk_cond_var_text_kind(Name, Slots, 1) :- memberchk(scalar_strnum(Name), Slots).
 
 %% plawk_cond_operand_is_double(+Operand, +Slots) is semidet.
 plawk_cond_operand_is_double(var(Name), Slots) :-
@@ -7893,8 +7927,9 @@ plawk_while_cond_operand(var(Name), Slots, CondValues, _Base, _Path, _Side, Ref,
 %  answered false where awk says true). That divergence is closed; this removes
 %  the conditions that produced it.
 %
-%  `==`/`!=` compare interned atom ids directly -- interning is canonical, so
-%  equal strings share an id. The ordering operators cannot: ids are not ordered
+%  `==`/`!=` compare against the literal's interned id through @wam_sv_eq_id: an
+%  id match is equality (interning is canonical, so equal atoms share an id), and
+%  a slot holding an owned handle compares its bytes with the literal's. The ordering operators cannot: ids are not ordered
 %  by string value, so the id is resolved to text and `strcmp`ed, with an unset
 %  scalar (id 0) resolving to empty via the literal global's trailing NUL.
 %
@@ -7915,10 +7950,12 @@ plawk_scalar_str_cmp_ir(Flavour, SlotValue, Op, Value, GlobalBase, CondVar,
     format(atom(IR),
 '  %~w_~wlitptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
   %~w_~wlitid = call i64 @wam_intern_atom(i8* %~w_~wlitptr, i64 ~w)
-  ~w = icmp ~w i64 ~w, %~w_~wlitid',
+  %~w_~weq = call i1 @wam_sv_eq_id(i64 ~w, i64 %~w_~wlitid)
+  ~w = icmp ~w i1 %~w_~weq, true',
         [GlobalBase, Flavour, BytesLen, BytesLen, LitName,
          GlobalBase, Flavour, GlobalBase, Flavour, Len,
-         CondVar, Pred, SlotValue, GlobalBase, Flavour]).
+         GlobalBase, Flavour, SlotValue, GlobalBase, Flavour,
+         CondVar, Pred, GlobalBase, Flavour]).
 plawk_scalar_str_cmp_ir(Flavour, SlotValue, Op, Value, GlobalBase, CondVar,
         GlobalIR, IR) :-
     memberchk(Op, [lt, le, gt, ge]),
@@ -10564,8 +10601,8 @@ plawk_strnum_cond_unsafe_read(Cond, _Set, Name) :-
     plawk_strnum_term_mentions(Cond, Name).
 
 % A scalar that is the whole KEY of an element read (`c[k] > 2`) is used as an
-% atom id, not compared -- the key path takes a strnum/string slot's id as-is
-% (plawk_assoc_scalar_key_id/5) -- so it is masked out of the unsafe-read scan.
+% key, not compared -- the key path interns a strnum/string slot's value as the
+% key (plawk_assoc_scalar_key_id/5) -- so it is masked out of the unsafe-read scan.
 plawk_strnum_mask_elem_key(assoc(var(A), var(_)), elem_read(A)) :- !.
 plawk_strnum_mask_elem_key(Operand, Operand).
 
@@ -10610,7 +10647,7 @@ plawk_strnum_arith_expr(Expr) :-
 % Does var(Name) occur anywhere in Term?
 plawk_strnum_term_mentions(var(Name), Name) :- !.
 % ...except as the whole KEY of an array element (`c[k]`, arrays PR 3b): every key
-% path uses a string/strnum slot's atom id as-is (plawk_assoc_scalar_key_id/5), so
+% path uses a string/strnum slot's value as the key (plawk_assoc_scalar_key_id/5), so
 % that is no unsafe read -- counting it demoted k to a number (`k = $1; ...
 % n = c[k] * 2; print k` printed 0 for k).
 plawk_strnum_term_mentions(assoc(_, var(_)), _) :- !, fail.
@@ -18779,8 +18816,9 @@ plawk_walker_assigned_add(Name) :-
 %% plawk_resolve_assoc_read_field(+Slots, +Values, +AssocPlan, +Field0, -Field)
 %
 %  Rewrite a print item `arr[k]` (a scalar-var-keyed assoc VALUE read) into a
-%  resolved lookup term: `assoc_keyid(TableIndex, KeyIdValue)` when the key slot
-%  value already IS the atom id (string/strnum), or `assoc_keyid_num(TableIndex,
+%  resolved lookup term: `assoc_keyid_sv(TableIndex, SlotValue)` for a string /
+%  strnum key slot (its value interned as the key -- @wam_sv_key, a no-op on an
+%  atom id; a table key is always an atom id), or `assoc_keyid_num(TableIndex,
 %  SlotValue)` for a counter slot (the print emitter interns its decimal spelling
 %  first). A double key or an unknown array leaves the term unresolved, so the
 %  print emitter has no clause for a raw `assoc(...)` and the program declines
@@ -18846,7 +18884,7 @@ plawk_resolve_assoc_read_field(Slots, Values, AssocPlan, concat(Parts0),
 plawk_resolve_assoc_read_field(_Slots, _Values, _AssocPlan, Field, Field).
 
 plawk_assoc_read_resolved_term(Slot, TableIndex, SlotValue,
-        assoc_keyid(TableIndex, SlotValue)) :-
+        assoc_keyid_sv(TableIndex, SlotValue)) :-
     ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
     !.
 plawk_assoc_read_resolved_term(scalar_counter(_), TableIndex, SlotValue,
@@ -20688,8 +20726,10 @@ plawk_scalar_update_operation_ir_(add(Expr), _Slot, FieldSeparator, Prefix, Slot
 % String scalar assignment (`x = $1 $2` / `x = "text"`): build the RHS bytes,
 % intern to an atom id, and that id becomes the slot's new i64 value. Reads /
 % `print` resolve the id back to text.
-% `gsub(/re/, "repl", var)`: substitute over the slot's CURRENT interned value
-% (InputValue -> text via @wam_atom_to_string), producing a fresh interned id.
+% `gsub(/re/, "repl", var)`: substitute over the slot's CURRENT value
+% (InputValue -> text via @wam_atom_to_string), producing a fresh interned id; the
+% old value is freed after the substitution has read it (an owned handle; an atom
+% id is a no-op).
 % The discarded count goes to the shared @plawk_gsub_count scratch.
 plawk_scalar_update_operation_ir_(set_str(gsub_str(Global, Regex, Repl)), scalar_string(_Name),
         _FieldSeparator, Prefix, SlotIndex, OpIndex, InputValue, NextValue, GlobalIR-IR) :-
@@ -20708,30 +20748,35 @@ plawk_scalar_update_operation_ir_(set_str(gsub_str(Global, Regex, Repl)), scalar
   %~w_len = call i64 @strlen(i8* %~w_str)
   %~w_patptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
   %~w_replptr = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
-  ~w = call i64 @wam_regex_gsub(i8* %~w_str, i64 %~w_len, i8* %~w_patptr, i8** @~w, i8* %~w_replptr, i64 ~w, i1 ~w, i64* @plawk_gsub_count)',
+  ~w = call i64 @wam_regex_gsub(i8* %~w_str, i64 %~w_len, i8* %~w_patptr, i8** @~w, i8* %~w_replptr, i64 ~w, i1 ~w, i64* @plawk_gsub_count)
+  call void @wam_sv_free(i64 ~w)',
         [Base, InputValue,
          Base, Base,
          Base, PatBytes, PatBytes, PatName,
          Base, ReplBytes, ReplBytes, ReplName,
-         NextValue, Base, Base, Base, CacheName, Base, ReplLen, GlobalBool]),
+         NextValue, Base, Base, Base, CacheName, Base, ReplLen, GlobalBool,
+         InputValue]),
     atomic_list_concat([PatGlobal, ReplGlobal, CacheGlobal], '\n', GlobalIR).
-% A string RHS into a text-holding slot. A strnum slot stores the same interned
-% atom id as a string slot (the runtime call yields an id via
-% plawk_str_build_ir); only comparison-time dispatch differs (strnum vs string).
+% A string RHS into a text-holding slot. A strnum slot stores the same kind of
+% value as a string slot (an owned handle or an atom id, built by
+% plawk_str_build_owned_ir/7); only comparison-time dispatch differs (strnum vs
+% string).
 % So the store is identical for both -- the slot's KIND, not this op, drives the
 % numeric-vs-lexical choice.
 plawk_scalar_update_operation_ir_(set_str(Src), Slot, FieldSeparator,
-        Prefix, SlotIndex, OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
+        Prefix, SlotIndex, OpIndex, InputValue, NextValue, GlobalIR-IR) :-
     plawk_slot_holds_text(Slot),
     !,
     format(atom(Base), '~w_slot_~w_op_~w_str', [Prefix, SlotIndex, OpIndex]),
-    plawk_str_build_ir(Src, FieldSeparator, Base, NextValue, GlobalParts, SetupLines),
+    plawk_str_build_owned_ir(Src, FieldSeparator, Base, InputValue, NextValue,
+        GlobalParts, SetupLines),
     plawk_join_nonempty_ir(GlobalParts, GlobalIR),
     atomic_list_concat(SetupLines, '\n', IR).
-% A field copy `x = $N` into a text-holding slot: intern the field's raw bytes
-% into an atom id, retaining them so a later comparison can decide numeric vs
-% lexical. Matched specifically before the generic i64 set. The record is %line
-% in this scope (as in the concat path).
+% A field copy `x = $N` into a text-holding slot: copy the field's raw bytes into
+% the slot's owned handle (@wam_sv_set reuses its buffer, so a steady-state
+% `x = $1` allocates nothing), retaining them so a later comparison can decide
+% numeric vs lexical. Matched specifically before the generic i64 set. The record
+% is %line in this scope (as in the concat path).
 %
 % This used to be restricted to a strnum slot, so a name written BOTH as a field
 % copy and as a string (`{ s = "x"; s = $1 }` -- string wins the slot kind, since
@@ -20743,7 +20788,7 @@ plawk_scalar_update_operation_ir_(set_str(Src), Slot, FieldSeparator,
 % `x = $0` is the whole record: the field-slice helper is 1-based (field 0 is a
 % null slice), so $0 reads the record's own text instead -- it printed empty.
 plawk_scalar_update_operation_ir_(set(field_i64(FieldIndex)), Slot,
-        FieldSeparator, Prefix, SlotIndex, OpIndex, _InputValue, NextValue, ''-IR) :-
+        FieldSeparator, Prefix, SlotIndex, OpIndex, InputValue, NextValue, ''-IR) :-
     plawk_slot_holds_text(Slot),
     !,
     format(atom(Base), '~w_slot_~w_op_~w_snum', [Prefix, SlotIndex, OpIndex]),
@@ -20751,9 +20796,9 @@ plawk_scalar_update_operation_ir_(set(field_i64(FieldIndex)), Slot,
     format(atom(PtrVar), '%~w_ptr', [Base]),
     format(atom(LenVar), '%~w_len', [Base]),
     plawk_field_text_lines(FieldIndex, FieldSeparator, Base, PtrVar, LenVar, SrcLines),
-    format(atom(InternL), '  %~w_id = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)',
-        [Base, Base, Base]),
-    append(SrcLines, [InternL], Lines),
+    format(atom(SetL), '  %~w_id = call i64 @wam_sv_set(i64 ~w, i8* %~w_ptr, i64 %~w_len)',
+        [Base, InputValue, Base, Base]),
+    append(SrcLines, [SetL], Lines),
     atomic_list_concat(Lines, '\n', IR).
 
 %% plawk_field_text_lines(+FieldIndex, +FieldSeparator, +Base, +PtrVar, +LenVar, -Lines)
@@ -20773,18 +20818,22 @@ plawk_field_text_lines(FieldIndex, FieldSeparator, Base, PtrVar, LenVar,
         [Base, FieldIndex, FieldSeparator]),
     format(atom(PtrL), '  ~w = extractvalue %WamSlice %~w_slice, 0', [PtrVar, Base]),
     format(atom(LenL), '  ~w = extractvalue %WamSlice %~w_slice, 1', [LenVar, Base]).
-% strnum copy `z = x` (step 4): both are strnum, so copy the source's atom id
-% straight into the target slot -- strnum-ness propagates, no coercion. The
-% read has already been substituted to ssa_strnum(Id).
+% strnum copy `z = x` (step 4): both are strnum, so the source's value is copied
+% into the target slot (plawk_str_copy_ir/7: a handle duplicated, an atom id
+% shared) -- strnum-ness propagates, no coercion. The read has already been
+% substituted to ssa_strnum(Id).
 plawk_scalar_update_operation_ir_(set(ssa_strnum(Id)), scalar_strnum(_Name),
-        _FieldSeparator, _Prefix, _SlotIndex, _OpIndex, _InputValue, Id, ''-'') :-
-    !.
+        _FieldSeparator, Prefix, SlotIndex, OpIndex, InputValue, NextValue, ''-IR) :-
+    !,
+    plawk_str_copy_ir(Id, Prefix, SlotIndex, OpIndex, InputValue, NextValue, IR).
 % string copy `m = k` into a STRING slot (arrays PR 3d-2: the END for-in key copied
-% out of the loop): copy the atom id as is. Only a string target matches; a string
-% read into any other slot kind still has no lowering and declines.
+% out of the loop): copied as above (the loop key is an atom id, shared). Only a
+% string target matches; a string read into any other slot kind still has no
+% lowering and declines.
 plawk_scalar_update_operation_ir_(set(ssa_str(Id)), scalar_string(_Name),
-        _FieldSeparator, _Prefix, _SlotIndex, _OpIndex, _InputValue, Id, ''-'') :-
-    !.
+        _FieldSeparator, Prefix, SlotIndex, OpIndex, InputValue, NextValue, ''-IR) :-
+    !,
+    plawk_str_copy_ir(Id, Prefix, SlotIndex, OpIndex, InputValue, NextValue, IR).
 plawk_scalar_update_operation_ir_(set(Expr), _Slot, FieldSeparator, Prefix, SlotIndex,
         OpIndex, _InputValue, NextValue, GlobalIR-IR) :-
     plawk_scalar_numeric_expr_ir(Expr, FieldSeparator, Prefix, SlotIndex,
@@ -20792,6 +20841,19 @@ plawk_scalar_update_operation_ir_(set(Expr), _Slot, FieldSeparator, Prefix, Slot
     format(atom(NextValue), '%~w_slot_~w_op_~w', [Prefix, SlotIndex, OpIndex]),
     format(atom(SetLine), '  ~w = add i64 0, ~w', [NextValue, ValueIR]),
     plawk_join_nonempty_ir([SetupIR, SetLine], IR).
+
+%% plawk_str_copy_ir(+Id, +Prefix, +SlotIndex, +OpIndex, +Old, -Next, -IR)
+%  A text copy into a slot: each slot owns its handle, so the source is
+%  duplicated (an atom id is shared as is) and the target's old value freed.
+%  `s = s` copies nothing.
+plawk_str_copy_ir(Id, _Prefix, _SlotIndex, _OpIndex, Old, Id, '') :-
+    Id == Old,
+    !.
+plawk_str_copy_ir(Id, Prefix, SlotIndex, OpIndex, Old, Next, IR) :-
+    format(atom(Next), '%~w_slot_~w_op_~w_copy', [Prefix, SlotIndex, OpIndex]),
+    format(atom(IR),
+        '  ~w = call i64 @wam_sv_dup(i64 ~w)~n  call void @wam_sv_free(i64 ~w)',
+        [Next, Id, Old]).
 
 % Build a string RHS into an interned atom id (returned as the SSA value).
 % A bare literal interns its own global; a concat snprintf's its `%.*s` field
@@ -20802,27 +20864,16 @@ plawk_scalar_update_operation_ir_(set(Expr), _Slot, FieldSeparator, Prefix, Slot
 % of the printf action.
 plawk_str_build_ir(sprintf(string(Format), Args), FieldSeparator, Base, IdValueIR,
         GlobalParts, SetupLines) :-
-    plawk_printf_arg_classes(Format, Classes),
-    phrase(plawk_printf_arg_pairs(Args, Classes, FieldSeparator, Base, 0), ArgPairs0),
-    plawk_printf_truncate_pairs(Format, Base, ArgPairs0, ArgPairs),
-    pairs_keys_values(ArgPairs, ArgGlobalParts, ArgInfoPairs),
-    pairs_keys_values(ArgInfoPairs, ArgSetupParts, ArgCallArgLists),
-    append(ArgCallArgLists, CallArgs),
-    maplist(plawk_printf_call_arg_kind, CallArgs, ArgKinds),
-    plawk_printf_rewrite_format(Format, ArgKinds, PrintfFormat),
-    format(atom(FmtName), '~w_fmt', [Base]),
-    llvm_emit_c_string_global(FmtName, PrintfFormat, FmtGlobal, _FmtLen, FmtBytes),
-    plawk_printf_call_args_ir(CallArgs, CallArgsIR),
-    format(atom(FmtP),
-        '  %~w_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
-        [Base, FmtBytes, FmtBytes, FmtName]),
-    ( CallArgsIR == ''
-    -> ArgsTail = ''
-    ;  atom_concat(', ', CallArgsIR, ArgsTail)
-    ),
+    plawk_str_format_setup(sprintf(string(Format), Args), FieldSeparator, Base,
+        GlobalParts, FormatLines, ArgsTail),
     plawk_snprintf_heap_intern_lines(Base, ArgsTail, IdValueIR, InternLines),
-    GlobalParts = [FmtGlobal | ArgGlobalParts],
-    append([ArgSetupParts, [FmtP], InternLines], SetupLines).
+    append(FormatLines, InternLines, SetupLines).
+plawk_str_build_ir(concat(Parts), FieldSeparator, Base, IdValueIR,
+        GlobalParts, SetupLines) :-
+    plawk_str_format_setup(concat(Parts), FieldSeparator, Base, GlobalParts,
+        FormatLines, ArgsTail),
+    plawk_snprintf_heap_intern_lines(Base, ArgsTail, IdValueIR, InternLines),
+    append(FormatLines, InternLines, SetupLines).
 plawk_str_build_ir(string(Value), _FieldSeparator, Base, IdValueIR,
         [GlobalIR], [PtrLine, IdLine]) :-
     format(atom(StrName), '~w_lit', [Base]),
@@ -20881,8 +20932,35 @@ plawk_str_build_ir(argv_at(N), _FieldSeparator, Base, IdValueIR,
     format(atom(CallLine),
         '  %~w_argvid = call i64 @wam_argv_get(i64 ~w)', [Base, N]),
     format(atom(IdValueIR), '%~w_argvid', [Base]).
-plawk_str_build_ir(concat(Parts), FieldSeparator, Base, IdValueIR,
-        [FmtGlobal, EmptyGlobal], SetupLines) :-
+%% plawk_str_format_setup(+Src, +FieldSeparator, +Base, -Globals, -Lines, -ArgsTail)
+%  A formatted string RHS (a concatenation or sprintf) as `%Base_fmtp` plus the
+%  snprintf argument tail (`''` or `, ARGS`); Lines evaluate the arguments. The
+%  caller decides where the text goes: interned (plawk_str_build_ir/6) or into a
+%  slot's owned buffer (plawk_str_build_owned_ir/7).
+plawk_str_format_setup(sprintf(string(Format), Args), FieldSeparator, Base,
+        GlobalParts, SetupLines, ArgsTail) :-
+    plawk_printf_arg_classes(Format, Classes),
+    phrase(plawk_printf_arg_pairs(Args, Classes, FieldSeparator, Base, 0), ArgPairs0),
+    plawk_printf_truncate_pairs(Format, Base, ArgPairs0, ArgPairs),
+    pairs_keys_values(ArgPairs, ArgGlobalParts, ArgInfoPairs),
+    pairs_keys_values(ArgInfoPairs, ArgSetupParts, ArgCallArgLists),
+    append(ArgCallArgLists, CallArgs),
+    maplist(plawk_printf_call_arg_kind, CallArgs, ArgKinds),
+    plawk_printf_rewrite_format(Format, ArgKinds, PrintfFormat),
+    format(atom(FmtName), '~w_fmt', [Base]),
+    llvm_emit_c_string_global(FmtName, PrintfFormat, FmtGlobal, _FmtLen, FmtBytes),
+    plawk_printf_call_args_ir(CallArgs, CallArgsIR),
+    format(atom(FmtP),
+        '  %~w_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
+        [Base, FmtBytes, FmtBytes, FmtName]),
+    ( CallArgsIR == ''
+    -> ArgsTail = ''
+    ;  atom_concat(', ', CallArgsIR, ArgsTail)
+    ),
+    GlobalParts = [FmtGlobal | ArgGlobalParts],
+    append(ArgSetupParts, [FmtP], SetupLines).
+plawk_str_format_setup(concat(Parts), FieldSeparator, Base,
+        [FmtGlobal, EmptyGlobal], SetupLines, ArgsSuffix) :-
     plawk_str_concat_format(Parts, FmtAtom),
     format(atom(FmtName), '~w_fmt', [Base]),
     llvm_emit_c_string_global(FmtName, FmtAtom, FmtGlobal, _FmtLen, FmtBytes),
@@ -20899,8 +20977,103 @@ plawk_str_build_ir(concat(Parts), FieldSeparator, Base, IdValueIR,
     format(atom(FmtP),
         '  %~w_fmtp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0',
         [Base, FmtBytes, FmtBytes, FmtName]),
-    plawk_snprintf_heap_intern_lines(Base, ArgsSuffix, IdValueIR, InternLines),
-    append([FieldLines, [FmtP], InternLines], SetupLines).
+    append(FieldLines, [FmtP], SetupLines).
+
+%% plawk_str_build_owned_ir(+Src, +FieldSeparator, +Base, +OldValue, -NextValue,
+%%     -Globals, -Lines) is semidet.
+%  A string RHS into a text slot whose current value is OldValue, as the slot's
+%  OWNED handle (docs/design/PLAWK_STRING_STORAGE.md section 3) -- nothing is
+%  interned, so a slot rewritten every record holds one buffer, not one atom per
+%  record:
+%  - `s = s X` (the slot's own value first, not read again): the rest is
+%    formatted straight onto the end of the slot's buffer (@wam_sv_grow, capacity
+%    doubling), so n appends cost O(total bytes);
+%  - a concatenation / sprintf that does not read the slot: formatted into the
+%    slot's buffer, reused when it is big enough (@wam_sv_reserve);
+%  - one that reads the slot anywhere else (`s = X s`): formatted into a fresh
+%    handle, then the old one is freed -- a source never aliases its target;
+%  - a literal, ENVIRON / ARGV or a literal ternary: the atom id, as before, and
+%    the old value is freed (an atom or 0 is a no-op).
+plawk_str_build_owned_ir(concat([Self | Rest]), FieldSeparator, Base, Old, Next,
+        Globals, Lines) :-
+    plawk_str_self_read(Self, Old),
+    \+ plawk_str_reads_value(concat(Rest), Old),
+    !,
+    (   Rest == []
+    ->  Next = Old, Globals = [], Lines = []
+    ;   plawk_str_format_setup(concat(Rest), FieldSeparator, Base, Globals,
+            FormatLines, ArgsTail),
+        plawk_snprintf_sv_append_lines(Base, Old, ArgsTail, Next, AppendLines),
+        append(FormatLines, AppendLines, Lines)
+    ).
+plawk_str_build_owned_ir(Src, FieldSeparator, Base, Old, Next, Globals, Lines) :-
+    ( Src = concat(_) ; Src = sprintf(string(_), _) ),
+    !,
+    plawk_str_format_setup(Src, FieldSeparator, Base, Globals, FormatLines, ArgsTail),
+    (   plawk_str_reads_value(Src, Old)
+    ->  plawk_snprintf_sv_set_lines(Base, 0, ArgsTail, Next, SetLines),
+        format(atom(FreeL), '  call void @wam_sv_free(i64 ~w)', [Old]),
+        append([FormatLines, SetLines, [FreeL]], Lines)
+    ;   plawk_snprintf_sv_set_lines(Base, Old, ArgsTail, Next, SetLines),
+        append(FormatLines, SetLines, Lines)
+    ).
+plawk_str_build_owned_ir(Src, FieldSeparator, Base, Old, Next, Globals, Lines) :-
+    plawk_str_build_ir(Src, FieldSeparator, Base, Next, Globals, BuildLines),
+    format(atom(FreeL), '  call void @wam_sv_free(i64 ~w)', [Old]),
+    append(BuildLines, [FreeL], Lines).
+
+% a read of the slot's own current value inside its RHS
+plawk_str_self_read(ssa_str(V), Old) :- V == Old.
+plawk_str_self_read(ssa_strnum(V), Old) :- V == Old.
+
+plawk_str_reads_value(Src, Old) :-
+    sub_term(T, Src),
+    plawk_str_self_read(T, Old),
+    !.
+
+%% plawk_snprintf_sv_set_lines(+Base, +Old, +ArgsTail, -Next, -Lines)
+%  Format `%Base_fmtp` into handle Old's buffer (0: a fresh handle), sized by a
+%  measuring snprintf. The length is strlen's, as the interning builder's is.
+plawk_snprintf_sv_set_lines(Base, Old, ArgsTail, Next,
+        [Need, Need64, H, D, Size, Snp, Len, Commit]) :-
+    format(atom(Need),
+        '  %~w_need = call i32 (i8*, i64, i8*, ...) @snprintf(i8* null, i64 0, i8* %~w_fmtp~w)',
+        [Base, Base, ArgsTail]),
+    format(atom(Need64), '  %~w_need64 = sext i32 %~w_need to i64', [Base, Base]),
+    format(atom(H), '  %~w_h = call i64 @wam_sv_reserve(i64 ~w, i64 %~w_need64)',
+        [Base, Old, Base]),
+    format(atom(D), '  %~w_d = call i8* @wam_sv_data(i64 %~w_h)', [Base, Base]),
+    format(atom(Size), '  %~w_size = add i64 %~w_need64, 1', [Base, Base]),
+    format(atom(Snp),
+        '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_d, i64 %~w_size, i8* %~w_fmtp~w)',
+        [Base, Base, Base, Base, ArgsTail]),
+    format(atom(Len), '  %~w_len = call i64 @strlen(i8* %~w_d)', [Base, Base]),
+    format(atom(Commit), '  call void @wam_sv_commit(i64 %~w_h, i64 %~w_len)', [Base, Base]),
+    format(atom(Next), '%~w_h', [Base]).
+
+%% plawk_snprintf_sv_append_lines(+Base, +Old, +ArgsTail, -Next, -Lines)
+%  Format `%Base_fmtp` onto the end of Old's text, in place (an atom or 0 Old
+%  becomes a handle holding its text first).
+plawk_snprintf_sv_append_lines(Base, Old, ArgsTail, Next,
+        [Need, Need64, H, Off, D0, D, Size, Snp, ALen, Len, Commit]) :-
+    format(atom(Need),
+        '  %~w_need = call i32 (i8*, i64, i8*, ...) @snprintf(i8* null, i64 0, i8* %~w_fmtp~w)',
+        [Base, Base, ArgsTail]),
+    format(atom(Need64), '  %~w_need64 = sext i32 %~w_need to i64', [Base, Base]),
+    format(atom(H), '  %~w_h = call i64 @wam_sv_grow(i64 ~w, i64 %~w_need64)',
+        [Base, Old, Base]),
+    format(atom(Off), '  %~w_off = call i64 @wam_sv_len(i64 %~w_h)', [Base, Base]),
+    format(atom(D0), '  %~w_d0 = call i8* @wam_sv_data(i64 %~w_h)', [Base, Base]),
+    format(atom(D), '  %~w_d = getelementptr i8, i8* %~w_d0, i64 %~w_off',
+        [Base, Base, Base]),
+    format(atom(Size), '  %~w_size = add i64 %~w_need64, 1', [Base, Base]),
+    format(atom(Snp),
+        '  %~w_wrote = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %~w_d, i64 %~w_size, i8* %~w_fmtp~w)',
+        [Base, Base, Base, Base, ArgsTail]),
+    format(atom(ALen), '  %~w_alen = call i64 @strlen(i8* %~w_d)', [Base, Base]),
+    format(atom(Len), '  %~w_len = add i64 %~w_off, %~w_alen', [Base, Base, Base]),
+    format(atom(Commit), '  call void @wam_sv_commit(i64 %~w_h, i64 %~w_len)', [Base, Base]),
+    format(atom(Next), '%~w_h', [Base]).
 
 %% plawk_snprintf_heap_intern_lines(+Base, +ArgsTail, -IdValueIR, -Lines)
 %  Format `%Base_fmtp` with ArgsTail (`''` or `, ARGS`) into a heap buffer sized
@@ -22224,14 +22397,19 @@ plawk_assoc_update_operation_ir(Prefix, OpIndex, TableIndex, KeyIndex,
          DoneLabel]).
 
 % Resolve the LLVM key-id value for a scalar-variable assoc key, plus any setup
-% lines to emit before the op. A string/strnum slot value already IS the interned
-% atom id, so it is used directly with no setup. A counter (i64) slot value is a
+% lines to emit before the op. A string/strnum slot value is an atom id or an owned
+% handle (docs/design/PLAWK_STRING_STORAGE.md section 3); a table key is always
+% an atom id, so @wam_sv_key interns a handle's text (an atom id passes through)
+% into a `<BaseName>_svkey` temp. A counter (i64) slot value is a
 % NUMBER, so its decimal spelling is interned (awk array keys are strings) via
 % @wam_intern_i64_decimal into a fresh `<BaseName>_keyid` temp. A double slot has
 % no i64->string key path yet, so this fails and the caller declines cleanly.
-plawk_assoc_scalar_key_id(Slot, SlotValue, _BaseName, SlotValue, []) :-
+plawk_assoc_scalar_key_id(Slot, SlotValue, BaseName, KeyIdIR, [SetupLine]) :-
     ( Slot = scalar_strnum(_) ; Slot = scalar_string(_) ),
-    !.
+    !,
+    format(atom(KeyIdIR), '%~w_svkey', [BaseName]),
+    format(atom(SetupLine), '  ~w = call i64 @wam_sv_key(i64 ~w)',
+        [KeyIdIR, SlotValue]).
 plawk_assoc_scalar_key_id(scalar_counter(_), SlotValue, BaseName, KeyIdIR, [SetupLine]) :-
     format(atom(KeyIdIR), '%~w_keyid', [BaseName]),
     format(atom(SetupLine),
@@ -22241,7 +22419,7 @@ plawk_assoc_scalar_key_id(scalar_counter(_), SlotValue, BaseName, KeyIdIR, [Setu
 % `arr[x]++` with a scalar key resolved to its slot value: a straight-line
 % increment on the key id -- no field slice, no missing-key branch (an unset
 % string scalar is id 0 = the empty-string key, matching awk's `arr[""]`). A
-% string/strnum slot value is the key id directly; a counter value is interned
+% string/strnum slot value goes through @wam_sv_key; a counter value is interned
 % via its decimal spelling first (SetupLines).
 %% plawk_assoc_update_operation_keyid_ir(+Prefix, +OpIndex, +TableIndex, +Slot,
 %%     +SlotValue, +Delta, -GlobalIR-IR) is det.
@@ -22265,7 +22443,7 @@ plawk_assoc_update_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotVal
 
 % `delete arr[x]` with a scalar key resolved to its slot value: a straight-line
 % void delete on the key id (the runtime delete is a no-op for an absent key).
-% Key-id resolution mirrors the inc case (direct for string/strnum, decimal
+% Key-id resolution mirrors the inc case (@wam_sv_key for string/strnum, decimal
 % intern for a counter).
 plawk_assoc_delete_operation_keyid_ir(Prefix, OpIndex, TableIndex, Slot, SlotValue, ''-IR) :-
     format(atom(BaseName), '~w_assoc_~w', [Prefix, OpIndex]),
@@ -25192,6 +25370,16 @@ plawk_emit_print_expr_for_context(assoc_keyid(TableIndex, KeyIdValue), _FieldSep
     format(atom(HasIR), '%~w_assoc_has', [Base]),
     plawk_assoc_elem_call_line(HasIR, i1, i64, exists, TableIndex, KeyIdValue, HasCall),
     plawk_assoc_elem_call_line(ValueIR, i64, i64, get, TableIndex, KeyIdValue, GetCall).
+% `print arr[s]` with a string / strnum key SLOT: the slot may hold an owned
+% handle (docs/design/PLAWK_STRING_STORAGE.md section 3), and a table key is an
+% atom id, so the key is @wam_sv_key of the value first.
+plawk_emit_print_expr_for_context(assoc_keyid_sv(TableIndex, SlotValue), FieldSeparator,
+        Context, Out, Globals, [KeyL | Setup]) :-
+    plawk_print_expr_value_base(Context, int, Base),
+    format(atom(KeyIR), '%~w_svkey', [Base]),
+    format(atom(KeyL), '  ~w = call i64 @wam_sv_key(i64 ~w)', [KeyIR, SlotValue]),
+    plawk_emit_print_expr_for_context(assoc_keyid(TableIndex, KeyIR), FieldSeparator,
+        Context, Out, Globals, Setup).
 % `print n` of a TRACKED counter that may still be unassigned here: awk prints ""
 % for an uninitialised value, so the assigned mark (@plawk_slot_assigned, stored by
 % every write to a tracked slot) selects the empty format -- the same print type
