@@ -8541,6 +8541,24 @@ plawk_assoc_spec_forin_array(ActionSpecs, ArrayName) :-
     ; plawk_membership_array(Guard, ArrayName)
     ).
 
+%% plawk_assoc_specs_str_scalars(+RuleSpecs, -Marks) is semidet.
+%  `str_scalar(Name)` for every scalar set from a field (`k = $N`): its global
+%  holds an interned atom id, so a print resolves it to text and arithmetic reads
+%  its numeric value (it used to print and compute with the id). The marks ride in
+%  the str-array list, where an array name (an atom) never matches them. Fails --
+%  the program declines -- when one scalar is both set from a field and
+%  accumulated (`k = $1; k += 1`): its global would hold an id in one place and a
+%  number in the other.
+plawk_assoc_specs_str_scalars(RuleSpecs, Marks) :-
+    findall(N,
+        ( member(rule(_P, Specs, _C), RuleSpecs), member(scalar_set_str(N, _K), Specs) ),
+        Ns0),
+    sort(Ns0, Ns),
+    \+ ( member(N, Ns),
+          member(rule(_P2, Specs2, _C2), RuleSpecs),
+          member(scalar_add(N, _Src), Specs2) ),
+    findall(str_scalar(N), member(N, Ns), Marks).
+
 %% plawk_assoc_specs_str_arrays(+RuleSpecs, -StrArrays)
 %  Names of tables populated through `as assoc(str)` binds -- their
 %  values are atom-registry ids, so for-in value reads resolve to text.
@@ -11641,7 +11659,9 @@ plawk_assoc_spec_table_name(assoc_guarded_print(Pattern, _Fields), ArrayName) :-
     plawk_membership_array(Pattern, ArrayName).
 
 plawk_assoc_plan_from_specs(RuleSpecs, Tables, assoc_plan(Tables, PlannedRules)) :-
-    plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays),
+    plawk_assoc_specs_str_arrays(RuleSpecs, StrArrays0),
+    plawk_assoc_specs_str_scalars(RuleSpecs, StrScalars),
+    append(StrArrays0, StrScalars, StrArrays),
     plawk_assoc_specs_posarray_arrays(RuleSpecs, PosArrays),
     phrase(plawk_assoc_planned_rules(RuleSpecs, Tables, StrArrays, PosArrays,
         0), PlannedRules).
@@ -12021,21 +12041,33 @@ plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays, lookup_int(Arr, N), P
     number_string(N, Text),
     plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays, lookupn(Arr, [lit(Text)]),
         Planned).
-plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, svar(Name), svar(Name)).
+plawk_assoc_print_plan_field(_Tables, StrArrays, _PosArrays, svar(Name), Planned) :-
+    (   memberchk(str_scalar(Name), StrArrays)
+    ->  Planned = svar_str(Name)
+    ;   Planned = svar(Name)
+    ).
 plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays, concat_field(PartSpecs),
         concat_field(Planned)) :-
     maplist(plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays), PartSpecs, Planned).
-plawk_assoc_print_plan_field(Tables, _StrArrays, _PosArrays, farith(Op, L, R), farith(Op, L2, R2)) :-
-    plawk_assoc_arith_operand_plan(Tables, L, L2),
-    plawk_assoc_arith_operand_plan(Tables, R, R2).
+plawk_assoc_print_plan_field(Tables, StrArrays, _PosArrays, farith(Op, L, R), farith(Op, L2, R2)) :-
+    plawk_assoc_arith_operand_plan(Tables, StrArrays, L, L2),
+    plawk_assoc_arith_operand_plan(Tables, StrArrays, R, R2).
 
 % Resolve an arithmetic operand against the table set: a lookup operand
-% binds its array to a table index; field/scalar/int operands pass through.
-plawk_assoc_arith_operand_plan(Tables, alookup(Arr, N), alookup_at(TableIndex, N)) :-
-    nth0(TableIndex, Tables, Arr).
-plawk_assoc_arith_operand_plan(_Tables, afield(N), afield(N)).
-plawk_assoc_arith_operand_plan(_Tables, asvar(Name), asvar(Name)).
-plawk_assoc_arith_operand_plan(_Tables, aint(V), aint(V)).
+% binds its array to a table index and its value kind (a str table holds atom
+% ids, read through their text); a scalar set from a field is likewise text.
+% Field and int operands pass through.
+plawk_assoc_arith_operand_plan(Tables, StrArrays, alookup(Arr, N),
+        alookup_at(TableIndex, N, Kind)) :-
+    nth0(TableIndex, Tables, Arr),
+    ( memberchk(Arr, StrArrays) -> Kind = str ; Kind = i64 ).
+plawk_assoc_arith_operand_plan(_Tables, _StrArrays, afield(N), afield(N)).
+plawk_assoc_arith_operand_plan(_Tables, StrArrays, asvar(Name), Planned) :-
+    (   memberchk(str_scalar(Name), StrArrays)
+    ->  Planned = asvar_str(Name)
+    ;   Planned = asvar(Name)
+    ).
+plawk_assoc_arith_operand_plan(_Tables, _StrArrays, aint(V), aint(V)).
 
 % The per-record source value added to a scalar accumulator: a constant, or
 % field N converted to i64.
@@ -12270,6 +12302,17 @@ plawk_assoc_kind_value_print_line(str, TableIndex, KeyIR, Line) :-
     plawk_assoc_str_value_print_line(TableIndex, KeyIR, Line).
 plawk_assoc_kind_value_print_line(_Kind, TableIndex, KeyIR, Line) :-
     plawk_assoc_value_print_line(TableIndex, KeyIR, Line).
+% A scalar set from a field holds an atom id: print its text (an unset 0 is "").
+plawk_assoc_print_one_field(svar_str(Name), Base, Index, _FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(LoadL), '  %~w_sv = load i64, i64* @plawk_scalar_~w', [P, Name]),
+    plawk_assoc_text_ptr_lines(P, '%~w_sv', TextVar, TextLines),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i8* ~w)', [P, P, TextVar]),
+    append([[LoadL], TextLines, [FmtL, PrL]], Lines).
 plawk_assoc_print_one_field(svar(Name), Base, Index, _FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
     format(atom(LoadL), '  %~w_sv = load i64, i64* @plawk_scalar_~w', [P, Name]),
@@ -12307,13 +12350,22 @@ plawk_assoc_arith_operand_lines(asvar(Name), P, Slot, _FieldSep, ValVar, [LoadL,
     format(atom(ValVar), '%~w_~w', [P, Slot]),
     format(atom(LoadL), '  ~w = load i64, i64* @plawk_scalar_~w', [IVar, Name]),
     format(atom(PromL), '  ~w = sitofp i64 ~w to double', [ValVar, IVar]).
+% A scalar set from a field: the numeric value of its text (awk's strtod).
+plawk_assoc_arith_operand_lines(asvar_str(Name), P, Slot, _FieldSep, ValVar, Lines) :-
+    format(atom(B), '~w_~w', [P, Slot]),
+    format(atom(ValVar), '%~w', [B]),
+    format(atom(LoadL), '  %~w_i = load i64, i64* @plawk_scalar_~w', [B, Name]),
+    plawk_assoc_text_num_lines(B, '%~w_i', ValVar, NumLines),
+    Lines = [LoadL | NumLines].
 plawk_assoc_arith_operand_lines(aint(V), P, Slot, _FieldSep, ValVar, [Line]) :-
     format(atom(ValVar), '%~w_~w', [P, Slot]),
     format(atom(Line), '  ~w = sitofp i64 ~w to double', [ValVar, V]).
-% Table lookup operand: intern field N, read the table's i64 value there
-% (0 if absent), promote to double.
-plawk_assoc_arith_operand_lines(alookup_at(TableIndex, N), P, Slot, FieldSep, ValVar,
-        [SliceL, PtrL, LenL, KidL, ValL, PromL]) :-
+% Table lookup operand: intern field N, read the table's value there (0 if
+% absent) and convert it to double -- an i64 count is promoted; a str table's
+% atom id is read through its text (awk's strtod), as gawk reads a string
+% element in arithmetic.
+plawk_assoc_arith_operand_lines(alookup_at(TableIndex, N, Kind), P, Slot, FieldSep, ValVar,
+        Lines) :-
     format(atom(B), '~w_~w', [P, Slot]),
     format(atom(ValVar), '%~w_lu', [B]),
     format(atom(SliceL),
@@ -12326,7 +12378,32 @@ plawk_assoc_arith_operand_lines(alookup_at(TableIndex, N), P, Slot, FieldSep, Va
     format(atom(EcRes6), '%~w_val', [B]),
     format(atom(EcArg5), '%~w_kid', [B]),
     plawk_assoc_elem_call_line(EcRes6, i64, i64, get, TableIndex, EcArg5, ValL),
-    format(atom(PromL), '  ~w = sitofp i64 %~w_val to double', [ValVar, B]).
+    (   Kind == str
+    ->  plawk_assoc_text_num_lines(B, '%~w_val', ValVar, NumLines)
+    ;   format(atom(PromL), '  ~w = sitofp i64 %~w_val to double', [ValVar, B]),
+        NumLines = [PromL]
+    ),
+    append([SliceL, PtrL, LenL, KidL, ValL], NumLines, Lines).
+
+%% plawk_assoc_text_ptr_lines(+B, +ValFmt, -TextVar, -Lines)
+%  The text of a string value `ValFmt` (formatted with B): @wam_atom_to_string,
+%  with a null (an unset 0) read as "".
+plawk_assoc_text_ptr_lines(B, ValFmt, TextVar, [RawL, NullL, SelL]) :-
+    format(atom(Val), ValFmt, [B]),
+    format(atom(TextVar), '%~w_txt', [B]),
+    format(atom(RawL), '  %~w_raw = call i8* @wam_atom_to_string(i64 ~w)', [B, Val]),
+    format(atom(NullL), '  %~w_rawnull = icmp eq i8* %~w_raw, null', [B, B]),
+    format(atom(SelL),
+        '  ~w = select i1 %~w_rawnull, i8* getelementptr ([1 x i8], [1 x i8]* @.plawk_surface_print_unset, i32 0, i32 0), i8* %~w_raw',
+        [TextVar, B, B]).
+
+%% plawk_assoc_text_num_lines(+B, +ValFmt, +ValVar, -Lines)
+%  ValVar = the numeric value (double) of the string value `ValFmt`: awk's
+%  leading-number reading of its text, 0 for "" or non-numeric text.
+plawk_assoc_text_num_lines(B, ValFmt, ValVar, Lines) :-
+    plawk_assoc_text_ptr_lines(B, ValFmt, TextVar, TextLines),
+    format(atom(NumL), '  ~w = call double @wam_awk_strtod(i8* ~w)', [ValVar, TextVar]),
+    append(TextLines, [NumL], Lines).
 
 plawk_assoc_body_action_spec(for_in(var(LoopVar), var(ArrayName), Body),
         forin(LoopVar, ArrayName, Fields)) :-

@@ -379,7 +379,12 @@ each newly admitted input -- not deferred to the declaration PR.
    to one key hold O(n^2) bytes (8000 records: 373 MB vs gawk's 4 MB); it needs a
    mutable, non-interned string cell, and interning is what makes string equality
    an id compare, so that cell is a design change. (d) numeric reads of strnum
-   values (`print a[k] * 2`, a strnum fold, rule-body conditions).
+   values (`print a[k] * 2`, a strnum fold, rule-body conditions). Started in the
+   array-rule (assoc) driver's print, which did not decline but computed with the
+   atom id (`{ a[$1] = $2; print a[$1] * 2 }` printed 42 for 3): a str-valued
+   element in print arithmetic now reads as awk's strtod of its text, as does a
+   scalar set from a field (`x = $2`), which also prints as its text there
+   rather than as its id.
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
    reason messages.
 
