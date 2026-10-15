@@ -166,10 +166,13 @@ test(svar_key_increment_keys_on_the_field_text_too) :-
     !.
 
 % The delta reaches the runtime call as its own constant -- the hardcoded `i64 1` is
-% what made `c[k] += 2` unrepresentable even once the gates admitted it.
+% what made `c[k] += 2` unrepresentable even once the gates admitted it. The key is
+% the slot's value made an atom id (@wam_sv_key: the slot may own a string handle,
+% docs/design/PLAWK_STRING_STORAGE.md section 3).
 test(the_delta_reaches_the_runtime_call) :-
     build_ll("{ k = $1; c[k] += 7 } END { print c[\"INFO\"] }\n", LL),
-    assertion(sub_string(LL, _, _, _, "@wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_0, i64 %rule_0_body_slot_0_op_0_snum_id, i64 7)")),
+    assertion(sub_string(LL, _, _, _, "%rule_0_body_assoc_1_svkey = call i64 @wam_sv_key(i64 %rule_0_body_slot_0_op_0_snum_id)")),
+    assertion(sub_string(LL, _, _, _, "@wam_assoc_i64_inc(%WamAssocI64Table* %plawk_assoc_table_0, i64 %rule_0_body_assoc_1_svkey, i64 7)")),
     !.
 
 test(a_negative_delta_reaches_the_runtime_call) :-

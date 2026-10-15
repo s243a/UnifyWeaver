@@ -1,6 +1,7 @@
 # plawk string storage: builders, ownership, and memory
 
-Status: section 2 landed; sections 3-5 are the plan.
+Status: sections 2 and 3 landed for scalars (plan steps S1, S2); array
+elements and split pieces are the plan (section 4).
 
 Related: `PLAWK_SCALAR_VALUE_MODEL.md` (string / strnum slots hold an atom id, `0` =
 unset), `PLAWK_ARRAY_VALUE_MODEL.md` (str-valued tables, plan item 4),
@@ -53,7 +54,7 @@ before. Element writes (arrays PR 5a) already used this pattern.
 This fixes correctness only: the builders still intern, so the memory rows above
 are unchanged.
 
-## 3. Owned string handles (planned)
+## 3. Owned string handles (landed for scalars)
 
 Keep the i64 representation and the single read path. Add a second kind of
 id: an **owned string handle**.
@@ -116,22 +117,62 @@ Every consumer of a string id that does not go through `@wam_atom_to_string`:
 ## 4. Plan
 
 1. **S1 -- heap builders (§2): landed.**
-2. **S2 -- str-valued array elements.** Element writes (`a[k] = $N`,
-   `= "lit"`, `= PARTS`, row capture `= $0`, `row(...)`) store handles through
-   `@wam_sv_set`. Deletes free. The self-append `a[k] = a[k] X` lands on
-   `@wam_sv_append`: this is arrays plan item 4(b). The measured patch is kept
-   out of tree until then.
-3. **S3 -- string and strnum scalars.** `x = $N` uses `@wam_sv_set`; a builder
-   uses `@wam_sv_reserve` plus a direct `snprintf`; `s = s X` uses
-   `@wam_sv_append`. Copies use `@wam_sv_dup`. Also `sub` / `gsub` targets.
-4. **S4 -- split pieces.** `split` interns each piece today, so `split($0, p)` per
-   record grows with the distinct pieces. The split target becomes a handle table.
+2. **S2 -- string and strnum scalars: landed.**
+   - `x = $N` uses `@wam_sv_set`.
+   - A concatenation or `sprintf` that does not read its target is formatted
+     straight into the slot's buffer (`@wam_sv_reserve`).
+   - `s = s X` appends in place (`@wam_sv_grow`).
+   - A form that reads the target elsewhere (`s = X s`, `sprintf("%s%s", s, x)`)
+     builds a fresh handle and frees the old one.
+   - A literal, `ENVIRON`, `ARGV` or a `gsub` result is an atom id, and the old
+     value is freed.
+   - A copy (`y = x`, the END for-in key copied out) uses `@wam_sv_dup`.
+   - **Keys.** A string or strnum variable used as a key, in
+     `plawk_assoc_scalar_key_id/5` (`c[k]++`, `delete c[k]`, conditions) and in
+     element prints (`assoc_keyid_sv`), goes through `@wam_sv_key`.
+   - **Equality.** `s == "lit"` uses `@wam_sv_eq_id`.
+   - **Comparing two variables.** Two text variables with at least one string
+     operand compare by text through `@wam_strnum_cmp` (kind 2 or 1).
+     Previously they fell into the generic i64 clause, so `s < t` ordered by
+     intern id. A string variable against a numeric one now declines; it used
+     to compare an id with a number.
+
+   Measured peak RSS (gawk is about 4 MB on each):
+
+   | program | input | before | after |
+   |---|---|---|---|
+   | `{ last = $0 }` | 3M records | 263 MB | 2 MB |
+   | `{ x = $2 }` | 1M records | 73 MB | 2 MB |
+   | `{ s = s $2 }` | 30000 records | 5.2 GB, 77 s | 2.3 MB, 0.01 s |
+3. **S3 -- str-valued array elements.**
+   - Element writes (`a[k] = $N`, `= "lit"`, `= PARTS`, row capture `= $0`,
+     `row(...)`) store handles through `@wam_sv_set`, and deletes free them.
+   - The self-append `a[k] = a[k] X` lands on `@wam_sv_grow`; this is arrays
+     plan item 4(b). The measured patch is kept out of tree until then.
+   - This builds on arrays PRs 5a and 5c, the str-valued element writes.
+4. **S4 -- split pieces and the remaining interning writers.**
+   - `split` interns each piece, so `split($0, p)` per record grows with the
+     distinct pieces; the split target becomes a handle table.
+   - The `gsub` / `sub` result, `getline var` and `ENVIRON` / `ARGV` reads are
+     still interned. The last two are bounded; the first two grow per record
+     like S2's writers did.
 
 Each step is verified against gawk, on the IR corpus (the changed programs are
-exactly the touched class), and by a peak-RSS check in its tests: a bounded
-program must stay under a fixed ceiling on a large input.
+exactly the touched class), and by a memory bound in its tests. Under
+`ulimit -v`, the program must produce the full output: the old binaries printed
+short or empty output past the limit, because an intern that cannot allocate
+yields atom 0.
 
 ## 5. Known limits that remain
+
+- **A prepend or a self-reading `sprintf` copies the whole value.**
+  `s = X s` and `s = sprintf("%s%s", s, x)` build a fresh buffer every time, so
+  the time is quadratic. gawk is quadratic here too, but plawk's constant is
+  larger: on 30000 records it takes 7-9 s against gawk's 0.5-1.2 s. Memory is
+  flat.
+- **A string-to-string variable copy declines.** `t = s`, where `s` is a
+  concatenation, still has no lowering; only strnum copies and the END for-in
+  key copy compile.
 
 - **Table keys are interned and never freed.** A sliding window
   (`a[NR] = $0; delete a[NR - 10]`) still grows by one key atom per record, and so
