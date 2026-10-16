@@ -368,8 +368,9 @@ each newly admitted input -- not deferred to the declaration PR.
    `[strnum]` (the latter without a split write: split's keys are positions). A
    for-in value guard on a STRING array compares lexically (the comparator's string
    kind byte), on a strnum array numerically when the text looks numeric. An END
-   fold (`for (k in a) t += a[k]`) over any str-valued table declines -- it summed
-   atom ids on row capture before.
+   fold (`for (k in a) t += a[k]`) over a str-valued table sums awk's strtod of
+   each element's text (item (d)); it summed atom ids on row capture before, and
+   then declined.
    (c) NR keys and the mixed walker -- landed: `a[NR] = $0` / `a[NR] = PARTS`
    intern NR's decimal as the key (both chains), and the mixed walker stores these
    writes at a field or NR key, so tac (`for (i = NR; i >= 1; i--) print a[i]`) and
@@ -377,15 +378,38 @@ each newly admitted input -- not deferred to the declaration PR.
    by a string / strnum key slot, a COUNTER key (its decimal interned), a field key
    or the for-in loop key -- prints the element's text (nothing when absent);
    these reads used to assume an i64 table. Numeric reads of a str-valued table in
-   the mixed walker (`t += a[k]`, `a[$1] > 9`, `a[k] * 2`) decline.
+   the mixed walker landed with item (d).
    (b) The self-append `a[k] = a[k] X` -- landed with owned string cells
    (`PLAWK_STRING_STORAGE.md`, step S3). A text element owns a heap handle rather
    than an interned atom id. The append grows it in place, so 30000 appends hold
    2.5 MB; interning each value held O(n^2) bytes, 373 MB at 8000. The element
    read must be the write's own array and key; any other element inside the
    value declines.
-   Still open: (d) numeric reads of strnum values (`print a[k] * 2`, a strnum
-   fold, rule-body conditions).
+   (d) Numeric reads of strnum values -- landed. The array-rule (assoc) driver's
+   print did not decline but computed with the atom id
+   (`{ a[$1] = $2; print a[$1] * 2 }` printed 42 for 3): a str-valued element in
+   print arithmetic reads as awk's strtod of its text, at a field key or a literal
+   one (`p[2]` by its raw position on a split table), as does a scalar set from a
+   field (`x = $2`), which also prints as its text there rather than as its id.
+   In the mixed walker and END, an element of a STRNUM table (every write a field,
+   split or row write; `plawk_strnum_text_array/1`) is a third numeric read kind,
+   `text`, beside counter and double: it becomes the `ssa_strnum` leaf a strnum
+   scalar uses, so it prints as text and reads, in arithmetic, as strtod of its
+   text (`@wam_sv_cstr`, so an absent element, id 0, reads ""). `t += a[k]` and a
+   binary tree over one make the target double; a bare copy `x = a[k]` does not.
+   A comparison of one resolves the text and lets the runtime decide awk's way:
+   against an integer `@wam_strnum_cmp_int`, against a string literal or another
+   text value `@wam_strnum_cmp` (lexical unless both look numeric), against any
+   other number `@wam_strnum_cmp_double` -- so `a[$1] > 5` is true of "x" and of
+   "9x", as in gawk. A split piece is read by its raw position (an integer literal
+   or a counter scalar), tagged for the mixed driver's split-table IR check. A
+   STRING-kind table (`a[k] = $2 ""`) still declines in a comparison (it would
+   compare as a string even against a number, which the leaf does not carry) and
+   in mixed-walker arithmetic; its END fold sums like a strnum one. Still open: a
+   bare copy of a strnum element (`x = a[k]`, so the max idiom
+   `if (a[k] > m) m = a[k]`) and an element inside a concatenation decline -- the
+   copy would be a strnum scalar, and the strnum provenance analysis knows field,
+   ARGV and getline sources only.
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
    reason messages.
 
@@ -397,6 +421,8 @@ each newly admitted input -- not deferred to the declaration PR.
   declined kinds, and the loop-context leak regression.
 - `tests/test_plawk_array_effects.pl`: the effect enumeration (wrapper nodes, every
   program part, binds as imports, row variables, unknown-use detection).
+- `tests/test_plawk_strnum_elem_reads.pl`: numeric reads of strnum elements --
+  arithmetic, END folds, literal lookups, conditions, split pieces (item 5(d)).
 - `tests/test_plawk_array_kinds.pl`: special-variable and unassigned keys decline;
   integer-literal keys on counted tables.
 - `tests/test_plawk_posarray_keyspace.pl`, `tests/test_plawk_literal_assoc_key.pl`:
