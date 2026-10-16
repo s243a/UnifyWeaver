@@ -89,11 +89,21 @@ test(mixed_kinds_and_numeric_folds_decline) :-
             [ % strnum + string, strnum + counter, split (positional) + strnum
               "{ a[$1] = $2; a[$1] = \"x\" } END { for (k in a) print k, a[k] }\n",
               "{ a[$1] = $2; a[$1]++ } END { for (k in a) print k, a[k] }\n",
-              "{ split($0, p, \" \"); p[$1] = $2 } END { for (k in p) print k, p[k] }\n",
-              % an i64 fold over a str-valued table would sum atom ids -- row
-              % capture did, before this PR
-              "{ a[$1] = $2 } END { for (k in a) t += a[k]; print t }\n",
-              "{ a[$1] = $0 } END { for (k in a) t += a[k]; print t }\n"
+              "{ split($0, p, \" \"); p[$1] = $2 } END { for (k in p) print k, p[k] }\n"
+            ]),
+        build_status_is(Src, 3)),
+    !.
+
+% An END fold over a str-valued table sums awk's strtod of each element (array
+% plan item 5(d)); an i64 fold summed atom ids -- row capture did, before PR 5a.
+test(numeric_folds, [condition(clang_available)]) :-
+    run_exact("{ a[$1] = $2 } END { for (k in a) t += a[k]; print t }\n", "12\n"),
+    run_exact("{ a[$1] = $0 } END { for (k in a) t += a[k]; print t }\n", "0\n"),
+    !.
+
+test(string_kind_comparison_declines) :-
+    forall(member(Src,
+            [ "{ a[$1] = $2 \"\"; n++; if (a[$1] > 9) print $1 }\n"
             ]),
         build_status_is(Src, 3)),
     !.
@@ -125,17 +135,16 @@ test(string_writes_beside_scalars, [condition(clang_available)]) :-
         "1 |\n2 |\n3 |\n"),
     !.
 
-% No numeric read of a str-valued table in the mixed walker yet: each declines
-% rather than reading an atom id as a number.
-test(numeric_reads_of_string_tables_decline) :-
-    forall(member(Src,
-            [ "{ a[$1] = $2; n++ } END { for (k in a) { t += a[k] }; print t }\n",
-              "{ a[$1] = $2; n++; t += a[$1] } END { print t }\n",
-              "{ a[$1] = $2; n++; if (a[$1] > 9) print $1 }\n",
-              "{ a[NR] = $2 } END { for (i = 1; i <= NR; i++) t += a[i]; print t }\n",
-              "{ a[$1] = $2; n++ } END { for (k in a) print k, a[k] * 2 }\n"
-            ]),
-        build_status_is(Src, 3)),
+% Numeric reads of a strnum table in the mixed walker (array plan item 5(d)): the
+% element's text read as awk's strtod; they declined before, rather than read an
+% atom id as a number.
+test(numeric_reads_of_strnum_tables, [condition(clang_available)]) :-
+    run_exact("{ a[$1] = $2; n++ } END { for (k in a) { t += a[k] }; print t }\n", "12\n"),
+    run_exact("{ a[$1] = $2; n++; t += a[$1] } END { print t }\n", "22\n"),
+    run_exact("{ a[$1] = $2; n++; if (a[$1] > 3) print $1 }\n", "b\nb\na\n"),
+    run_exact("{ a[NR] = $2 } END { for (i = 1; i <= NR; i++) t += a[i]; print t }\n", "22\n"),
+    run_sorted("{ a[$1] = $2; n++ } END { for (k in a) print k, a[k] * 2 }\n",
+        "a 14\nb 8\nc 2\n"),
     !.
 
 :- end_tests(plawk_array_strings).
