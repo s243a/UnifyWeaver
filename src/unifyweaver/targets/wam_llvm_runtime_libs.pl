@@ -198,6 +198,7 @@ wam_llvm_runtime_chunk(builtin_dispatch, wam_i64_cmp_value, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_i64_value, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_cstr, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_strnum_cmp_int, fields).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_strnum_cmp_double, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_i64_cmp_value, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_str_cmp_value, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_print_ascii_lower_slice, fields).

@@ -1404,6 +1404,11 @@ base_pattern(Pattern) -->
 base_pattern(Pattern) -->
     field_field_cmp_pattern(Pattern),
     !.
+% Before field_i64: a float RHS (`$2 > 5.5`) would otherwise match `$2 > 5` and
+% leave `.5` to fail the rule.
+base_pattern(Pattern) -->
+    field_f64_cmp_pattern(Pattern),
+    !.
 base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
     !.
@@ -1892,6 +1897,27 @@ field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
       number_codes(Index, IndexCodes),
       Index > 0
     }.
+
+% Field-vs-float-literal pattern: `$N OP 5.5` (and reversed `5.5 OP $N`), parsed
+% to field_fcmp(N, Op, float_const(M, D)) with Op field-relative. Only a literal
+% with a decimal point: an integer keeps field_cmp/3.
+field_f64_cmp_pattern(field_fcmp(Index, Op, FC)) -->
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [], number_codes(Index, IndexCodes), Index > 0 },
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    signed_float_lit(FC).
+field_f64_cmp_pattern(field_fcmp(Index, Op, FC)) -->
+    signed_float_lit(FC),
+    ws,
+    numeric_cmp_op(ReadOp),
+    ws,
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [], number_codes(Index, IndexCodes), Index > 0,
+      swap_cmp_op(ReadOp, Op) }.
 
 % Field-vs-scalar pattern: `$I OP NAME { … }` (and reversed `NAME OP $I`), a
 % field compared to a user scalar variable, e.g. `$1 > threshold { … }`,
@@ -3508,6 +3534,13 @@ while_cmp(cmp(special(length), Op, Rhs)) -->
 % the element numerically (an absent element is 0) on counter tables only; every
 % other table kind, and every route without element-read support (loop
 % conditions, END), declines.
+% An element against a FLOAT literal (`if (a[$1] > 5.5)`): before the int RHS,
+% which would take `5` and leave `.5`. Only after an element -- a variable LHS
+% keeps scalar_f64_cmp (if_condition falls through to the pattern grammar).
+while_cmp(cmp(Elem, Op, FC)) -->
+    cond_elem_read(Elem),
+    ws, numeric_cmp_op(Op), ws, signed_float_lit(FC),
+    !.
 while_cmp(cmp(Elem, Op, Rhs)) -->
     cond_elem_read(Elem),
     ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).

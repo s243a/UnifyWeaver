@@ -8087,6 +8087,8 @@ plawk_cond_operand_is_double(var(Name), Slots) :-
     atom(Name),
     memberchk(scalar_double(Name), Slots).
 plawk_cond_operand_is_double(ssa_f64(_), _Slots).
+% a float literal (an element compared with `5.5`): an fdiv constant
+plawk_cond_operand_is_double(float_const(_M, _D), _Slots).
 
 %% plawk_cond_f64_operand(+Operand, +Slots, +Values, +Base, +Path, +Side, -Ref, -Lines)
 %  Operand as a double SSA value (or literal).
@@ -8096,6 +8098,12 @@ plawk_cond_f64_operand(int(N), _Slots, _Values, _Base, _Path, _Side, Ref, []) :-
     format(atom(Ref), '~w.0', [N]).
 plawk_cond_f64_operand(ssa_f64(Ref), _Slots, _Values, _Base, _Path, _Side, Ref, []) :-
     !.
+plawk_cond_f64_operand(float_const(M, D), _Slots, _Values, Base, Path, Side, Ref,
+        [Line]) :-
+    integer(M), integer(D), D > 0,
+    !,
+    format(atom(Ref), '%~w_cond~w_~w_fc', [Base, Path, Side]),
+    format(atom(Line), '  ~w = fdiv double ~w.0, ~w.0', [Ref, M, D]).
 plawk_cond_f64_operand(Operand, Slots, Values, _Base, _Path, _Side, Ref, []) :-
     plawk_cond_operand_is_double(Operand, Slots),
     !,
@@ -24777,6 +24785,10 @@ plawk_pattern_guard_ir(special_cmp('NR', Op, Value), _FieldSeparator, ''-GuardCa
         [Pred, Value]).
 % Field-vs-field pattern `$I OP $J` (single-rule guard): compare the two field
 % values by POSIX strnum rules.
+% Field-vs-float-literal pattern `$N OP 5.5` (single-rule guard).
+plawk_pattern_guard_ir(field_fcmp(Index, Op, FC), FieldSeparator, GuardIR) :-
+    plawk_pattern_guard_ir(field_fcmp(Index, Op, FC), FieldSeparator,
+        plawk_surface_field_fcmp, '%is_match', GuardIR).
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GuardIR) :-
     integer(FieldSeparator),
     integer(I), I > 0,
@@ -25037,6 +25049,19 @@ plawk_pattern_guard_ir(scalar_str_cmp_resolved(SSARef, Op, Str), _FieldSeparator
         GlobalIR, GuardCallIR).
 % Field-vs-field pattern `$I OP $J` (multi-rule / combined-pattern guard): use
 % the per-rule base for unique slice/comparator temporaries.
+% Field-vs-float-literal pattern `$N OP 5.5` (multi-rule guard): awk strnum
+% semantics against the double M/D (@wam_atom_field_strnum_cmp_double) -- numeric
+% when the field looks numeric, else a string comparison with the number's text.
+% Text mode only; any other descriptor declines.
+plawk_pattern_guard_ir(field_fcmp(Index, Op, float_const(M, D)), FieldSeparator,
+        GlobalBase, MatchValue, ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    integer(Index), Index > 0,
+    plawk_field_cmp_op_code(Op, OpCode),
+    format(atom(GuardCallIR),
+'  %~w_fv = fdiv double ~w.0, ~w.0
+  ~w = call i1 @wam_atom_field_strnum_cmp_double(%Value %line, i64 ~w, i8 ~w, double %~w_fv, i32 ~w)',
+        [GlobalBase, M, D, MatchValue, Index, FieldSeparator, GlobalBase, OpCode]).
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     integer(FieldSeparator),
     integer(I), I > 0,
