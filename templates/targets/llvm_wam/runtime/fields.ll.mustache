@@ -8,7 +8,9 @@
 ; replaces the array; an atom id or 0 left by another writer is not owned).
 ; Returns the piece count. An empty input yields 0 pieces; adjacent / trailing
 ; separators yield empty pieces, as awk does with an explicit single-char
-; separator.
+; separator -- except a single SPACE, which awk takes as the default field
+; splitting: runs of space / tab / newline separate, leading and trailing ones
+; are ignored (`split("d  1e2", p, " ")` gives 2 pieces, p[2] = "1e2").
 define i64 @wam_str_split_into(%WamAssocI64Table* %table, i8* %str, i64 %len, i8 %sep) {
 entry:
   %table_null = icmp eq %WamAssocI64Table* %table, null
@@ -42,12 +44,72 @@ sp.clear_done:
   %count_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
   store i64 0, i64* %count_slot
   %len_zero = icmp eq i64 %len, 0
-  br i1 %len_zero, label %sp.ret0, label %sp.loop
+  br i1 %len_zero, label %sp.ret0, label %sp.mode
+
+sp.mode:
+  %ws_mode = icmp eq i8 %sep, 32
+  br i1 %ws_mode, label %sp.ws_loop, label %sp.loop
+
+; default (whitespace) splitting: a piece starts at a non-blank byte after a
+; blank (or at the start) and ends before the next blank (or at the end)
+sp.ws_loop:
+  %wj = phi i64 [ 0, %sp.mode ], [ %wjn, %sp.ws_next ]
+  %wstart = phi i64 [ 0, %sp.mode ], [ %wstartn, %sp.ws_next ]
+  %win = phi i1 [ false, %sp.mode ], [ %winn, %sp.ws_next ]
+  %wpos = phi i64 [ 1, %sp.mode ], [ %wposn, %sp.ws_next ]
+  %wdone = icmp uge i64 %wj, %len
+  br i1 %wdone, label %sp.ws_final, label %sp.ws_body
+
+sp.ws_body:
+  %wcp = getelementptr i8, i8* %str, i64 %wj
+  %wc = load i8, i8* %wcp
+  %wsp = icmp eq i8 %wc, 32
+  %wtab = icmp eq i8 %wc, 9
+  %wnl = icmp eq i8 %wc, 10
+  %wb1 = or i1 %wsp, %wtab
+  %wblank = or i1 %wb1, %wnl
+  br i1 %wblank, label %sp.ws_blank, label %sp.ws_text
+
+sp.ws_blank:
+  br i1 %win, label %sp.ws_emit, label %sp.ws_next
+
+sp.ws_emit:
+  %wep = getelementptr i8, i8* %str, i64 %wstart
+  %wel = sub i64 %wj, %wstart
+  %weid = call i64 @wam_sv_set(i64 0, i8* %wep, i64 %wel)
+  %weset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %wpos, i64 %weid)
+  %wepos = add i64 %wpos, 1
+  br label %sp.ws_next
+
+sp.ws_text:
+  %wtstart = select i1 %win, i64 %wstart, i64 %wj
+  br label %sp.ws_next
+
+sp.ws_next:
+  %wstartn = phi i64 [ %wstart, %sp.ws_blank ], [ %wstart, %sp.ws_emit ], [ %wtstart, %sp.ws_text ]
+  %winn = phi i1 [ false, %sp.ws_blank ], [ false, %sp.ws_emit ], [ true, %sp.ws_text ]
+  %wposn = phi i64 [ %wpos, %sp.ws_blank ], [ %wepos, %sp.ws_emit ], [ %wpos, %sp.ws_text ]
+  %wjn = add i64 %wj, 1
+  br label %sp.ws_loop
+
+sp.ws_final:
+  br i1 %win, label %sp.ws_last, label %sp.ws_ret
+
+sp.ws_last:
+  %wlp = getelementptr i8, i8* %str, i64 %wstart
+  %wll = sub i64 %len, %wstart
+  %wlid = call i64 @wam_sv_set(i64 0, i8* %wlp, i64 %wll)
+  %wlset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %wpos, i64 %wlid)
+  ret i64 %wpos
+
+sp.ws_ret:
+  %wcount = sub i64 %wpos, 1
+  ret i64 %wcount
 
 sp.loop:
-  %j = phi i64 [ 0, %sp.clear_done ], [ %jn, %sp.next ]
-  %fstart = phi i64 [ 0, %sp.clear_done ], [ %fstartn, %sp.next ]
-  %pos = phi i64 [ 1, %sp.clear_done ], [ %posn, %sp.next ]
+  %j = phi i64 [ 0, %sp.mode ], [ %jn, %sp.next ]
+  %fstart = phi i64 [ 0, %sp.mode ], [ %fstartn, %sp.next ]
+  %pos = phi i64 [ 1, %sp.mode ], [ %posn, %sp.next ]
   %jdone = icmp uge i64 %j, %len
   br i1 %jdone, label %sp.final, label %sp.body
 

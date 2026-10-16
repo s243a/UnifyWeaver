@@ -7,7 +7,8 @@
 % and for-in. Backed by the @wam_str_split_into runtime primitive (clears the
 % table and repopulates -- split replaces the array each call). $0 is the whole
 % record; a positive field uses its slice. Empty pieces are kept (explicit
-% single-char separator, as awk). v1: field source, string-literal single-char
+% single-char separator, as awk) -- except a single space, which is awk's default
+% whitespace splitting. v1: field source, string-literal single-char
 % separator; the return count and a default (FS) separator are follow-ons.
 
 :- use_module(library(plunit)).
@@ -114,6 +115,21 @@ test(split_of_a_missing_field_clears_the_array, [condition(clang_available)]) :-
         "a x,y\nc\nd p,q\n", Out, RunStatus),
     assertion(RunStatus == 0),
     assertion(Out == "x y\n \np q\n"),
+    !.
+
+% A single SPACE separator is awk's default splitting: runs of space / tab /
+% newline separate, leading and trailing ones are ignored. It used to split on
+% each space byte, so "d  1e2" gave p[2] = "" and p[3] = "1e2". gawk 5.1.0.
+test(split_space_is_default_splitting, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'ws',
+        "{ n = split($0, p, \" \"); print n, p[1] \"|\" p[2] \"|\" p[3] }\n",
+        "d  1e2\n  lead  trail  \n\t a\tb \n\nsingle\n   \n", Out, St),
+    assertion(St == 0),
+    assertion(Out == "2 d|1e2|\n2 lead|trail|\n2 a|b|\n0 ||\n1 single||\n0 ||\n"),
+    build_run(Dir, 'ws_end', "{ split($0, a, \" \") }\nEND { for (k in a) print k, a[k] }\n",
+        "  x \t y  \n", Out2, St2),
+    assertion(St2 == 0), assertion(Out2 == "1 x\n2 y\n"),
     !.
 
 :- end_tests(plawk_split).
