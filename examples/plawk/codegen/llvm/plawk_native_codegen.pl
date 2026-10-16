@@ -1298,6 +1298,7 @@ plawk_program_native_driver_ir(
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_field_assign_sets_ir(SetFields, AssignGlobalIR, SetBodyIR),
     plawk_field_gsub_free_ir(SetFields, GsubFreeIR),
+    plawk_field_edit_output_ir(SetFields, OutDirtyIR, OutPtr),
     plawk_field_ofs_global(OutputSeparator, FieldOfsGlobal, OfsArrLen, OfsSepLen),
     % The OFS-joined record, then the ORS via the shared terminator. OFS
     % separates the record's fields; ORS terminates the record -- two separate
@@ -1311,15 +1312,15 @@ plawk_program_native_driver_ir(
 print_line:
   %fa_fb = call %WamFieldBuf* @wam_fields_new(i8* %line_s, i8 ~w)
 ~w
-  %fa_joined = call i8* @wam_fields_join_str(%WamFieldBuf* %fa_fb, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_field_ofs, i64 0, i64 0), i64 ~w)
+  %fa_joined = call i8* @wam_fields_join_str(%WamFieldBuf* %fa_fb, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_field_ofs, i64 0, i64 0), i64 ~w)~w
   %fa_out_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0
-  %fa_out_pr = call i32 (i8*, ...) @printf(i8* %fa_out_fmt, i8* %fa_joined)
+  %fa_out_pr = call i32 (i8*, ...) @printf(i8* %fa_out_fmt, i8* ~w)
 ~w
   call void @free(i8* %fa_joined)
   call void @wam_fields_free(%WamFieldBuf* %fa_fb)~w
   br label %continue_loop',
         [GuardCallIR, FieldSeparator, SetBodyIR, OfsArrLen, OfsArrLen, OfsSepLen,
-         FieldAssignTermIR, GsubFreeIR]),
+         OutDirtyIR, OutPtr, FieldAssignTermIR, GsubFreeIR]),
     plawk_ors_global_line(BeginClauses, OrsGlobalLine),
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
@@ -1338,6 +1339,39 @@ print_line:
         driver_blocks(RuntimeGlobals, BeginIR, '', lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
         DriverIR).
+
+%% plawk_field_edit_output_ir(+SetFields, -DirtyIR, -OutPtr)
+%  What `print $0` prints after the edits. A field assignment always rebuilds $0
+%  with OFS (awk assigns the field even to its own value: `$1 = $1`), so the joined
+%  record is printed -- DirtyIR is '' and the IR is as before. When every edit is a
+%  sub/gsub, the field is assigned only if a substitution happened: a sub that
+%  matches nothing leaves $0 as read (gawk prints `a,b0` unchanged under FS ","
+%  where the rebuild printed `a b0`). Each call's count (@plawk_gsub_count, loaded
+%  right after it into %fa_gs_<I>_cnt) decides, and a select picks the joined
+%  record or the input line. Each DirtyIR line carries its leading newline.
+plawk_field_edit_output_ir(SetFields, '', '%fa_joined') :-
+    memberchk(set_field(_, _), SetFields),
+    !.
+plawk_field_edit_output_ir(SetFields, DirtyIR, '%fa_out_ptr') :-
+    findall(I, nth0(I, SetFields, regex_sub_field(_, _, _, _)), Is),
+    findall(Line,
+        ( member(I, Is),
+          format(atom(Line), '\n  %fa_gs_~w_hit = icmp sgt i64 %fa_gs_~w_cnt, 0', [I, I]) ),
+        HitLines),
+    plawk_field_edit_or_lines(Is, '%fa_dirty', OrLines, DirtyVar),
+    format(atom(SelL),
+        '\n  %fa_out_ptr = select i1 ~w, i8* %fa_joined, i8* %line_s', [DirtyVar]),
+    append([HitLines, OrLines, [SelL]], Lines),
+    atomic_list_concat(Lines, DirtyIR).
+
+% OR the per-call hit flags together (a single call needs no `or`).
+plawk_field_edit_or_lines([I], _Name, [], Var) :-
+    !,
+    format(atom(Var), '%fa_gs_~w_hit', [I]).
+plawk_field_edit_or_lines([I | Is], Name, [Line | Lines], Var) :-
+    plawk_field_edit_or_lines(Is, Name, Lines, RestVar),
+    format(atom(Var), '~w_~w', [Name, I]),
+    format(atom(Line), '\n  ~w = or i1 %fa_gs_~w_hit, ~w', [Var, I, RestVar]).
 
 %% plawk_field_gsub_free_ir(+SetFields, -FreeIR)
 %  A field sub/gsub result is an owned handle that the field buffer points into
@@ -1395,7 +1429,8 @@ plawk_field_assign_fold([regex_sub_field(Global, Regex, Repl, N) | Rest], Index,
 %  `sub/gsub(/re/, repl, $N)`: read field N's current slice from the buffer, run
 %  @wam_regex_gsub over it (per-site pattern/cache; `&` expands to the match),
 %  resolve the result handle to text, and store it back into field N. Rebuilds
-%  $0 at the join, like a field assignment; the handle is freed after the join
+%  $0 at the join when it substituted (its count, %fa_gs_<I>_cnt, read by
+%  plawk_field_edit_output_ir/3); the handle is freed after the join
 %  (plawk_field_gsub_free_ir/2).
 plawk_field_gsub_one(Global, Regex, Repl, N, Index, GlobalPart, BodyPart) :-
     format(atom(PatName), 'fa_gs_~w_pat', [Index]),
@@ -1413,6 +1448,7 @@ plawk_field_gsub_one(Global, Regex, Repl, N, Index, GlobalPart, BodyPart) :-
   %fa_gs_~w_pp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
   %fa_gs_~w_rp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
   %fa_gs_~w_id = call i64 @wam_regex_gsub(i8* %fa_gs_~w_sp, i64 %fa_gs_~w_sn, i8* %fa_gs_~w_pp, i8** @~w, i8* %fa_gs_~w_rp, i64 ~w, i1 ~w, i64* @plawk_gsub_count)
+  %fa_gs_~w_cnt = load i64, i64* @plawk_gsub_count
   %fa_gs_~w_ns = call i8* @wam_atom_to_string(i64 %fa_gs_~w_id)
   %fa_gs_~w_nl = call i64 @strlen(i8* %fa_gs_~w_ns)
   call void @wam_fields_set(%WamFieldBuf* %fa_fb, i64 ~w, i8* %fa_gs_~w_ns, i64 %fa_gs_~w_nl)',
@@ -1422,6 +1458,7 @@ plawk_field_gsub_one(Global, Regex, Repl, N, Index, GlobalPart, BodyPart) :-
          Index, PatBytes, PatBytes, PatName,
          Index, ReplBytes, ReplBytes, ReplName,
          Index, Index, Index, Index, CacheName, Index, ReplLen, GlobalBool,
+         Index,
          Index, Index,
          Index, Index,
          N, Index, Index]).
