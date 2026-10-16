@@ -135,6 +135,7 @@ wam_llvm_runtime_chunk(builtin_dispatch, wam_fs_regex_field_count_value, regex).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_regex_match, regex).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_regex_gsub, regex).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_looks_numeric, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_strnum_truth, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_strnum_cmp, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_strnum_cmp_slices, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_intern_i64_decimal, strnum).

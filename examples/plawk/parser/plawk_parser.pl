@@ -1375,6 +1375,14 @@ base_pattern(assoc_postinc(KeyExpr, ArrayName)) -->
 base_pattern(Pattern) -->
     field_match_pattern(Pattern),
     !.
+% A bare `$N` or `NF` pattern is a TRUTH test (`NF { print }` skips blank
+% lines; `$3 { ... }` is true for a non-empty, non-zero field). Only these two:
+% a bare variable pattern is not taken here. The lookahead keeps `$2 > 1` and
+% `NF == 3` for their comparison productions.
+base_pattern(truth_pat(X)) -->
+    truth_pat_operand(X),
+    \+ ( ws, truth_pat_continues ),
+    !.
 % Reversed string comparison (`"a" == $1`). Its leading quote is unambiguous
 % here -- no other pattern starts with one -- so ordering against the field-first
 % productions does not matter.
@@ -3350,6 +3358,19 @@ plawk_replace_split_fs(T0, Fs, T) :-
     T =.. [F | As].
 plawk_replace_split_fs(T, _Fs, T).
 
+truth_pat_operand(field(N)) -->
+    "$", integer_codes(NCodes),
+    { NCodes \== [], number_codes(N, NCodes), N >= 1 }.
+truth_pat_operand(special('NF')) -->
+    "NF", identifier_boundary.
+
+% What may follow a pattern operand that makes it more than a bare truth test: a
+% comparison, a match, or arithmetic.
+truth_pat_continues --> numeric_cmp_op(_).
+truth_pat_continues --> "~".
+truth_pat_continues --> "!~".
+truth_pat_continues --> [C], { memberchk(C, `+-*/%^`) }.
+
 %% delete_action(-Action)//
 %
 %  `delete arr[k]` -- remove the entry keyed by `k` from an assoc table.
@@ -3548,6 +3569,31 @@ while_cmp(cmp(var(V), Op, Rhs)) -->
     identifier(V),
     { \+ scalar_cmp_reserved_name(V) },
     ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+% A bare operand is a TRUTH test (`if (n)`, `if (!seen)`, `while (x)`,
+% `if (c[$1])`, `if ($1)`, `if (NF)`): awk's truth value -- a number is true
+% when nonzero, a string when non-empty, a strnum (a field, input-derived text)
+% numerically when it looks numeric and by emptiness otherwise. Tried last: an
+% operand followed by a comparison the clauses above cannot take leaves that
+% comparison unparsed, so the `if` falls back to the pattern grammar.
+while_cmp(not(C)) -->
+    "!", ws,
+    while_cmp(C).
+while_cmp(truth(X)) -->
+    truth_operand(X).
+
+truth_operand(special(Name)) -->
+    match_special_name(Name), identifier_boundary,
+    !.
+truth_operand(field(N)) -->
+    "$", integer_codes(NCodes),
+    { NCodes \== [], number_codes(N, NCodes), N >= 1 },
+    !.
+truth_operand(Elem) -->
+    cond_elem_read(Elem),
+    !.
+truth_operand(var(V)) -->
+    identifier(V),
+    { \+ scalar_cmp_reserved_name(V) }.
 
 match_special_name('RSTART') --> "RSTART".
 match_special_name('RLENGTH') --> "RLENGTH".
