@@ -1,6 +1,7 @@
 # plawk string storage: builders, ownership, and memory
 
-Status: section 2 landed; sections 3-5 are the plan.
+Status: sections 2 and 3 landed for scalars, text-valued array elements, split
+pieces, sub/gsub results and getline reads (plan steps S1-S4).
 
 Related: `PLAWK_SCALAR_VALUE_MODEL.md` (string / strnum slots hold an atom id, `0` =
 unset), `PLAWK_ARRAY_VALUE_MODEL.md` (str-valued tables, plan item 4),
@@ -53,7 +54,7 @@ before. Element writes (arrays PR 5a) already used this pattern.
 This fixes correctness only: the builders still intern, so the memory rows above
 are unchanged.
 
-## 3. Owned string handles (planned)
+## 3. Owned string handles (landed)
 
 Keep the i64 representation and the single read path. Add a second kind of
 id: an **owned string handle**.
@@ -116,22 +117,116 @@ Every consumer of a string id that does not go through `@wam_atom_to_string`:
 ## 4. Plan
 
 1. **S1 -- heap builders (§2): landed.**
-2. **S2 -- str-valued array elements.** Element writes (`a[k] = $N`,
-   `= "lit"`, `= PARTS`, row capture `= $0`, `row(...)`) store handles through
-   `@wam_sv_set`. Deletes free. The self-append `a[k] = a[k] X` lands on
-   `@wam_sv_append`: this is arrays plan item 4(b). The measured patch is kept
-   out of tree until then.
-3. **S3 -- string and strnum scalars.** `x = $N` uses `@wam_sv_set`; a builder
-   uses `@wam_sv_reserve` plus a direct `snprintf`; `s = s X` uses
-   `@wam_sv_append`. Copies use `@wam_sv_dup`. Also `sub` / `gsub` targets.
-4. **S4 -- split pieces.** `split` interns each piece today, so `split($0, p)` per
-   record grows with the distinct pieces. The split target becomes a handle table.
+2. **S2 -- string and strnum scalars: landed.**
+   - `x = $N` uses `@wam_sv_set`.
+   - A concatenation or `sprintf` that does not read its target is formatted
+     straight into the slot's buffer (`@wam_sv_reserve`).
+   - `s = s X` appends in place (`@wam_sv_grow`).
+   - A form that reads the target elsewhere (`s = X s`, `sprintf("%s%s", s, x)`)
+     builds a fresh handle and frees the old one.
+   - A literal, `ENVIRON` or `ARGV` is an atom id, and the old value is freed.
+     (A `gsub` result was too, until S4.)
+   - A copy (`y = x`, the END for-in key copied out) uses `@wam_sv_dup`.
+   - **Keys.** A string or strnum variable used as a key, in
+     `plawk_assoc_scalar_key_id/5` (`c[k]++`, `delete c[k]`, conditions) and in
+     element prints (`assoc_keyid_sv`), goes through `@wam_sv_key`.
+   - **Equality.** `s == "lit"` uses `@wam_sv_eq_id`.
+   - **Comparing two variables.** Two text variables with at least one string
+     operand compare by text through `@wam_strnum_cmp` (kind 2 or 1).
+     Previously they fell into the generic i64 clause, so `s < t` ordered by
+     intern id. A string variable against a numeric one now declines; it used
+     to compare an id with a number.
+
+   Measured peak RSS (gawk is about 4 MB on each):
+
+   | program | input | before | after |
+   |---|---|---|---|
+   | `{ last = $0 }` | 3M records | 263 MB | 2 MB |
+   | `{ x = $2 }` | 1M records | 73 MB | 2 MB |
+   | `{ s = s $2 }` | 30000 records | 5.2 GB, 77 s | 2.3 MB, 0.01 s |
+3. **S3 -- text-valued array elements: landed.**
+   - The element store (`plawk_str_value_store_lines/7`, shared by the
+     array-only chain and the mixed walker) fetches the cell's old value. It then
+     formats the parts into that handle, reusing the buffer when it is big
+     enough. A lone field, `a[k] = $N`, is copied straight from its slice.
+   - Row capture (`= $0`) uses `@wam_sv_set`; the row constructor (`row(...)`)
+     formats into the cell's handle.
+   - **Self-append** (arrays plan item 4(b)). `a[k] = a[k] X` and
+     `a[k] = a[k] X Y` are recognised when the element read is the write's own
+     array and key term (`plawk_str_self_parts/4`). The rest is formatted onto the
+     end in place with `@wam_sv_grow`. A self read elsewhere (`a[k] = X a[k]`)
+     builds a fresh handle and frees the old one. Any other element read in the
+     value declines.
+   - **Deletes.** A delete on a TEXT array (`plawk_program_text_arrays/2`: every
+     write a string or strnum write, a row capture or a row constructor) calls
+     `@wam_assoc_sv_delete`, which frees the cell's handle. The tag cannot be
+     tested blind: a double's bit pattern can carry it (0.5 is `0x3FE0...`).
+   - **Equality.** The END for-in guard `a[k] == "x"` compared the cell's id
+     with the literal's; it now uses `@wam_sv_eq_id`.
+
+   Measured peak RSS (gawk is about 4 MB):
+
+   | program | input | before | after |
+   |---|---|---|---|
+   | `{ a[$1] = $2 }` (10 keys) | 1M records | 73 MB | 2.2 MB (0.23 s; gawk 0.21 s) |
+   | `{ a[$1] = $0 }` (10 keys) | 1M records | about 73 MB | 2.2 MB |
+   | `{ a[$1] = a[$1] $2 }` | 30000 records | declined (the patch: 373 MB at 8000) | 2.5 MB, 0.01 s |
+4. **S4 -- split pieces and the remaining per-record writers: landed.**
+   - **split.** Each piece is a handle (`@wam_str_split_into[_re]` store
+     `@wam_sv_set` results). The table clear at the start of every split frees the
+     occupied entries' handles. That is safe only if a split target holds nothing
+     else, so `plawk_array_kinds_ok/1` now gives a split target no other write
+     but `delete`. `split(...); a[$1]++` used to build: it mixes key kinds (an
+     interned key's atom id can equal a position) and printed a piece's id as a
+     count. A split target is therefore a text array (`plawk_text_write(split)`),
+     so `delete p[k]` frees the piece, and S3's text comparisons
+     (`@wam_sv_eq_id` in the for-in guard) cover its pieces; S4 builds on S3.
+   - **sub / gsub.** `@wam_regex_gsub` returns a handle. The stream editor
+     (`{ gsub(...); print $0 }`) frees every step's result after the print. A
+     field edit frees its results after the join, because `@wam_fields_set` keeps
+     only a slice into the result. A variable target keeps the result as its new
+     value (S2 already freed the old one).
+   - **getline var.** The file, main-input and command forms seed the out slot
+     with the target's value. On a line the runtime stores the line there with
+     `@wam_sv_set`, reusing the target's buffer; on EOF or an error the slot is
+     untouched, so the target keeps its value. The file and main-input forms read
+     through `@wam_stream_read_line_impl` with an owned slot; the shared
+     `@wam_stream_read_line_value` is a wrapper that still interns. A line is
+     told from the EOF marker by its handle tag, so an input line whose text is
+     `end_of_file` is now a line; it used to read as end of input. The slots are
+     globals: the file form's per-record `alloca` grew the stack, and 2M
+     `getline x < f` crashed. The record-target forms (`getline < f`,
+     `cmd | getline`) free the line after copying it into `$0`.
+   - `ENVIRON` / `ARGV` reads stay interned; they are bounded.
+
+   Measured on 2M distinct records, peak RSS (gawk is about 4 MB on each):
+
+   | program | before | after |
+   |---|---|---|
+   | `{ n = split($1, p, ","); print n, p[1], p[n] }` | 367 MB | 2.2 MB |
+   | `{ gsub(/k/, "K"); sub(/x/, "y"); print $0 }` | 286 MB | 2.3 MB |
+   | `BEGIN { FS = "," } { gsub(/v/, "V", $2); print $0 }` | 113 MB | 2.2 MB |
+   | `{ s = $1; gsub(/k/, "K", s); print s }` | 142 MB | 2.2 MB |
+   | `{ getline x; print x }` | 73 MB | 1.9 MB |
+   | `{ getline x < "f" } END { print x }` | crashed (stack) | 2.1 MB |
+   | `{ "cat f" \| getline x } END { print x }` | 144 MB | 2.1 MB |
 
 Each step is verified against gawk, on the IR corpus (the changed programs are
-exactly the touched class), and by a peak-RSS check in its tests: a bounded
-program must stay under a fixed ceiling on a large input.
+exactly the touched class), and by a memory bound in its tests. Under
+`ulimit -v`, the program must produce the full output: the old binaries printed
+short or empty output past the limit, because an intern that cannot allocate
+yields atom 0.
 
 ## 5. Known limits that remain
+
+- **A prepend or a self-reading `sprintf` copies the whole value.**
+  `s = X s` and `s = sprintf("%s%s", s, x)` build a fresh buffer every time, so
+  the time is quadratic. gawk is quadratic here too, but plawk's constant is
+  larger: on 30000 records it takes 7-9 s against gawk's 0.5-1.2 s. Memory is
+  flat.
+- **A string-to-string variable copy declines.** `t = s`, where `s` is a
+  concatenation, still has no lowering; only strnum copies and the END for-in
+  key copy compile.
 
 - **Table keys are interned and never freed.** A sliding window
   (`a[NR] = $0; delete a[NR - 10]`) still grows by one key atom per record, and so

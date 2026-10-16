@@ -3,10 +3,12 @@
 ; One case per runtime chunk (a define with its comments and globals); the assembly order is wam_llvm_runtime_chunk/2.
 {{case wam_str_split_into}}
 ; Split %str[0..len) on the single byte %sep into %table, keyed by 1-based
-; position (values are interned atom ids). The table is cleared first (split
-; replaces the array). Returns the piece count. An empty input yields 0 pieces;
-; adjacent / trailing separators yield empty pieces, as awk does with an
-; explicit single-char separator.
+; position. Each piece is an owned string handle (PLAWK_STRING_STORAGE.md, S4),
+; so the table is cleared first by freeing the occupied entries' handles (split
+; replaces the array; an atom id or 0 left by another writer is not owned).
+; Returns the piece count. An empty input yields 0 pieces; adjacent / trailing
+; separators yield empty pieces, as awk does with an explicit single-char
+; separator.
 define i64 @wam_str_split_into(%WamAssocI64Table* %table, i8* %str, i64 %len, i8 %sep) {
 entry:
   %table_null = icmp eq %WamAssocI64Table* %table, null
@@ -27,6 +29,11 @@ sp.clear_loop:
 sp.clear_body:
   %ce = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %ci
   %ce_occ = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %ce, i32 0, i32 2
+  %ce_live = load i1, i1* %ce_occ
+  %ce_valp = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %ce, i32 0, i32 1
+  %ce_val = load i64, i64* %ce_valp
+  %ce_own = select i1 %ce_live, i64 %ce_val, i64 0
+  call void @wam_sv_free(i64 %ce_own)
   store i1 false, i1* %ce_occ
   %ci.next = add i64 %ci, 1
   br label %sp.clear_loop
@@ -53,7 +60,7 @@ sp.body:
 sp.emit:
   %ep = getelementptr i8, i8* %str, i64 %fstart
   %el = sub i64 %j, %fstart
-  %eid = call i64 @wam_intern_atom(i8* %ep, i64 %el)
+  %eid = call i64 @wam_sv_set(i64 0, i8* %ep, i64 %el)
   %eset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %pos, i64 %eid)
   %epos = add i64 %pos, 1
   %efstart = add i64 %j, 1
@@ -71,7 +78,7 @@ sp.next:
 sp.final:
   %lp = getelementptr i8, i8* %str, i64 %fstart
   %ll = sub i64 %len, %fstart
-  %lid = call i64 @wam_intern_atom(i8* %lp, i64 %ll)
+  %lid = call i64 @wam_sv_set(i64 0, i8* %lp, i64 %ll)
   %lset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %pos, i64 %lid)
   ret i64 %pos
 
@@ -105,6 +112,11 @@ spr.clear_loop:
 spr.clear_body:
   %spr.ce = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %spr.entries, i64 %spr.ci
   %spr.ce_occ = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %spr.ce, i32 0, i32 2
+  %spr.ce_live = load i1, i1* %spr.ce_occ
+  %spr.ce_valp = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %spr.ce, i32 0, i32 1
+  %spr.ce_val = load i64, i64* %spr.ce_valp
+  %spr.ce_own = select i1 %spr.ce_live, i64 %spr.ce_val, i64 0
+  call void @wam_sv_free(i64 %spr.ce_own)
   store i1 false, i1* %spr.ce_occ
   %spr.ci_next = add i64 %spr.ci, 1
   br label %spr.clear_loop
@@ -196,7 +208,7 @@ spr.havematch:
   %spr.sep_end = select i1 %spr.zlen, i64 %spr.end_z, i64 %spr.end_nz
   %spr.ep = getelementptr i8, i8* %spr.buf, i64 %spr.fstart
   %spr.el = sub i64 %spr.sep_start, %spr.fstart
-  %spr.eid = call i64 @wam_intern_atom(i8* %spr.ep, i64 %spr.el)
+  %spr.eid = call i64 @wam_sv_set(i64 0, i8* %spr.ep, i64 %spr.el)
   %spr.eset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %spr.pos, i64 %spr.eid)
   br label %spr.after
 
@@ -207,13 +219,13 @@ spr.after:
 spr.final:
   %spr.lp = getelementptr i8, i8* %spr.buf, i64 %spr.fstart
   %spr.ll = sub i64 %len, %spr.fstart
-  %spr.lid = call i64 @wam_intern_atom(i8* %spr.lp, i64 %spr.ll)
+  %spr.lid = call i64 @wam_sv_set(i64 0, i8* %spr.lp, i64 %spr.ll)
   %spr.lset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 %spr.pos, i64 %spr.lid)
   call void @free(i8* %spr.buf)
   ret i64 %spr.pos
 
 spr.whole:
-  %spr.wid = call i64 @wam_intern_atom(i8* %spr.buf, i64 %len)
+  %spr.wid = call i64 @wam_sv_set(i64 0, i8* %spr.buf, i64 %len)
   %spr.wset = call i64 @wam_assoc_i64_set(%WamAssocI64Table* %table, i64 1, i64 %spr.wid)
   call void @free(i8* %spr.buf)
   ret i64 1

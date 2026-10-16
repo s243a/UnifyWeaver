@@ -597,4 +597,242 @@ f64.terminate:
 f64.zero:
   ret double 0.000000e+00
 }
+{{case wam_sv_reserve}}
+; --- owned string handles (PLAWK_STRING_STORAGE.md section 3) ---------------
+; A string value in a plawk slot is an interned atom id, 0 (unset), or an OWNED
+; HANDLE: 2^61 | ptr, where ptr -> { i64 len, i64 cap, bytes[cap + 1] } on the
+; heap (user-space pointers are below 2^47, so the tag collides with neither an
+; atom id nor the transient line id 2^62). @wam_atom_to_string resolves a handle
+; to its bytes, so every reader works unchanged. A handle is owned by exactly one
+; slot: an overwrite reuses or frees it, a copy duplicates it.
+
+; A handle whose buffer holds at least %need bytes (plus the NUL). %old's buffer
+; is reused when big enough, realloc'd (capacity doubling) otherwise -- its bytes
+; and len are kept, so an append can grow in place. An atom id or 0 starts a fresh
+; empty handle (the atom itself is not owned, so nothing is freed).
+define i64 @wam_sv_reserve(i64 %old, i64 %need) {
+entry:
+  %tag = lshr i64 %old, 61
+  %is_h = icmp eq i64 %tag, 1
+  br i1 %is_h, label %handle, label %fresh
+handle:
+  %p = and i64 %old, 2305843009213693951
+  %hp = inttoptr i64 %p to i64*
+  %capp = getelementptr i64, i64* %hp, i64 1
+  %cap = load i64, i64* %capp
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %same, label %grow
+same:
+  ret i64 %old
+grow:
+  %twice = shl i64 %cap, 1
+  %big = icmp ugt i64 %need, %twice
+  %ncap = select i1 %big, i64 %need, i64 %twice
+  %bytes = add i64 %ncap, 17
+  %raw = inttoptr i64 %p to i8*
+  %nraw = call i8* @realloc(i8* %raw, i64 %bytes)
+  %nhp = bitcast i8* %nraw to i64*
+  %ncapp = getelementptr i64, i64* %nhp, i64 1
+  store i64 %ncap, i64* %ncapp
+  %ni = ptrtoint i8* %nraw to i64
+  %nh = or i64 %ni, 2305843009213693952
+  ret i64 %nh
+fresh:
+  %small = icmp ult i64 %need, 16
+  %fcap = select i1 %small, i64 16, i64 %need
+  %fbytes = add i64 %fcap, 17
+  %fraw = call i8* @malloc(i64 %fbytes)
+  %fhp = bitcast i8* %fraw to i64*
+  store i64 0, i64* %fhp
+  %fcapp = getelementptr i64, i64* %fhp, i64 1
+  store i64 %fcap, i64* %fcapp
+  %fdata = getelementptr i8, i8* %fraw, i64 16
+  store i8 0, i8* %fdata
+  %fi = ptrtoint i8* %fraw to i64
+  %fh = or i64 %fi, 2305843009213693952
+  ret i64 %fh
+}
+{{case wam_sv_data}}
+; The bytes of handle %h (NUL-terminated after commit).
+define i8* @wam_sv_data(i64 %h) {
+entry:
+  %p = and i64 %h, 2305843009213693951
+  %raw = inttoptr i64 %p to i8*
+  %d = getelementptr i8, i8* %raw, i64 16
+  ret i8* %d
+}
+{{case wam_sv_commit}}
+; Set handle %h's length to %len and NUL-terminate (len <= cap by reserve).
+define void @wam_sv_commit(i64 %h, i64 %len) {
+entry:
+  %p = and i64 %h, 2305843009213693951
+  %hp = inttoptr i64 %p to i64*
+  store i64 %len, i64* %hp
+  %raw = inttoptr i64 %p to i8*
+  %d = getelementptr i8, i8* %raw, i64 16
+  %end = getelementptr i8, i8* %d, i64 %len
+  store i8 0, i8* %end
+  ret void
+}
+{{case wam_sv_len}}
+; The byte length of any string value: a handle's len, an atom's strlen, 0 for 0.
+define i64 @wam_sv_len(i64 %v) {
+entry:
+  %tag = lshr i64 %v, 61
+  %is_h = icmp eq i64 %tag, 1
+  br i1 %is_h, label %handle, label %other
+handle:
+  %p = and i64 %v, 2305843009213693951
+  %hp = inttoptr i64 %p to i64*
+  %len = load i64, i64* %hp
+  ret i64 %len
+other:
+  %s = call i8* @wam_atom_to_string(i64 %v)
+  %null = icmp eq i8* %s, null
+  br i1 %null, label %zero, label %measure
+zero:
+  ret i64 0
+measure:
+  %sl = call i64 @strlen(i8* %s)
+  ret i64 %sl
+}
+{{case wam_sv_set}}
+; Assign %len bytes at %src: the slot's new value, %old's buffer reused when it
+; is a handle. memmove, so %src may point into %old's own buffer.
+define i64 @wam_sv_set(i64 %old, i8* %src, i64 %len) {
+entry:
+  %h = call i64 @wam_sv_reserve(i64 %old, i64 %len)
+  %d = call i8* @wam_sv_data(i64 %h)
+  call void @llvm.memmove.p0i8.p0i8.i64(i8* %d, i8* %src, i64 %len, i1 false)
+  call void @wam_sv_commit(i64 %h, i64 %len)
+  ret i64 %h
+}
+{{case wam_sv_grow}}
+; Make room to append %extra bytes to %old: a handle grows in place; an atom id
+; (or 0) becomes a fresh handle holding the atom's text. The caller writes at
+; data + wam_sv_len and commits the new length.
+define i64 @wam_sv_grow(i64 %old, i64 %extra) {
+entry:
+  %tag = lshr i64 %old, 61
+  %is_h = icmp eq i64 %tag, 1
+  br i1 %is_h, label %handle, label %convert
+handle:
+  %p = and i64 %old, 2305843009213693951
+  %hp = inttoptr i64 %p to i64*
+  %len = load i64, i64* %hp
+  %need = add i64 %len, %extra
+  %h = call i64 @wam_sv_reserve(i64 %old, i64 %need)
+  ret i64 %h
+convert:
+  %s = call i8* @wam_atom_to_string(i64 %old)
+  %null = icmp eq i8* %s, null
+  br i1 %null, label %empty, label %copy
+empty:
+  %eh = call i64 @wam_sv_reserve(i64 0, i64 %extra)
+  ret i64 %eh
+copy:
+  %slen = call i64 @strlen(i8* %s)
+  %cneed = add i64 %slen, %extra
+  %ch = call i64 @wam_sv_reserve(i64 0, i64 %cneed)
+  %cd = call i8* @wam_sv_data(i64 %ch)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %cd, i8* %s, i64 %slen, i1 false)
+  call void @wam_sv_commit(i64 %ch, i64 %slen)
+  ret i64 %ch
+}
+{{case wam_sv_dup}}
+; A copy for another owner: a handle is duplicated, an atom id (or 0) is shared.
+define i64 @wam_sv_dup(i64 %v) {
+entry:
+  %tag = lshr i64 %v, 61
+  %is_h = icmp eq i64 %tag, 1
+  br i1 %is_h, label %handle, label %shared
+shared:
+  ret i64 %v
+handle:
+  %len = call i64 @wam_sv_len(i64 %v)
+  %src = call i8* @wam_sv_data(i64 %v)
+  %h = call i64 @wam_sv_set(i64 0, i8* %src, i64 %len)
+  ret i64 %h
+}
+{{case wam_sv_free}}
+; Release a value being overwritten: a handle's buffer is freed; an atom id or 0
+; is not owned.
+define void @wam_sv_free(i64 %v) {
+entry:
+  %tag = lshr i64 %v, 61
+  %is_h = icmp eq i64 %tag, 1
+  br i1 %is_h, label %handle, label %done
+handle:
+  %p = and i64 %v, 2305843009213693951
+  %raw = inttoptr i64 %p to i8*
+  call void @free(i8* %raw)
+  br label %done
+done:
+  ret void
+}
+{{case wam_sv_key}}
+; The interned atom id of a string value, for use as an array KEY (table keys
+; stay canonical atom ids): a handle's text is interned; an atom id (or 0) is
+; returned as is.
+define i64 @wam_sv_key(i64 %v) {
+entry:
+  %tag = lshr i64 %v, 61
+  %is_h = icmp eq i64 %tag, 1
+  br i1 %is_h, label %handle, label %atom
+atom:
+  ret i64 %v
+handle:
+  %len = call i64 @wam_sv_len(i64 %v)
+  %src = call i8* @wam_sv_data(i64 %v)
+  %id = call i64 @wam_intern_atom(i8* %src, i64 %len)
+  ret i64 %id
+}
+{{case wam_sv_eq_id}}
+; String equality of value %v against the interned atom %id: an id match is
+; equality (interning is canonical); a handle compares its bytes with the atom's
+; text; any other value differs.
+define i1 @wam_sv_eq_id(i64 %v, i64 %id) {
+entry:
+  %same = icmp eq i64 %v, %id
+  br i1 %same, label %yes, label %check
+yes:
+  ret i1 true
+check:
+  %tag = lshr i64 %v, 61
+  %is_h = icmp eq i64 %tag, 1
+  br i1 %is_h, label %handle, label %no
+no:
+  ret i1 false
+handle:
+  %s = call i8* @wam_atom_to_string(i64 %id)
+  %snull = icmp eq i8* %s, null
+  br i1 %snull, label %no, label %cmp
+cmp:
+  %slen = call i64 @strlen(i8* %s)
+  %hlen = call i64 @wam_sv_len(i64 %v)
+  %lens = icmp eq i64 %slen, %hlen
+  br i1 %lens, label %bytes, label %no
+bytes:
+  %d = call i8* @wam_sv_data(i64 %v)
+  %c = call i32 @memcmp(i8* %d, i8* %s, i64 %slen)
+  %eq = icmp eq i32 %c, 0
+  ret i1 %eq
+}
+{{case wam_sv_cstr}}
+; The text of any string value as a NUL-terminated pointer: a handle's bytes, an
+; atom's text, "" for 0 (unset) -- a slot's value in a string context.
+@.wam_sv_empty = private constant [1 x i8] zeroinitializer
+define i8* @wam_sv_cstr(i64 %v) {
+entry:
+  %unset = icmp eq i64 %v, 0
+  br i1 %unset, label %empty, label %text
+text:
+  %s = call i8* @wam_atom_to_string(i64 %v)
+  %null = icmp eq i8* %s, null
+  br i1 %null, label %empty, label %ok
+ok:
+  ret i8* %s
+empty:
+  ret i8* getelementptr ([1 x i8], [1 x i8]* @.wam_sv_empty, i64 0, i64 0)
+}
 {{/match}}

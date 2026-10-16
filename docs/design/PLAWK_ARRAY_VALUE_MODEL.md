@@ -108,7 +108,9 @@ END { for (k in c) print k, c[k] }
 Two things must not be conflated:
 
 - the **encoding**: how the value is stored in the i64 cell -- `i64`, `f64` (bit
-  pattern, `@wam_assoc_f64_*`), or `atom` (an interned atom id);
+  pattern, `@wam_assoc_f64_*`), or `atom` (a string value: an interned atom id,
+  or an owned string handle that `@wam_atom_to_string` resolves, as a written
+  text element is -- `PLAWK_STRING_STORAGE.md`);
 - the **semantic kind**: how the value behaves in comparisons and prints -- `number`
   (counter or double), `string`, `strnum`, or `row`.
 
@@ -175,6 +177,7 @@ destinations.
 | number + strnum | **declines** (input `007`: gawk prints `a["raw"]` as `007` and `a["sum"]` as `7`; promoting the array to double loses `007`) |
 | string + strnum | **declines** (the `1 0` example above) |
 | row + anything else | declines |
+| split target + any write but `delete` | **declines** (its pieces are owned string handles that the next `split` frees, and `a[$1]++` would add a second key kind; `PLAWK_STRING_STORAGE.md`, S4) |
 
 A read never influences the kind. With per-element metadata these rules could relax;
 without it, declining is the only way to keep gawk's observable behaviour.
@@ -357,10 +360,11 @@ each newly admitted input -- not deferred to the declaration PR.
    their mixing rules, and `a[NR] = $0` with a numeric END loop (tac).
    (a) Array-only rules -- landed: `a[KEY] = $N` (strnum), `= "lit"` and a
    concatenation of fields and literals (string), at a field, SUBSEP or literal key,
-   store the joined text as an interned atom id (a str-valued table, like row
-   capture). The value is built by one snprintf (a literal part is format text with
-   `%` doubled) into a buffer sized by a measuring snprintf and heap-allocated, so
-   it is never truncated. `plawk_array_kind_agrees/2` admits `[string]` and
+   store the joined text in the element (a str-valued table, like row capture):
+   first as an interned atom id, since S3 as the cell's owned string handle
+   (`PLAWK_STRING_STORAGE.md`). The value is built by one snprintf (a literal part
+   is format text with `%` doubled), sized by a measuring snprintf, so it is never
+   truncated. `plawk_array_kind_agrees/2` admits `[string]` and
    `[strnum]` (the latter without a split write: split's keys are positions). A
    for-in value guard on a STRING array compares lexically (the comparator's string
    kind byte), on a strnum array numerically when the text looks numeric. An END
@@ -374,12 +378,14 @@ each newly admitted input -- not deferred to the declaration PR.
    or the for-in loop key -- prints the element's text (nothing when absent);
    these reads used to assume an i64 table. Numeric reads of a str-valued table in
    the mixed walker (`t += a[k]`, `a[$1] > 9`, `a[k] * 2`) decline.
-   Still open: (b) the self-append `a[k] = a[k] X` -- measured, not shipped: each
-   append interns the whole new value and the atom table never frees, so n appends
-   to one key hold O(n^2) bytes (8000 records: 373 MB vs gawk's 4 MB); it needs a
-   mutable, non-interned string cell, and interning is what makes string equality
-   an id compare, so that cell is a design change. (d) numeric reads of strnum
-   values (`print a[k] * 2`, a strnum fold, rule-body conditions).
+   (b) The self-append `a[k] = a[k] X` -- landed with owned string cells
+   (`PLAWK_STRING_STORAGE.md`, step S3). A text element owns a heap handle rather
+   than an interned atom id. The append grows it in place, so 30000 appends hold
+   2.5 MB; interning each value held O(n^2) bytes, 373 MB at 8000. The element
+   read must be the write's own array and key; any other element inside the
+   value declines.
+   Still open: (d) numeric reads of strnum values (`print a[k] * 2`, a strnum
+   fold, rule-body conditions).
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
    reason messages.
 

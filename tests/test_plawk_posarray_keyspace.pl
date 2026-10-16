@@ -256,13 +256,15 @@ test(a_decimal_literal_key_update_on_a_positional_table_also_declines) :-
     build_status("{ split($0, a, \" \"); a[\"1\"]++; print a[1] }\n", 3),
     !.
 
-% Only the LONE-LITERAL update shape is gated. A key with a field component is untouched
-% and behaves exactly as it did before the gate existed.
-test(a_field_keyed_update_on_a_positional_table_is_untouched,
-        [condition(clang_available)]) :-
-    run("{ split($0, a, \" \"); a[$1]++; print a[1] }\n", "5\n5\n7\n"),
+% A key with a field component is not the lone-literal shape, but it still mixes key
+% kinds (positional pieces, interned-text counter keys: an atom id can equal a position)
+% and value kinds (strnum pieces, counters). Since the pieces became owned string
+% handles (PLAWK_STRING_STORAGE.md, S4) a split target's only other write is `delete`
+% (plawk_array_kinds_ok/1), so these decline too.
+test(a_field_keyed_update_on_a_positional_table_declines) :-
+    build_status("{ split($0, a, \" \"); a[$1]++; print a[1] }\n", 3),
     !,
-    run("{ split($0, a, \" \"); a[$1,$2]++; print a[1] }\n", "5\n5\n7\n"),
+    build_status("{ split($0, a, \" \"); a[$1,$2]++; print a[1] }\n", 3),
     !.
 
 % --- two adjacent assoc END fields keep their OFS -----------------------

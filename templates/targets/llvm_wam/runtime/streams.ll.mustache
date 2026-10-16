@@ -191,7 +191,19 @@ srr.fail:
   ret i1 false
 }
 {{case wam_stream_read_line_value}}
+; Read the next record from a stream handle as an interned atom Value (or the
+; end_of_file atom / a fail Value).
 define %Value @wam_stream_read_line_value(%Value %handle_value) {
+entry:
+  %v = call %Value @wam_stream_read_line_impl(%Value %handle_value, i64* null)
+  ret %Value %v
+}
+
+; The reader itself. With %own_out non-null, a record is not interned: it is
+; stored into *%own_out as an owned string handle that reuses the buffer of the
+; handle already there (PLAWK_STRING_STORAGE.md, S4), and is also the payload.
+; EOF and errors never touch *%own_out, so a getline target keeps its value.
+define %Value @wam_stream_read_line_impl(%Value %handle_value, i64* %own_out) {
 entry:
   %rhv.rs_so_slot = alloca i64, align 8
   %rhv.rs_eo_slot = alloca i64, align 8
@@ -467,7 +479,21 @@ rhv.intern:
   %rhv.final_len = phi i64 [ %rhv.trim_len, %rhv.check_cr ], [ 0, %rhv.intern_empty ]
   %rhv.term = getelementptr i8, i8* %rhv.fin_buf, i64 %rhv.final_len
   store i8 0, i8* %rhv.term
-  %rhv.aid = call i64 @wam_intern_atom(i8* %rhv.fin_buf, i64 %rhv.final_len)
+  %rhv.owned = icmp ne i64* %own_out, null
+  br i1 %rhv.owned, label %rhv.own, label %rhv.atom
+
+rhv.own:
+  %rhv.own_old = load i64, i64* %own_out
+  %rhv.hid = call i64 @wam_sv_set(i64 %rhv.own_old, i8* %rhv.fin_buf, i64 %rhv.final_len)
+  store i64 %rhv.hid, i64* %own_out
+  br label %rhv.done
+
+rhv.atom:
+  %rhv.atomid = call i64 @wam_intern_atom(i8* %rhv.fin_buf, i64 %rhv.final_len)
+  br label %rhv.done
+
+rhv.done:
+  %rhv.aid = phi i64 [ %rhv.hid, %rhv.own ], [ %rhv.atomid, %rhv.atom ]
   %rhv.v0 = insertvalue %Value undef, i32 0, 0
   %rhv.v = insertvalue %Value %rhv.v0, i64 %rhv.aid, 1
   call void @free(i8* %rhv.fin_buf)
@@ -939,8 +965,9 @@ sch.close:
 }
 {{case wam_getline_file}}
 ; awk `getline var < "file"`: read the next line of a file into a variable.
-; %pathptr/%pathlen name the file; %line_id_out receives the interned atom id of
-; the line on success. Returns 1 (a line was read), 0 (EOF), or -1 (open/read
+; %pathptr/%pathlen name the file; on success *%line_id_out becomes the line as
+; an owned string handle, reusing the buffer of the handle already there
+; (PLAWK_STRING_STORAGE.md, S4), so the caller seeds it with the target's value. Returns 1 (a line was read), 0 (EOF), or -1 (open/read
 ; error) -- the awk getline return contract.
 ;
 ; Handles are keyed by FILENAME in a small process-wide registry (so every
@@ -1004,7 +1031,7 @@ gl.ready:
   %gl.hcur = phi i64 [ %gl.fh, %gl.found ], [ %gl.hpay, %gl.store ]
   %gl.hv0 = insertvalue %Value undef, i32 1, 0
   %gl.hvr = insertvalue %Value %gl.hv0, i64 %gl.hcur, 1
-  %gl.line = call %Value @wam_stream_read_line_value(%Value %gl.hvr)
+  %gl.line = call %Value @wam_stream_read_line_impl(%Value %gl.hvr, i64* %line_id_out)
   %gl.ltag = extractvalue %Value %gl.line, 0
   %gl.lpay = extractvalue %Value %gl.line, 1
   %gl.is_int = icmp eq i32 %gl.ltag, 1
@@ -1017,6 +1044,13 @@ gl.chk_atom:
   br i1 %gl.is_atom, label %gl.chk_eof, label %gl.err
 
 gl.chk_eof:
+  ; a record arrives as an owned handle (already in *%line_id_out); anything
+  ; else is the end_of_file atom -- so a line reading "end_of_file" is a line
+  %gl.ptag = lshr i64 %gl.lpay, 61
+  %gl.is_h = icmp eq i64 %gl.ptag, 1
+  br i1 %gl.is_h, label %gl.line_ok, label %gl.chk_eof_text
+
+gl.chk_eof_text:
   %gl.ls = call i8* @wam_atom_to_string(i64 %gl.lpay)
   %gl.eofp = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
   %gl.cmp = call i32 @strcmp(i8* %gl.ls, i8* %gl.eofp)
@@ -1024,7 +1058,6 @@ gl.chk_eof:
   br i1 %gl.iseof, label %gl.eof, label %gl.line_ok
 
 gl.line_ok:
-  store i64 %gl.lpay, i64* %line_id_out
   ret i64 1
 
 gl.eof:
@@ -1037,11 +1070,12 @@ gl.err:
 ; awk main-input `getline var`: read from the already-open primary stream.
 ; The persistent reader shares the exact handle, buffered position, RS state,
 ; regex replay, and RT updates used by the outer record driver. The output slot
-; is written only for a real record, so EOF and read errors preserve the target.
+; is written only for a real record (an owned string handle reusing the buffer
+; already in the slot), so EOF and read errors preserve the target.
 ; Returns the awk 1, 0, or -1 status.
 define i64 @wam_getline_main_var(%Value %handle, i64* %line_id_out) {
 entry:
-  %gmv.line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %gmv.line = call %Value @wam_stream_read_line_impl(%Value %handle, i64* %line_id_out)
   %gmv.tag = extractvalue %Value %gmv.line, 0
   %gmv.payload = extractvalue %Value %gmv.line, 1
   %gmv.is_int = icmp eq i32 %gmv.tag, 1
@@ -1054,6 +1088,12 @@ gmv.check_atom:
   br i1 %gmv.is_atom, label %gmv.check_eof, label %gmv.error
 
 gmv.check_eof:
+  ; an owned handle is a record (already in *%line_id_out); else the EOF atom
+  %gmv.ptag = lshr i64 %gmv.payload, 61
+  %gmv.is_h = icmp eq i64 %gmv.ptag, 1
+  br i1 %gmv.is_h, label %gmv.success, label %gmv.check_eof_text
+
+gmv.check_eof_text:
   %gmv.text = call i8* @wam_atom_to_string(i64 %gmv.payload)
   %gmv.text_null = icmp eq i8* %gmv.text, null
   br i1 %gmv.text_null, label %gmv.error, label %gmv.compare_eof
@@ -1065,7 +1105,6 @@ gmv.compare_eof:
   br i1 %gmv.is_eof, label %gmv.eof, label %gmv.success
 
 gmv.success:
-  store i64 %gmv.payload, i64* %line_id_out
   ret i64 1
 
 gmv.eof:
@@ -1142,8 +1181,8 @@ gmr.error_without_read:
 {{case wam_getline_file_record}}
 ; awk getline from a literal file into the current record. Reuse the shared
 ; filename registry and persistent reader, but force a physical newline record
-; for this v1 form and suppress RT changes. On success, copy the persistent
-; atom text into the reserved transient record buffer so the existing %line
+; for this v1 form and suppress RT changes. On success, copy the line (an owned
+; handle, freed after the copy) into the reserved transient record buffer so the existing %line
 ; Value immediately exposes the new $0. EOF and errors leave that buffer
 ; untouched. Returns the awk 1, 0, or -1 status.
 define i64 @wam_getline_file_record(i8* %pathptr, i64 %pathlen) {
@@ -1161,6 +1200,7 @@ entry:
   ; a redirected record getline sets RT just like the main reader does.
   store i1 false, i1* @wam_rt_suppress
   %gr.line_id_slot = alloca i64, align 8
+  store i64 0, i64* %gr.line_id_slot
   %gr.status = call i64 @wam_getline_file(i8* %pathptr, i64 %pathlen, i64* %gr.line_id_slot)
   store i8* %gr.old_rs_ptr, i8** @wam_rs_ptr
   store i64 %gr.old_rs_len, i64* @wam_rs_len
@@ -1182,9 +1222,11 @@ gr.copy_bytes:
   br i1 %gr.copy_failed, label %gr.copy_error, label %gr.success
 
 gr.success:
+  call void @wam_sv_free(i64 %gr.line_id)
   ret i64 1
 
 gr.copy_error:
+  call void @wam_sv_free(i64 %gr.line_id)
   ret i64 -1
 
 gr.return_status:
@@ -1197,7 +1239,8 @@ gr.return_status:
 ; A terminal state is retained after pclose so EOF and errors never respawn
 ; the command. Capacity is 64 distinct commands.
 ;
-; The output slot is written only after a complete record is available.
+; The output slot is written only after a complete record is available, as an
+; owned string handle reusing the buffer of the handle already in the slot.
 ; Returns 1 for a record, 0 for clean EOF, and -1 for popen, read, allocation,
 ; or pclose errors. The command exit status does not turn pipe EOF into an
 ; error. A final partial record is returned before a rare pclose error is
@@ -1329,7 +1372,8 @@ gp.open_intern_empty:
 
 gp.open_intern:
   %gp.open_final_len = phi i64 [ %gp.open_trimmed_len, %gp.open_check_cr ], [ 0, %gp.open_intern_empty ]
-  %gp.line_id = call i64 @wam_intern_atom(i8* %gp.buf, i64 %gp.open_final_len)
+  %gp.line_old = load i64, i64* %line_id_out
+  %gp.line_id = call i64 @wam_sv_set(i64 %gp.line_old, i8* %gp.buf, i64 %gp.open_final_len)
   call void @free(i8* %gp.buf)
   store i64 %gp.line_id, i64* %line_id_out
   ; The record was terminated by a physical newline (pipe getline is
@@ -1358,7 +1402,8 @@ gp.finish_partial:
   %gp.partial_last = load i8, i8* %gp.partial_last_ptr
   %gp.partial_last_is_cr = icmp eq i8 %gp.partial_last, 13
   %gp.partial_len = select i1 %gp.partial_last_is_cr, i64 %gp.partial_last_idx, i64 %gp.len
-  %gp.partial_id = call i64 @wam_intern_atom(i8* %gp.buf, i64 %gp.partial_len)
+  %gp.partial_old = load i64, i64* %line_id_out
+  %gp.partial_id = call i64 @wam_sv_set(i64 %gp.partial_old, i8* %gp.buf, i64 %gp.partial_len)
   call void @free(i8* %gp.buf)
   store i64 %gp.partial_id, i64* %line_id_out
   ; A final record with no trailing newline had no separator: RT is empty.
@@ -1398,12 +1443,13 @@ gp.err:
 }
 {{case wam_getline_pipe_record}}
 ; Pipe getline into the current record. The scalar helper owns command state
-; and produces a persistent atom. On success copy it into the reserved
+; and produces an owned string handle. On success copy it into the reserved
 ; transient record buffer so existing field and NF projections see the new
 ; record immediately. EOF and errors do not touch the transient destination.
 define i64 @wam_getline_pipe_record(i8* %cmdptr, i64 %cmdlen) {
 entry:
   %gpr.line_id_slot = alloca i64, align 8
+  store i64 0, i64* %gpr.line_id_slot
   %gpr.status = call i64 @wam_getline_pipe(i8* %cmdptr, i64 %cmdlen, i64* %gpr.line_id_slot)
   %gpr.got = icmp eq i64 %gpr.status, 1
   br i1 %gpr.got, label %gpr.copy, label %gpr.return_status
@@ -1421,9 +1467,11 @@ gpr.copy_bytes:
   br i1 %gpr.copy_failed, label %gpr.copy_error, label %gpr.success
 
 gpr.success:
+  call void @wam_sv_free(i64 %gpr.line_id)
   ret i64 1
 
 gpr.copy_error:
+  call void @wam_sv_free(i64 %gpr.line_id)
   ret i64 -1
 
 gpr.return_status:

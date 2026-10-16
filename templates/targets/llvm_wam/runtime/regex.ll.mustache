@@ -459,7 +459,8 @@ rmx.ret0:
 ; where an unescaped & in the replacement expands to the matched text and a
 ; backslash-escaped ampersand is a literal &. %global = 1 substitutes every
 ; non-overlapping match (gsub); 0 stops
-; after the first (sub). Returns the interned atom id of the result and stores the
+; after the first (sub). Returns the result as an owned string handle (the caller
+; keeps it in a slot or frees it; PLAWK_STRING_STORAGE.md, S4) and stores the
 ; substitution count into *%count_p. The output is built in a growable buffer.
 define i64 @wam_regex_gsub(i8* %ptr, i64 %len, i8* %pattern, i8** %cache, i8* %repl, i64 %repl_len, i1 %global, i64* %count_p) {
 entry:
@@ -662,7 +663,7 @@ gs.finish:
   %gs.odata = load i8*, i8** %gs.odata_slot
   %gs.olen_slot = getelementptr %WamStrBuf, %WamStrBuf* %gs.sb, i32 0, i32 1
   %gs.olen = load i64, i64* %gs.olen_slot
-  %gs.id = call i64 @wam_intern_atom(i8* %gs.odata, i64 %gs.olen)
+  %gs.id = call i64 @wam_sv_set(i64 0, i8* %gs.odata, i64 %gs.olen)
   call void @free(i8* %gs.odata)
   call void @free(i8* %gs.src)
   ret i64 %gs.id
@@ -672,7 +673,7 @@ gs.finish_zero:
   %gs.zdata = load i8*, i8** %gs.zdata_slot
   %gs.zlen_slot = getelementptr %WamStrBuf, %WamStrBuf* %gs.sb, i32 0, i32 1
   %gs.zlen = load i64, i64* %gs.zlen_slot
-  %gs.zid = call i64 @wam_intern_atom(i8* %gs.zdata, i64 %gs.zlen)
+  %gs.zid = call i64 @wam_sv_set(i64 0, i8* %gs.zdata, i64 %gs.zlen)
   call void @free(i8* %gs.zdata)
   call void @free(i8* %gs.src)
   ret i64 %gs.zid

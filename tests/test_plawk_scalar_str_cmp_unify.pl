@@ -106,27 +106,30 @@ test(counter_slot_declines_on_both_surfaces) :-
 
 % --- structure: one emitter, two flavours ---------------------------------
 
-% The `if` flavour ('') keeps `lit` / `empty` / `scmp` and writes the caller's
-% condition variable.
+% The `if` flavour ('') keeps `lit` / `empty` / `scmp` (and `eq`, the
+% @wam_sv_eq_id result -- string values may be owned handles,
+% docs/design/PLAWK_STRING_STORAGE.md) and writes the caller's condition variable.
 test(plain_flavour_keeps_its_historical_names) :-
     plawk_native_codegen:plawk_scalar_str_cmp_ir('', '%slot_0', eq, "b",
         base, '%base_cond', _G1, EqIR),
     assertion(sub_atom(EqIR, _, _, _, '%base_litptr')),
     assertion(sub_atom(EqIR, _, _, _, '%base_litid')),
-    assertion(sub_atom(EqIR, _, _, _, '%base_cond = icmp eq i64 %slot_0')),
+    assertion(sub_atom(EqIR, _, _, _, '%base_eq = call i1 @wam_sv_eq_id(i64 %slot_0')),
+    assertion(sub_atom(EqIR, _, _, _, '%base_cond = icmp eq i1 %base_eq, true')),
     plawk_native_codegen:plawk_scalar_str_cmp_ir('', '%slot_0', lt, "b",
         base, '%base_cond', _G2, LtIR),
     assertion(sub_atom(LtIR, _, _, _, '%base_empty')),
     assertion(sub_atom(LtIR, _, _, _, '%base_scmp')),
     !.
 
-% The pattern flavour (s) keeps `slit` / `sempty` / `sscmp`.
+% The pattern flavour (s) keeps `slit` / `sempty` / `sscmp` (and `seq`).
 test(s_flavour_keeps_its_historical_names) :-
     plawk_native_codegen:plawk_scalar_str_cmp_ir(s, '%rule_0_in_slot_0', eq,
         "b", base, '%base_match', _G1, EqIR),
     assertion(sub_atom(EqIR, _, _, _, '%base_slitptr')),
     assertion(sub_atom(EqIR, _, _, _, '%base_slitid')),
-    assertion(sub_atom(EqIR, _, _, _, '%base_match = icmp eq i64')),
+    assertion(sub_atom(EqIR, _, _, _, '%base_seq = call i1 @wam_sv_eq_id')),
+    assertion(sub_atom(EqIR, _, _, _, '%base_match = icmp eq i1 %base_seq, true')),
     plawk_native_codegen:plawk_scalar_str_cmp_ir(s, '%rule_0_in_slot_0', lt,
         "b", base, '%base_match', _G2, LtIR),
     assertion(sub_atom(LtIR, _, _, _, '%base_sempty')),
@@ -145,7 +148,8 @@ test(flavours_differ_only_in_naming) :-
           % strip the flavour letter from the s-form's distinguishing names
           atomic_list_concat(P1, '_slit', SIR),  atomic_list_concat(P1, '_lit', S1),
           atomic_list_concat(P2, '_sempty', S1), atomic_list_concat(P2, '_empty', S2),
-          atomic_list_concat(P3, '_sscmp', S2),  atomic_list_concat(P3, '_scmp', Normalised),
+          atomic_list_concat(P3, '_sscmp', S2),  atomic_list_concat(P3, '_scmp', S3),
+          atomic_list_concat(P4, '_seq', S3),    atomic_list_concat(P4, '_eq', Normalised),
           assertion(Normalised == PlainIR)
         )),
     !.
