@@ -263,9 +263,9 @@ bad:
 }
 ').
 
-% Split "a,b,c" on ',' into a table keyed 1/2/3; the values are the interned ids
-% of "a"/"b"/"c" (interned up front for comparison; interning is canonical) and
-% the returned count is 3.
+% Split "a,b,c" on ',' into a table keyed 1/2/3; the values are owned string
+% handles holding "a"/"b"/"c" (compared by text against ids interned up front)
+% and the returned count is 3.
 str_split_driver_ir('
 @.uw_split_input = private constant [6 x i8] c"a,b,c\00"
 
@@ -287,9 +287,9 @@ go:
   %got2 = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 2)
   %got3 = call i64 @wam_assoc_i64_get(%WamAssocI64Table* %table, i64 3)
   %n_ok = icmp eq i64 %n, 3
-  %g1_ok = icmp eq i64 %got1, %ida
-  %g2_ok = icmp eq i64 %got2, %idb
-  %g3_ok = icmp eq i64 %got3, %idc
+  %g1_ok = call i1 @wam_sv_eq_id(i64 %got1, i64 %ida)
+  %g2_ok = call i1 @wam_sv_eq_id(i64 %got2, i64 %idb)
+  %g3_ok = call i1 @wam_sv_eq_id(i64 %got3, i64 %idc)
   %a1 = and i1 %n_ok, %g1_ok
   %a2 = and i1 %a1, %g2_ok
   %a3 = and i1 %a2, %g3_ok
@@ -452,8 +452,8 @@ bad:
 ').
 
 % Exercise @wam_regex_match (RSTART/RLENGTH out-params + returned position) and
-% @wam_regex_gsub (global gsub, non-global sub, and & expansion), comparing gsub
-% results against interned expected strings.
+% @wam_regex_gsub (global gsub, non-global sub, and & expansion), comparing the
+% gsub results (owned string handles) by text against interned expected strings.
 regex_match_gsub_driver_ir('
 @.uw_mg_pat = private constant [7 x i8] c"[0-9]+\00"
 @.uw_mg_str = private constant [10 x i8] c"abc123def\00"
@@ -492,7 +492,7 @@ entry:
   %gcnt = load i64, i64* %cnt
   %gexp_p = getelementptr [7 x i8], [7 x i8]* @.uw_mg_ghash_exp, i64 0, i64 0
   %gexp = call i64 @wam_intern_atom(i8* %gexp_p, i64 6)
-  %gid_ok = icmp eq i64 %gid, %gexp
+  %gid_ok = call i1 @wam_sv_eq_id(i64 %gid, i64 %gexp)
   %gcnt_ok = icmp eq i64 %gcnt, 3
 
   ; sub "[0-9]+" -> "#" (non-global) -> "a#b22c333", count 1
@@ -500,7 +500,7 @@ entry:
   %scnt = load i64, i64* %cnt
   %sexp_p = getelementptr [10 x i8], [10 x i8]* @.uw_mg_shash_exp, i64 0, i64 0
   %sexp = call i64 @wam_intern_atom(i8* %sexp_p, i64 9)
-  %sid_ok = icmp eq i64 %sid, %sexp
+  %sid_ok = call i1 @wam_sv_eq_id(i64 %sid, i64 %sexp)
   %scnt_ok = icmp eq i64 %scnt, 1
 
   ; gsub "[0-9]+" -> "[&]" (global) over "a1b22" -> "a[1]b[22]", count 2
@@ -510,7 +510,7 @@ entry:
   %acnt = load i64, i64* %cnt
   %aexp_p = getelementptr [10 x i8], [10 x i8]* @.uw_mg_amp_exp, i64 0, i64 0
   %aexp = call i64 @wam_intern_atom(i8* %aexp_p, i64 9)
-  %aid_ok = icmp eq i64 %aid, %aexp
+  %aid_ok = call i1 @wam_sv_eq_id(i64 %aid, i64 %aexp)
   %acnt_ok = icmp eq i64 %acnt, 2
 
   %a1 = and i1 %pos_ok, %rs_ok

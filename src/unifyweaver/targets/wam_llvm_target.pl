@@ -4309,6 +4309,17 @@ emit_atom_string_globals(IR) :-
 @wam_subsep_len = global i64 1
 
 define i8* @wam_atom_to_string(i64 %id) {
+entry:
+  ; an owned string handle (2^61 | ptr) resolves to its bytes even here
+  %sv_tag = lshr i64 %id, 61
+  %is_sv = icmp eq i64 %sv_tag, 1
+  br i1 %is_sv, label %sv, label %none
+sv:
+  %sv_p = and i64 %id, 2305843009213693951
+  %sv_raw = inttoptr i64 %sv_p to i8*
+  %sv_s = getelementptr i8, i8* %sv_raw, i64 16
+  ret i8* %sv_s
+none:
   ret i8* null
 }
 
@@ -4460,7 +4471,19 @@ entry:
   ; dynamic table; it exists so per-record consumers (field helpers,
   ; regex, printing) work on the current record without interning it.
   %is_transient = icmp eq i64 %id, 4611686018427387904
-  br i1 %is_transient, label %transient, label %check_static
+  br i1 %is_transient, label %transient, label %check_sv
+check_sv:
+  ; An owned string handle (2^61 | ptr, PLAWK_STRING_STORAGE.md section 3):
+  ; ptr -> { i64 len, i64 cap, bytes }, so the text starts 16 bytes in. A
+  ; plawk string slot that owns its bytes, never entered in the atom table.
+  %sv_tag = lshr i64 %id, 61
+  %is_sv = icmp eq i64 %sv_tag, 1
+  br i1 %is_sv, label %sv, label %check_static
+sv:
+  %sv_p = and i64 %id, 2305843009213693951
+  %sv_raw = inttoptr i64 %sv_p to i8*
+  %sv_s = getelementptr i8, i8* %sv_raw, i64 16
+  ret i8* %sv_s
 transient:
   %tbuf = load i8*, i8** @wam_transient_line_buf
   ret i8* %tbuf

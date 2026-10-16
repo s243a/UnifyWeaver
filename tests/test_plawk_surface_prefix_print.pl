@@ -1098,11 +1098,12 @@ test(surface_scalar_add_assign_uses_native_field_i64_parse) :-
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0_f64 = call double @wam_atom_field_f64_value(%Value %line, i64 3, i8 58)'))),
     assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_0_op_0 = fadd double %slot_0, %rule_0_body_slot_0_op_0_f64'))),
     % `last = $3` is a plain copy of a field, so strnum copy-propagation keeps it
-    % a string (strnum) scalar -- it interns the field bytes rather than parsing
-    % them as i64. That is what lets a non-numeric `$3` ("nope") round-trip to the
-    % END print as text (awk semantics), instead of the old numeric `add i64 0`
-    % lowering that forced it to 0.
-    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1_snum_id = call i64 @wam_intern_atom'))),
+    % a string (strnum) scalar -- it copies the field bytes into the slot's owned
+    % string (@wam_sv_set, docs/design/PLAWK_STRING_STORAGE.md) rather than
+    % parsing them as i64. That is what lets a non-numeric `$3` ("nope") round-trip
+    % to the END print as text (awk semantics), instead of the old numeric
+    % `add i64 0` lowering that forced it to 0.
+    assertion(once(sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1_snum_id = call i64 @wam_sv_set'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '%rule_0_body_slot_1_op_1 = add i64 0, %rule_0_body_slot_1_op_1_field_i64_value_or_default')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
