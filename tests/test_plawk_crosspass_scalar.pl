@@ -40,6 +40,16 @@ test(crosspass_field_sum, [condition(clang_available)]) :-
     assertion(S == ["a 35", "a 35", "b 35"]),
     !.
 
+% The sum is of the fields' NUMERIC values (awk's strtod): the accumulator is a
+% double. It was an i64 fed the strict integer parse, so 1.5 and "3abc" added 0
+% and this printed 2. 1.5 + 2 + 3 + 0 - 0.25 = 6.25.
+test(crosspass_decimal_field_sum, [condition(clang_available)]) :-
+    cd(Dir),
+    Src = "pass { c[$1]++ ; total += $2 }\npass { print $1, total }\n",
+    run_sorted(Dir, 'dsum', Src, "a 1.5\nb 2\na 3abc\nc x\nb -0.25\n", S),
+    assertion(S == ["a 6.25", "a 6.25", "b 6.25", "b 6.25", "c 6.25"]),
+    !.
+
 % A scalar accumulator in a single-pass assoc program (END for-in) compiles
 % and runs -- the accumulator is dead here (END dumps the table) but the
 % scalar action must not break the pure-assoc chain.

@@ -775,16 +775,51 @@ plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
     plawk_program_counter_arrays(Program, Counters),
     plawk_program_string_arrays(Program, Strings),
     plawk_program_text_arrays(Program, Texts),
+    plawk_program_assoc_f64_scalars(Program, F64Scalars),
     setup_call_cleanup(
         ( nb_setval(plawk_counter_arrays, Counters),
           nb_setval(plawk_string_arrays, Strings),
           nb_setval(plawk_text_arrays, Texts),
+          nb_setval(plawk_assoc_f64_scalars, F64Scalars),
           nb_setval(plawk_counter_arrays_scope, active) ),
         once(plawk_program_native_driver_ir(Program, InputPath, DriverIR)),
         ( nb_setval(plawk_counter_arrays, []),
           nb_setval(plawk_string_arrays, []),
           nb_setval(plawk_text_arrays, []),
-          nb_setval(plawk_counter_arrays_scope, idle) )).
+          nb_setval(plawk_assoc_f64_scalars, []),
+          nb_setval(plawk_counter_arrays_scope, idle) )),
+    plawk_assoc_f64_scalars_ir_ok(F64Scalars, DriverIR).
+
+%% plawk_program_assoc_f64_scalars(+Program, -Names) is det.
+%  Scalars an array-rule (assoc) chain keeps as a DOUBLE global
+%  (@plawk_scalar_<Name> = double): every name that adds a field anywhere
+%  (`n += $2`). awk adds the field's numeric value, its strtod reading; the i64
+%  accumulator added its integer parse, so `n += $2` over 1.5 added 1 (0 printed
+%  for "1.5", 2 for "1.5" + "2"). Decided once for the whole program, so each
+%  rule chain and each pass of a multipass program agree on the global's type.
+%  Other drivers keep their scalars in slots and ignore this set.
+plawk_program_assoc_f64_scalars(Program, Names) :-
+    % any program term (a multipass program is program_passes/3): never fails
+    findall(Name,
+        ( sub_term(T, Program), compound(T),
+          T = add(var(Name), field(K)), atom(Name), integer(K) ),
+        Names0),
+    sort(Names0, Names).
+
+plawk_assoc_f64_scalar(Name) :-
+    nb_current(plawk_assoc_f64_scalars, Names),
+    is_list(Names),
+    memberchk(Name, Names).
+
+%% plawk_assoc_f64_scalars_ir_ok(+Names, +IR) is semidet.
+%  No i64 load or store of a double scalar global: a reader planned without the
+%  double kind (an unknown route) declines here rather than reaching clang.
+plawk_assoc_f64_scalars_ir_ok(Names, IR) :-
+    forall(member(Name, Names),
+        ( format(atom(G), 'i64* @plawk_scalar_~w', [Name]),
+          format(atom(G2), '@plawk_scalar_~w = internal global i64', [Name]),
+          \+ sub_atom(IR, _, _, _, G),
+          \+ sub_atom(IR, _, _, _, G2) )).
 plawk_program_native_driver_ir(Program, InputPath, DriverIR) :-
     \+ ( nb_current(plawk_f64_arrays, Active), Active \== [] ),
     plawk_program_f64_arrays(Program, Arrays),
@@ -6160,6 +6195,21 @@ plawk_action_blob_field(if(_Pattern, ThenActions, ElseActions), Blob) :-
 %  bodies (no break/next); an `END { for (k in arr) print ... }`. The input
 %  must be a file argument (re-opened per pass); stdin is not re-openable
 %  (the design requires an explicit spool, a later phase).
+% The array-rule chains' DOUBLE scalars (plawk_program_assoc_f64_scalars/2), decided
+% program-wide -- a pass that adds `total += $2` and a later pass that prints
+% `total` must agree on the global's type. bin/plawk calls this driver directly, so
+% it sets the set itself, as plawk_program_native_driver_ir/3's scoping clause does.
+plawk_program_multipass_driver_ir(Program, DriverIR) :-
+    \+ nb_current(plawk_multipass_f64_scope, active),
+    !,
+    plawk_program_assoc_f64_scalars(Program, F64Scalars),
+    setup_call_cleanup(
+        ( nb_setval(plawk_assoc_f64_scalars, F64Scalars),
+          nb_setval(plawk_multipass_f64_scope, active) ),
+        once(plawk_program_multipass_driver_ir(Program, DriverIR)),
+        ( nb_setval(plawk_assoc_f64_scalars, []),
+          nb_setval(plawk_multipass_f64_scope, idle) )),
+    plawk_assoc_f64_scalars_ir_ok(F64Scalars, DriverIR).
 plawk_program_multipass_driver_ir(Program, _DriverIR) :-
     plawk_program_has_unsupported_getline(Program),
     !,
@@ -12579,6 +12629,8 @@ plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays, lookup_int(Arr, N), P
 plawk_assoc_print_plan_field(_Tables, StrArrays, _PosArrays, svar(Name), Planned) :-
     (   memberchk(str_scalar(Name), StrArrays)
     ->  Planned = svar_str(Name)
+    ;   plawk_assoc_f64_scalar(Name)
+    ->  Planned = svar_f64(Name)
     ;   Planned = svar(Name)
     ).
 plawk_assoc_print_plan_field(Tables, StrArrays, PosArrays, concat_field(PartSpecs),
@@ -12616,6 +12668,8 @@ plawk_assoc_arith_operand_plan(_Tables, _StrArrays, afield(N), afield(N)).
 plawk_assoc_arith_operand_plan(_Tables, StrArrays, asvar(Name), Planned) :-
     (   memberchk(str_scalar(Name), StrArrays)
     ->  Planned = asvar_str(Name)
+    ;   plawk_assoc_f64_scalar(Name)
+    ->  Planned = asvar_f64(Name)
     ;   Planned = asvar(Name)
     ).
 plawk_assoc_arith_operand_plan(_Tables, _StrArrays, aint(V), aint(V)).
@@ -12864,6 +12918,19 @@ plawk_assoc_print_one_field(svar_str(Name), Base, Index, _FieldSep, Lines) :-
     format(atom(PrL),
         '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i8* ~w)', [P, P, TextVar]),
     append([[LoadL], TextLines, [FmtL, PrL]], Lines).
+% A double accumulator prints the awk way (an integral value as an integer), and
+% nothing before its first add (its `_set` flag, set by the add; an empty format
+% is @wam_print_awk_number's unset case) -- as gawk prints an unset scalar.
+plawk_assoc_print_one_field(svar_f64(Name), Base, Index, _FieldSep,
+        [LoadL, SetL, FmtL, PrL]) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(LoadL), '  %~w_sv = load double, double* @plawk_scalar_~w', [P, Name]),
+    format(atom(SetL), '  %~w_set = load i1, i1* @plawk_scalar_~w_set', [P, Name]),
+    format(atom(FmtL),
+        '  %~w_fmt = select i1 %~w_set, i8* getelementptr ([3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0), i8* getelementptr ([1 x i8], [1 x i8]* @.plawk_surface_print_unset, i32 0, i32 0)',
+        [P, P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 @wam_print_awk_number(i8* %~w_fmt, double %~w_sv)', [P, P, P]).
 plawk_assoc_print_one_field(svar(Name), Base, Index, _FieldSep, Lines) :-
     format(atom(P), '~w_f~w', [Base, Index]),
     format(atom(LoadL), '  %~w_sv = load i64, i64* @plawk_scalar_~w', [P, Name]),
@@ -12908,6 +12975,9 @@ plawk_assoc_arith_operand_lines(asvar_str(Name), P, Slot, _FieldSep, ValVar, Lin
     format(atom(LoadL), '  %~w_i = load i64, i64* @plawk_scalar_~w', [B, Name]),
     plawk_assoc_text_num_lines(B, '%~w_i', ValVar, NumLines),
     Lines = [LoadL | NumLines].
+plawk_assoc_arith_operand_lines(asvar_f64(Name), P, Slot, _FieldSep, ValVar, [LoadL]) :-
+    format(atom(ValVar), '%~w_~w', [P, Slot]),
+    format(atom(LoadL), '  ~w = load double, double* @plawk_scalar_~w', [ValVar, Name]).
 plawk_assoc_arith_operand_lines(aint(V), P, Slot, _FieldSep, ValVar, [Line]) :-
     format(atom(ValVar), '%~w_~w', [P, Slot]),
     format(atom(Line), '  ~w = sitofp i64 ~w to double', [ValVar, V]).
@@ -13440,17 +13510,24 @@ plawk_assoc_planned_actions([assoc_print(FieldSpecs) | Rest],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([scalar_add(Name, Src) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
-    { NextIndex is Index + 1 },
-    [assoc_scalar_add_action(Index, Name, Src)],
+    { NextIndex is Index + 1,
+      (   plawk_assoc_f64_scalar(Name)
+      ->  Action = assoc_scalar_fadd_action(Index, Name, Src)
+      ;   Action = assoc_scalar_add_action(Index, Name, Src)
+      )
+    },
+    [Action],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([scalar_set_str(Name, KeyIndex) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
-    { NextIndex is Index + 1 },
+    { \+ plawk_assoc_f64_scalar(Name),       % an id in a double global: decline
+      NextIndex is Index + 1 },
     [assoc_scalar_set_str_action(Index, Name, KeyIndex)],
     plawk_assoc_planned_actions(Rest, Tables, StrArrays, PosArrays, NextIndex).
 plawk_assoc_planned_actions([assoc_inc_svar(ArrayName, Name, Delta) | Rest],
         Tables, StrArrays, PosArrays, Index) -->
-    { nth0(TableIndex, Tables, ArrayName),
+    { \+ plawk_assoc_f64_scalar(Name),       % a double is no key id: decline
+      nth0(TableIndex, Tables, ArrayName),
       integer(Delta),
       NextIndex is Index + 1
     },
@@ -14026,6 +14103,33 @@ plawk_assoc_rule_action_blocks(RuleIndex,
       format(atom(Next), '  br label %~w', [ActionNextLabel]),
       append([[global(GlobalDecl), Label], SrcLines,
               [LoadL, AddL, StoreL, Next, '']], Lines)
+    },
+    plawk_emit_lines(Lines),
+    plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).
+% A DOUBLE accumulator (plawk_program_assoc_f64_scalars/2): @plawk_scalar_<acc> is
+% a double; a field adds its strtod value (@plawk_assoc_f64_delta_lines/5, the
+% double table's `+=` delta), an integer constant adds K.0.
+plawk_assoc_rule_action_blocks(RuleIndex,
+        [assoc_scalar_fadd_action(Index, Name, Src) | Rest], NextLabel, FieldSeparator) -->
+    { ( Rest == []
+      -> ActionNextLabel = NextLabel
+      ;  NextIndex is Index + 1,
+         format(atom(ActionNextLabel), 'assoc_rule_~w_action_~w',
+             [RuleIndex, NextIndex])
+      ),
+      format(atom(Label), 'assoc_rule_~w_action_~w:', [RuleIndex, Index]),
+      format(atom(Base), 'assoc_rule_~w_action_~w_sadd', [RuleIndex, Index]),
+      format(atom(GlobalDecl),
+          '@plawk_scalar_~w = internal global double 0.0~n@plawk_scalar_~w_set = internal global i1 false',
+          [Name, Name]),
+      plawk_assoc_f64_delta_lines(Src, Base, FieldSeparator, SrcVar, SrcLines),
+      format(atom(LoadL), '  %~w_cur = load double, double* @plawk_scalar_~w', [Base, Name]),
+      format(atom(AddL), '  %~w_new = fadd double %~w_cur, ~w', [Base, Base, SrcVar]),
+      format(atom(StoreL), '  store double %~w_new, double* @plawk_scalar_~w', [Base, Name]),
+      format(atom(SetL), '  store i1 true, i1* @plawk_scalar_~w_set', [Name]),
+      format(atom(Next), '  br label %~w', [ActionNextLabel]),
+      append([[global(GlobalDecl), Label], SrcLines,
+              [LoadL, AddL, StoreL, SetL, Next, '']], Lines)
     },
     plawk_emit_lines(Lines),
     plawk_assoc_rule_action_blocks(RuleIndex, Rest, NextLabel, FieldSeparator).

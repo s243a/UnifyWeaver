@@ -105,6 +105,17 @@ to silently produce `"0"`.
   the variable can really be unassigned (a read before any write, a write only
   under an `if`, END over possibly empty input).
 
+- **Array-rule (assoc) driver globals**: the array-rule chains keep a scalar in a
+  module global `@plawk_scalar_<Name>`, not a slot. A name that adds a field
+  anywhere in the program (`n += $2`; `plawk_program_assoc_f64_scalars/2`, decided
+  program-wide so every pass of a multipass program agrees) is a **double** global
+  with an `i1` `@plawk_scalar_<Name>_set` mark, which every add stores; its print
+  selects `@wam_print_awk_number`'s empty format while the mark is clear. It was an
+  i64 fed the strict integer parse, so `n += $2` over "1.5" added 0. Any `i64` use
+  of such a global (a key read, a `k = $N` copy) declines
+  (`plawk_assoc_f64_scalars_ir_ok/2`). An integer-only accumulator (`n++`,
+  `n += 1`) stays an i64, unchanged.
+
 ## 5. The trackability rule (the safety invariant)
 
 A slot renders `""`-when-unset **only if every reachable write to it stores the
@@ -133,6 +144,8 @@ table's absent position prints `""` through `@wam_assoc_str_print`.
 - `tests/test_plawk_begin_compute.pl`: BEGIN-prelude values and unset reads.
 - `tests/test_plawk_subgsub_match.pl`: an unset `n = gsub(...)` count.
 - `tests/test_plawk_mixed_rules.pl`: absent array elements print `""`.
+- `tests/test_plawk_assoc_f64_scalar.pl`, `tests/test_plawk_crosspass_scalar.pl`:
+  the array-rule driver's double accumulators, unset print, cross-pass sums.
 
 ## 8. Open edges
 
