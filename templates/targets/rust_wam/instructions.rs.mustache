@@ -339,6 +339,19 @@ pub enum Instruction {
     /// D138: last entry of a dispatch chain (`trust L`): remove the chain's
     /// choice point, then jump to the body at Label.
     Trust(String),
+    /// R1: TryMeElse for an if-then-else / disjunction guard
+    /// (`try_me_else L_ite_else_N`) with a pre-resolved alternative PC. Unlike
+    /// TryMeElsePc (a clause choice point) it parks no clause barrier, as
+    /// TryMeElse does for an `L_ite_else_` label.
+    TryMeElseItePc(usize),
+    /// R1: Try with a pre-resolved body PC.
+    TryPc(usize),
+    /// R1: Retry with a pre-resolved body PC.
+    RetryPc(usize),
+    /// R1: Trust with a pre-resolved body PC.
+    TrustPc(usize),
+    /// R1: Jump to a pre-resolved PC.
+    JumpPc(usize),
 
     // === Indexing ===
     /// First-argument constant dispatch.
@@ -347,8 +360,12 @@ pub enum Instruction {
     /// instruction (the try_me_else chain) when the argument is unbound or
     /// matches no table key — as opposed to SwitchOnConstant, which fails.
     SwitchOnConstantFallthrough(Vec<(Value, String)>),
-    /// First-argument constant dispatch with pre-resolved PCs.
+    /// First-argument constant dispatch with pre-resolved PCs. A target PC of
+    /// 0 is SwitchOnConstant's "default" entry: fall through to the next
+    /// instruction (PCs are 1-based, so no label resolves to 0).
     SwitchOnConstantPc(Vec<(Value, usize)>),
+    /// R1: SwitchOnConstantFallthrough with pre-resolved PCs.
+    SwitchOnConstantFallthroughPc(Vec<(Value, usize)>),
     /// First-argument structure dispatch.
     SwitchOnStructure(Vec<(String, String)>),
     /// First-argument structure dispatch with pre-resolved PCs.

@@ -946,6 +946,7 @@ wam_instruction_arm('Instruction::GetLevel(yn)', Body) :-
                 let depth = self.choice_points.len();
                 let next_is_try = matches!(self.code.get(self.pc),
                     Some(Instruction::TryMeElse(_)) | Some(Instruction::TryMeElsePc(_))
+                    | Some(Instruction::TryMeElseItePc(_))
                     | Some(Instruction::TryMeElseArgs(_, _))
                     | Some(Instruction::TryMeElsePcArgs(_, _)));
                 if next_is_try {
@@ -1299,6 +1300,79 @@ wam_instruction_arm('Instruction::Trust(label)', Body) :-
                     true
                 } else { false }'.
 
+
+% R1: TryMeElse for an if-then-else / disjunction guard (`L_ite_else_*`) with
+% a pre-resolved alternative PC. Same as TryMeElse(label) for such a label:
+% the guard choice point parks no clause barrier.
+wam_instruction_arm('Instruction::TryMeElseItePc(next_pc)', Body) :-
+    Body = '                self.choice_points.push(ChoicePoint {
+                    next_pc: *next_pc,
+                    saved_args: self.save_regs(),
+                    cp: self.cp,
+                    stack: self.stack.clone(),
+                    trail_len: self.trail.len(),
+                    heap_len: self.heap.len(),
+                    builtin_state: None,
+                    cut_barrier: self.cut_barrier,
+                    levels: self.pending_level.take().into_iter().collect(),
+                });
+                self.pending_cut_barrier = None;
+                self.pc += 1; true'.
+
+
+% R1: the D138 dispatch-chain entries and `jump` with pre-resolved PCs.
+wam_instruction_arm('Instruction::TryPc(target)', Body) :-
+    Body = '                let target = *target;
+                let clause_barrier = self.choice_points.len();
+                self.choice_points.push(ChoicePoint {
+                    next_pc: self.pc + 1,
+                    saved_args: self.save_regs(),
+                    cp: self.cp,
+                    stack: self.stack.clone(),
+                    trail_len: self.trail.len(),
+                    heap_len: self.heap.len(),
+                    builtin_state: None,
+                    cut_barrier: self.cut_barrier,
+                    levels: Vec::new(),
+                });
+                self.pending_cut_barrier = Some((clause_barrier, target));
+                self.pc = target;
+                true'.
+
+wam_instruction_arm('Instruction::RetryPc(target)', Body) :-
+    Body = '                let target = *target;
+                let resume = self.pc + 1;
+                if let Some(cp) = self.choice_points.last_mut() {
+                    cp.next_pc = resume;
+                }
+                self.pending_cut_barrier = Some((self.choice_points.len().saturating_sub(1), target));
+                self.pc = target;
+                true'.
+
+wam_instruction_arm('Instruction::TrustPc(target)', Body) :-
+    Body = '                self.choice_points.pop();
+                self.pc = *target;
+                true'.
+
+wam_instruction_arm('Instruction::JumpPc(target)', Body) :-
+    Body = '                self.pc = *target;
+                true'.
+
+% R1: SwitchOnConstantFallthrough with pre-resolved PCs (entries whose label
+% the program does not define are left out: the by-name form skips them).
+wam_instruction_arm('Instruction::SwitchOnConstantFallthroughPc(table)', Body) :-
+    Body = '                let raw = self.get_reg_raw_r(Reg::a(1)).map(|v| Self::index_key(self.deref_var(&v)));
+                if let Some(val) = raw {
+                    if !val.is_unbound() {
+                        for (key, target_pc) in table {
+                            if *key == val {
+                                return self.enter_indexed_clause(*target_pc);
+                            }
+                        }
+                    }
+                }
+                self.pc += 1; true'.
+
 % --- Indexing Instructions ---
 %
 % D138: every jump to a table target goes through enter_indexed_clause/1
@@ -1368,6 +1442,9 @@ wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
                         // binary search dropped keys).
                         for (key, target_pc) in table {
                             if *key == val {
+                                // R1: 0 is the "default" entry (fall through
+                                // to the try_me_else chain).
+                                if *target_pc == 0 { self.pc += 1; return true; }
                                 return self.enter_indexed_clause(*target_pc);
                             }
                         }
@@ -8560,7 +8637,12 @@ rust_foreign_result_layout_literal(Layout, Layout).
 wam_code_to_rust_instructions(WamCode, PredIndicator, Options, InstrLiterals, LabelLiterals) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_rust(Lines, 1, PredIndicator, Options, InstrParts, LabelParts),
+    % R1: this predicate is its own program (PCs from 1), so its local branch
+    % targets resolve against its own labels. Calls keep the by-name form.
+    empty_assoc(A0),
+    rust_wam_label_assoc([g(Lines, 1)], A0, LabelAssoc),
+    wam_lines_to_rust(Lines, 1, PredIndicator, ['$rust_labels'(LabelAssoc)|Options],
+                      InstrParts, LabelParts),
     atomic_list_concat(InstrParts, '\n', InstrLiterals),
     atomic_list_concat(LabelParts, '\n', LabelLiterals).
 
@@ -8677,6 +8759,124 @@ wam_line_to_rust_instr(["set_constant", C], _, _, Rust) :-
     format(string(Rust), 'Instruction::SetConstant(~w)', [VExpr]).
 wam_line_to_rust_instr(["allocate"], _, _, "Instruction::Allocate").
 wam_line_to_rust_instr(["deallocate"], _, _, "Instruction::Deallocate").
+% R1: control resolved to PCs when the program is generated.
+%
+% When the caller passes the program's label table ('$rust_labels'(Assoc),
+% built by rust_wam_label_assoc/3 with the same label -> PC numbering
+% wam_lines_to_rust/6 emits into `labels`), every branch target the table
+% knows is emitted as a PC, so the hot path never looks a label up by name:
+%
+%   try_me_else L      -> TryMeElsePc / TryMeElsePcArgs (R0a) /
+%                         TryMeElseItePc (L_ite_else_*: no clause barrier)
+%   retry_me_else L    -> RetryMeElsePc
+%   try/retry/trust L  -> TryPc / RetryPc / TrustPc (D138 dispatch chains)
+%   jump L             -> JumpPc
+%   switch_on_*        -> the *Pc tables (a key whose label the table does not
+%                         know is dropped where the runtime skips it, and the
+%                         string form is kept where the runtime fails on it)
+%
+% `call P`/`execute P` resolve only in the shared table of a project
+% ('$rust_pc_calls'(LoweredKeys)): the Call/Execute arms try `lowered_call`
+% BEFORE the label, so a predicate the lowered dispatch names keeps the
+% by-name form; for every other label the arm's first live branch is the
+% jump, which CallPc/ExecutePc perform. A target with no label (builtins,
+% foreign, dynamic, fact tables) keeps the by-name form and its fallbacks.
+% `labels` itself is still emitted in full for entry lookup and meta-calls.
+wam_line_to_rust_instr(["call", P, N], Pred/Arity, Options, Rust) :-
+    memberchk('$rust_pc_calls'(Lowered), Options),
+    memberchk('$rust_labels'(Assoc), Options),
+    clean_comma(P, CP), clean_comma(N, CN),
+    escape_rust_string(CP, ECP),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    \+ rust_foreign_rewrite_call(Options, Pred/Arity, ECP, Num, _, _),
+    text_to_string(CP, CPS),
+    \+ memberchk(CPS, Lowered),
+    get_assoc(CPS, Assoc, PC),
+    !,
+    format(string(Rust), 'Instruction::CallPc(~w, ~w)', [PC, Num]).
+wam_line_to_rust_instr(["execute", P], Pred/Arity, Options, Rust) :-
+    memberchk('$rust_pc_calls'(Lowered), Options),
+    memberchk('$rust_labels'(Assoc), Options),
+    escape_rust_string(P, EP),
+    \+ rust_foreign_rewrite_execute(Options, Pred/Arity, EP, _, _),
+    text_to_string(P, PS),
+    \+ memberchk(PS, Lowered),
+    get_assoc(PS, Assoc, PC),
+    !,
+    format(string(Rust), 'Instruction::ExecutePc(~w)', [PC]).
+wam_line_to_rust_instr(["try_me_else", Label], Pred/Arity, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    text_to_string(Label, LabelS),
+    (   memberchk('$r0a_clause_cp_args', Options),
+        format(string(Expected), "L_~w_~w_2", [Pred, Arity]),
+        LabelS == Expected
+    ->  format(string(Rust), 'Instruction::TryMeElsePcArgs(~w, ~w)', [PC, Arity])
+    ;   sub_string(LabelS, 0, _, _, "L_ite_else_")
+    ->  format(string(Rust), 'Instruction::TryMeElseItePc(~w)', [PC])
+    ;   format(string(Rust), 'Instruction::TryMeElsePc(~w)', [PC])
+    ).
+wam_line_to_rust_instr(["retry_me_else", Label], _, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    format(string(Rust), 'Instruction::RetryMeElsePc(~w)', [PC]).
+wam_line_to_rust_instr(["try", Label], _, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    format(string(Rust), 'Instruction::TryPc(~w)', [PC]).
+wam_line_to_rust_instr(["retry", Label], _, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    format(string(Rust), 'Instruction::RetryPc(~w)', [PC]).
+wam_line_to_rust_instr(["trust", Label], _, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    format(string(Rust), 'Instruction::TrustPc(~w)', [PC]).
+wam_line_to_rust_instr(["jump", Label], _, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    format(string(Rust), 'Instruction::JumpPc(~w)', [PC]).
+% switch_on_constant FAILS on a key whose label is unknown, and falls through
+% on "default" (PC 0 in the Pc table), so it resolves only when every entry
+% does.
+wam_line_to_rust_instr(["switch_on_constant"|Entries0], _, Options, Rust) :-
+    memberchk('$rust_labels'(Assoc), Options),
+    rust_index_entries(Entries0, Entries),
+    maplist(rust_pc_entry_constant(Assoc, default_zero), Entries, Resolved),
+    \+ memberchk(unresolved, Resolved),
+    !,
+    atomic_list_concat(Resolved, ', ', Joined),
+    format(string(Rust), 'Instruction::SwitchOnConstantPc(vec![~w])', [Joined]).
+% The other three forms skip a matching key whose label is unknown and go on
+% scanning, so such entries are dropped.
+wam_line_to_rust_instr(["switch_on_constant_fallthrough"|Entries0], _, Options, Rust) :-
+    memberchk('$rust_labels'(Assoc), Options),
+    !,
+    rust_index_entries(Entries0, Entries),
+    rust_drop_default_keys(Entries, JumpEntries),
+    maplist(rust_pc_entry_constant(Assoc, unresolved), JumpEntries, Resolved0),
+    exclude(==(unresolved), Resolved0, Resolved),
+    atomic_list_concat(Resolved, ', ', Joined),
+    format(string(Rust),
+        'Instruction::SwitchOnConstantFallthroughPc(vec![~w])', [Joined]).
+wam_line_to_rust_instr(["switch_on_structure"|Entries0], _, Options, Rust) :-
+    memberchk('$rust_labels'(Assoc), Options),
+    !,
+    rust_index_entries(Entries0, Entries),
+    maplist(rust_pc_entry_structure(Assoc), Entries, Resolved0),
+    exclude(==(unresolved), Resolved0, Resolved),
+    atomic_list_concat(Resolved, ', ', Joined),
+    format(string(Rust), 'Instruction::SwitchOnStructurePc(vec![~w])', [Joined]).
+wam_line_to_rust_instr(["switch_on_constant_a2"|Entries0], _, Options, Rust) :-
+    memberchk('$rust_labels'(Assoc), Options),
+    !,
+    rust_index_entries(Entries0, Entries1),
+    rust_drop_default_keys(Entries1, Entries),
+    maplist(rust_pc_entry_constant(Assoc, unresolved), Entries, Resolved0),
+    exclude(==(unresolved), Resolved0, Resolved),
+    atomic_list_concat(Resolved, ', ', Joined),
+    format(string(Rust), 'Instruction::SwitchOnConstantA2Pc(vec![~w])', [Joined]).
+
 wam_line_to_rust_instr(["call", P, N], Pred/Arity, Options, Rust) :-
     clean_comma(P, CP), clean_comma(N, CN),
     escape_rust_string(CP, ECP),
@@ -8983,6 +9183,80 @@ parse_index_entry_structure(Entry, Rust) :-
         format(string(Rust), '("~w".to_string(), "~w".to_string())', [Functor, Label])
     ;   format(string(Rust), '("~w".to_string(), "unknown".to_string())', [Entry])
     ).
+
+
+%% rust_label_pc(+Options, +Label, -PC) is semidet.
+rust_label_pc(Options, Label, PC) :-
+    memberchk('$rust_labels'(Assoc), Options),
+    text_to_string(Label, LabelS),
+    get_assoc(LabelS, Assoc, PC).
+
+%% rust_pc_entry_constant(+Assoc, +DefaultMode, +Entry, -Rust)
+%  `(Value, pc)` for a `Key:Label` entry, or `unresolved`. DefaultMode
+%  default_zero maps a "default" label to PC 0 (fall through).
+rust_pc_entry_constant(Assoc, DefaultMode, Entry, Rust) :-
+    (   rust_index_entry_split(Entry, ValStr, Label)
+    ->  (   Label == "default", DefaultMode == default_zero
+        ->  PC = 0
+        ;   get_assoc(Label, Assoc, PC)
+        ->  true
+        ;   PC = none
+        ),
+        (   PC == none
+        ->  Rust = unresolved
+        ;   rust_const_value(ValStr, VExpr),
+            format(string(Rust), '(~w, ~w)', [VExpr, PC])
+        )
+    ;   Rust = unresolved
+    ).
+
+%% rust_pc_entry_structure(+Assoc, +Entry, -Rust)
+rust_pc_entry_structure(Assoc, Entry, Rust) :-
+    (   rust_index_entry_split(Entry, FunctorTok, Label),
+        get_assoc(Label, Assoc, PC)
+    ->  wam_classify_constant_token(FunctorTok, Class),
+        (   Class = atom(Functor0) -> true ; Functor0 = FunctorTok ),
+        escape_rust_string(Functor0, Functor),
+        format(string(Rust), '("~w".to_string(), ~w)', [Functor, PC])
+    ;   Rust = unresolved
+    ).
+
+%% rust_wam_label_assoc(+Groups, +Assoc0, -Assoc)
+%  Groups: g(Lines, StartPC) per predicate, in program order. The label -> PC
+%  table wam_lines_to_rust/6 emits as `labels.insert(..)` lines: a label names
+%  the PC of the next instruction line, and a later insert of the same label
+%  replaces an earlier one, as HashMap::insert does.
+rust_wam_label_assoc([], A, A).
+rust_wam_label_assoc([g(Lines, PC0)|Gs], A0, A) :-
+    rust_wam_lines_labels(Lines, PC0, A0, A1),
+    rust_wam_label_assoc(Gs, A1, A).
+
+rust_wam_lines_labels([], _, A, A).
+rust_wam_lines_labels([Line|Rest], PC, A0, A) :-
+    wam_tokenize_line(Line, Parts),
+    (   Parts == []
+    ->  rust_wam_lines_labels(Rest, PC, A0, A)
+    ;   Parts = [First|_],
+        sub_string(First, _, 1, 0, ":")
+    ->  sub_string(First, 0, _, 1, Name0),
+        text_to_string(Name0, Name),
+        put_assoc(Name, A0, PC, A1),
+        rust_wam_lines_labels(Rest, PC, A1, A)
+    ;   PC1 is PC + 1,
+        rust_wam_lines_labels(Rest, PC1, A0, A)
+    ).
+
+%% rust_lowered_dispatch_keys(+DispatchCode, -Keys)
+%  The predicate keys `lowered_call` routes (its `"<key>" =>` arms).
+rust_lowered_dispatch_keys(Code, Keys) :-
+    split_string(Code, "\n", "", Lines),
+    findall(Key,
+            ( member(L, Lines),
+              sub_string(L, 0, 9, _, "        \""),
+              sub_string(L, 9, _, 0, Rest),
+              sub_string(Rest, B, _, _, "\" =>"),
+              sub_string(Rest, 0, B, _, Key) ),
+            Keys).
 
 clean_comma(Str, Clean) :-
     (   sub_string(Str, _, 1, 0, ",")
@@ -9636,7 +9910,18 @@ compile_predicates_for_project(Predicates0, Options, Code) :-
     % Pass 2: collect WAM entries with cumulative PCs, build shared table
     % R0a: decide, for the whole shared table, whether clause-entry choice
     % points may save only A1..An (rust_r0a_instr_options/4).
-    rust_r0a_instr_options(Classified, EmbeddedRewrites, Options, InstrOpts),
+    rust_r0a_instr_options(Classified, EmbeddedRewrites, Options, InstrOpts0),
+    % D55 sound intermediate: a crate-level lowered_call referenced by the
+    % Call/Execute handlers (always emitted; empty match when nothing is
+    % eligible). R1: computed before the shared table, because a call to a
+    % predicate it routes keeps the by-name Call/Execute form (see
+    % wam_line_to_rust_instr/4); every other labelled call becomes CallPc.
+    rust_lowered_dispatch_fn(Classified, Options, LoweredDispatchCode),
+    (   option(rust_named_calls(true), Options)
+    ->  InstrOpts = [rust_named_calls(true)|InstrOpts0]
+    ;   rust_lowered_dispatch_keys(LoweredDispatchCode, LoweredKeys),
+        InstrOpts = ['$rust_pc_calls'(LoweredKeys)|InstrOpts0]
+    ),
     collect_wam_entries(Classified, 1, EmbeddedRewrites, InstrOpts, WamEntries, AllInstrParts, AllLabelParts),
     % Generate shared WAM table if any WAM predicates exist
     (   WamEntries \== []
@@ -9702,9 +9987,7 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
     % T9 call-site dispatch: a crate-level fact_table_call referenced by the
     % Call/Execute handlers (always emitted; empty match when no fact tables).
     rust_fact_table_dispatch_fn(Classified, DispatchCode),
-    % D55 sound intermediate: a crate-level lowered_call referenced by the same
-    % two handlers (always emitted; empty match when nothing is eligible).
-    rust_lowered_dispatch_fn(Classified, Options, LoweredDispatchCode),
+    % (LoweredDispatchCode was built before the shared table, above.)
     format(string(Code), "~w\n\n~w\n\n~w", [Body1, DispatchCode, LoweredDispatchCode]).
 
 %% rust_fact_table_dispatch_fn(+Classified, -Code)
@@ -11698,34 +11981,55 @@ rust_r0a_call_violation(PI, Kind, EffT, OpenT, Labels, Live, N,
 %  Iterates over classified predicates, collecting WAM code with cumulative PCs.
 %  WamEntries is a list of wam_entry(Pred, Arity, StartPC) terms. InstrOpts are
 %  the program-wide instruction options (R0a: see rust_r0a_instr_options/4).
-collect_wam_entries([], _, _, _, [], [], []).
-collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC, Rewrites, InstrOpts,
-                    [wam_entry(Pred, Arity, PC)|RestEntries],
-                    AllInstrs, AllLabels) :-
+%  R1: a first pass numbers every label of the shared table (the same numbering
+%  the `labels.insert` lines get), and the emitting pass receives that table
+%  as '$rust_labels'(Assoc) so branch targets are emitted as PCs.
+collect_wam_entries(Classified, PC0, Rewrites, InstrOpts0, Entries, Instrs, Labels) :-
+    rust_wam_groups(Classified, PC0, Rewrites, Groups),
+    findall(g(Lines, PC), member(wg(_, _, PC, Lines), Groups), LGroups),
+    empty_assoc(A0),
+    rust_wam_label_assoc(LGroups, A0, Assoc),
+    InstrOpts = ['$rust_labels'(Assoc)|InstrOpts0],
+    rust_emit_wam_groups(Groups, InstrOpts, Entries, Instrs, Labels).
+
+%% rust_wam_groups(+Classified, +PC, +Rewrites, -Groups)
+%  wg(Pred, Arity, StartPC, Lines) for each predicate of the shared table.
+rust_wam_groups([], _, _, []).
+rust_wam_groups([C|Rest], PC, Rewrites, [wg(Pred, Arity, PC, Lines)|Groups]) :-
+    rust_shared_wam_code(C, Pred, Arity, WamCode),
+    !,
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines0),
     rust_rewrite_embedded_aggregate(Lines0, Pred/Arity, Rewrites, Lines),
+    rust_wam_instr_count(Lines, 0, Count),
+    NextPC is PC + Count,
+    rust_wam_groups(Rest, NextPC, Rewrites, Groups).
+rust_wam_groups([_|Rest], PC, Rewrites, Groups) :-
+    rust_wam_groups(Rest, PC, Rewrites, Groups).
+
+rust_shared_wam_code(classified(_, Pred, Arity, wam, WamCode), Pred, Arity, WamCode).
+rust_shared_wam_code(classified(_, Pred, Arity, lowered, lowered_code(_, WamCode, _)), Pred, Arity, WamCode).
+
+%  The number of instruction lines (what wam_lines_to_rust/6 emits one vec!
+%  entry for): non-empty lines whose first token is not a `label:`.
+rust_wam_instr_count([], N, N).
+rust_wam_instr_count([Line|Rest], N0, N) :-
+    wam_tokenize_line(Line, Parts),
+    (   Parts == []
+    ->  N1 = N0
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  N1 = N0
+    ;   N1 is N0 + 1
+    ),
+    rust_wam_instr_count(Rest, N1, N).
+
+rust_emit_wam_groups([], _, [], [], []).
+rust_emit_wam_groups([wg(Pred, Arity, PC, Lines)|Gs], InstrOpts,
+                     [wam_entry(Pred, Arity, PC)|Entries], AllInstrs, AllLabels) :-
     wam_lines_to_rust(Lines, PC, Pred/Arity, InstrOpts, InstrParts, LabelParts),
-    % Count instructions to compute next PC
-    length(InstrParts, InstrCount),
-    NextPC is PC + InstrCount,
-    collect_wam_entries(Rest, NextPC, Rewrites, InstrOpts, RestEntries, RestInstrs, RestLabels),
+    rust_emit_wam_groups(Gs, InstrOpts, Entries, RestInstrs, RestLabels),
     append(InstrParts, RestInstrs, AllInstrs),
     append(LabelParts, RestLabels, AllLabels).
-collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode, _))|Rest], PC, Rewrites, InstrOpts,
-                    [wam_entry(Pred, Arity, PC)|RestEntries],
-                    AllInstrs, AllLabels) :-
-    atom_string(WamCode, WamStr),
-    split_string(WamStr, "\n", "", Lines0),
-    rust_rewrite_embedded_aggregate(Lines0, Pred/Arity, Rewrites, Lines),
-    wam_lines_to_rust(Lines, PC, Pred/Arity, InstrOpts, InstrParts, LabelParts),
-    length(InstrParts, InstrCount),
-    NextPC is PC + InstrCount,
-    collect_wam_entries(Rest, NextPC, Rewrites, InstrOpts, RestEntries, RestInstrs, RestLabels),
-    append(InstrParts, RestInstrs, AllInstrs),
-    append(LabelParts, RestLabels, AllLabels).
-collect_wam_entries([_|Rest], PC, Rewrites, InstrOpts, Entries, Instrs, Labels) :-
-    collect_wam_entries(Rest, PC, Rewrites, InstrOpts, Entries, Instrs, Labels).
 
 %% generate_predicate_codes(+Classified, +WamEntries, +Options, -PredCodes)
 %  Generates Rust code for each classified predicate. Options is threaded so the
