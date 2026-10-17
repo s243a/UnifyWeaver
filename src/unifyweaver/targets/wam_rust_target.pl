@@ -990,6 +990,26 @@ wam_instruction_arm('Instruction::CutIte', Body) :-
 wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
     Body = '                self.execute_builtin(op, *arity)'.
 
+% R1: a builtin with a generator-resolved route (instructions.rs
+% `builtin_route`). The four core arms are execute_builtin's own core arms;
+% any other route enters the family cascade at that family (D124: a family
+% that does not claim a name returns false untouched, so skipping the
+% families before the first one that names it gives the same result).
+wam_instruction_arm('Instruction::BuiltinCallR(route, op, arity)', Body) :-
+    Body = '                match *route {
+                    crate::instructions::builtin_route::TRUE => { self.pc += 1; true }
+                    crate::instructions::builtin_route::FAIL => false,
+                    crate::instructions::builtin_route::CUT => {
+                        self.choice_points.truncate(self.cut_barrier); self.pc += 1; true
+                    }
+                    crate::instructions::builtin_route::UNIFY => {
+                        let a1 = self.get_reg_raw_r(Reg::a(1)).unwrap_or(Value::Uninit);
+                        let a2 = self.get_reg_raw_r(Reg::a(2)).unwrap_or(Value::Uninit);
+                        if self.unify(&a1, &a2) { self.pc += 1; true } else { false }
+                    }
+                    r => self.execute_builtin_from(r, op, *arity),
+                }'.
+
 wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg)', Body) :-
     Body = '                // R-1b: one accumulator per active aggregate frame. The
                 // enclosing frame''s solutions so far move into THIS frame''s
@@ -1734,6 +1754,22 @@ compile_execute_builtin_to_rust(Code) :-
                 false
             }
         }
+    }
+
+    /// R1: the family cascade entered at `route` (instructions.rs
+    /// `builtin_route`; ARITH..META), for a name the generator found first in
+    /// that family. FULL (or anything else) is the whole `execute_builtin`.
+    pub fn execute_builtin_from(&mut self, route: u8, op: &str, arity: usize) -> bool {
+        use crate::instructions::builtin_route as br;
+        if !(br::ARITH..=br::META).contains(&route) {
+            return self.execute_builtin(op, arity);
+        }
+        if route <= br::ARITH && self.execute_arith_builtin(op, arity) { return true; }
+        if route <= br::IO && self.execute_io_builtin(op, arity) { return true; }
+        if route <= br::TYPE && self.execute_type_builtin(op, arity) { return true; }
+        if route <= br::TERM && self.execute_term_builtin(op, arity) { return true; }
+        if route <= br::EXT && self.execute_ext_builtin(op, arity) { return true; }
+        self.execute_meta_builtin(op, arity)
     }'.
 
 compile_execute_arith_builtin_to_rust(Code) :-
@@ -8908,6 +8944,26 @@ wam_line_to_rust_instr(["call_foreign", P, N], _, _, Rust) :-
     format(string(Rust),
         'Instruction::CallForeign("~w".to_string(), ~w)', [ECP, Num]).
 wam_line_to_rust_instr(["proceed"], _, _, "Instruction::Proceed").
+% R1: builtin calls carry a dispatch route resolved here (instructions.rs
+% `builtin_route`). The four core builtins get their own route and run inline
+% in the step arm; any other name enters execute_builtin's family cascade at
+% the first family whose generated code contains the name as a string
+% literal. A family's only claims are literal `"name/N" =>` arms (no guard
+% arms; checked by tests/test_wam_rust_r1_encoding.pl), so every family before
+% that one does not claim the name, and a family that does not claim a name
+% returns false without touching the machine (D124). A name no family's code
+% contains takes the full path (route FULL), exactly as before.
+wam_line_to_rust_instr(["builtin_call", Op, N], _, Options, Rust) :-
+    \+ memberchk(rust_named_calls(true), Options),
+    clean_comma(Op, COp), clean_comma(N, CN),
+    escape_rust_string(COp, ECOp),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    text_to_string(ECOp, ES),
+    rust_builtin_route(ES, Route),
+    !,
+    format(string(Rust),
+        'Instruction::BuiltinCallR(~w, "~w".to_string(), ~w)', [Route, ECOp, Num]).
+
 wam_line_to_rust_instr(["builtin_call", Op, N], _, _, Rust) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     escape_rust_string(COp, ECOp),
@@ -9257,6 +9313,46 @@ rust_lowered_dispatch_keys(Code, Keys) :-
               sub_string(Rest, B, _, _, "\" =>"),
               sub_string(Rest, 0, B, _, Key) ),
             Keys).
+
+
+%% rust_builtin_route(+EscapedName, -Route) is det.
+%  R1 builtin dispatch route (instructions.rs `builtin_route`): 0..3 for the
+%  four core builtins execute_builtin matches first, 4..9 for the first
+%  family (arith, io, type, term, ext, meta: the cascade order) whose
+%  generated code contains the name as a Rust string literal, 10 (the full
+%  path) otherwise. EscapedName is the name as escape_rust_string/2 writes it,
+%  which is how it appears inside the families' literals.
+rust_builtin_route("true/0", 0) :- !.
+rust_builtin_route("fail/0", 1) :- !.
+rust_builtin_route("!/0", 2) :- !.
+rust_builtin_route("=/2", 3) :- !.
+rust_builtin_route(Name, Route) :-
+    rust_builtin_family_codes(Families),
+    format(string(Quoted), "\"~w\"", [Name]),
+    (   member(R-Code, Families),
+        sub_string(Code, _, _, _, Quoted)
+    ->  Route = R
+    ;   Route = 10
+    ).
+
+:- dynamic rust_builtin_family_codes_cache/1.
+
+%% rust_builtin_family_codes(-Families) is det.
+%  Route-Code for each builtin family, in cascade order: exactly the Rust
+%  code compile_wam_helpers_to_rust/2 emits for that family.
+rust_builtin_family_codes(Families) :-
+    (   rust_builtin_family_codes_cache(Families0)
+    ->  Families = Families0
+    ;   compile_execute_arith_builtin_to_rust(C4),
+        compile_execute_io_builtin_to_rust(C5),
+        compile_execute_type_builtin_to_rust(C6),
+        compile_execute_term_builtin_to_rust(C7),
+        compile_execute_ext_builtin_to_rust(C8),
+        compile_execute_meta_builtin_to_rust(C9),
+        Families0 = [4-C4, 5-C5, 6-C6, 7-C7, 8-C8, 9-C9],
+        assertz(rust_builtin_family_codes_cache(Families0)),
+        Families = Families0
+    ).
 
 clean_comma(Str, Clean) :-
     (   sub_string(Str, _, 1, 0, ",")

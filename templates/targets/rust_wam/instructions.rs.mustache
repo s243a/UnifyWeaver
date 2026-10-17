@@ -291,6 +291,10 @@ pub enum Instruction {
     CutIte,
     /// Evaluate a built-in predicate.
     BuiltinCall(String, usize),
+    /// R1: a builtin call with its dispatch route resolved by the generator
+    /// (`builtin_route`): (route, name, arity). Same result as
+    /// `BuiltinCall(name, arity)`.
+    BuiltinCallR(u8, String, usize),
     /// Start collecting solutions for an aggregate.
     BeginAggregate(String, String, String),
     /// Record one aggregate solution and force backtracking.
