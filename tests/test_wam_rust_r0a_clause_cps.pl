@@ -331,6 +331,28 @@ ra_lib(Build, S) :-
     atomic_list_concat([Dir, '/src/lib.rs'], LibRs),
     read_file_to_string(LibRs, S, []).
 
+%% ra_label_pc(+LibRs, +Label, -PC): the PC `labels.insert` gives Label.
+ra_label_pc(S, Label, PC) :-
+    format(string(Pre), "labels.insert(\"~w\".to_string(), ", [Label]),
+    sub_string(S, B, L, _, Pre),
+    E is B + L,
+    sub_string(S, E, 12, _, Tail),
+    split_string(Tail, ")", "", [PCS|_]),
+    number_string(PC, PCS),
+    !.
+
+%% ra_label_pc_prefix(+LibRs, +Prefix, -PC): PCs of labels starting with Prefix.
+ra_label_pc_prefix(S, Prefix, PC) :-
+    split_string(S, "\n", " ", Lines),
+    format(string(Pre), "labels.insert(\"~w", [Prefix]),
+    member(Line, Lines),
+    string_concat(Pre, _, Line),
+    sub_string(Line, B, _, _, ".to_string(), "),
+    E is B + 14,
+    sub_string(Line, E, _, 0, Tail),
+    split_string(Tail, ")", "", [PCS|_]),
+    number_string(PC, PCS).
+
 %% lowered_entry(+Build, +Name, -Key)
 lowered_entry(Build, Name, Key) :-
     ra_program(_, Name, Q, _, _),
@@ -541,14 +563,18 @@ test(lowered_first_solution_matches_swi,
     once(check_once(Build, Name)).
 
 % The safe group's clause chains use the arity-only form, in both modes: the
-% tests above exercise TryMeElseArgs, not the full save.
+% tests above exercise TryMeElseArgs, not the full save. (R1: the generator
+% resolves the alternative label to its PC, so the clause entry is
+% TryMeElsePcArgs(<pc of L_F_A_2>, A); the full-save form is TryMeElsePc.)
 test(safe_group_uses_arity_only_clause_cps,
      [forall(( member(Build, [safe_interpreter, safe_functions]),
                clause_chain_pred(safe, F/A) ))]) :-
     ra_ensure_built(Build),
     ra_lib(Build, S),
-    format(string(Args), 'Instruction::TryMeElseArgs("L_~w_~w_2".to_string(), ~w)', [F, A, A]),
-    format(string(Full), 'Instruction::TryMeElse("L_~w_~w_2".to_string())', [F, A]),
+    format(string(L), "L_~w_~w_2", [F, A]),
+    ra_label_pc(S, L, PC),
+    format(string(Args), 'Instruction::TryMeElsePcArgs(~w, ~w)', [PC, A]),
+    format(string(Full), 'Instruction::TryMeElsePc(~w)', [PC]),
     once(sub_string(S, _, _, _, Args)),
     \+ sub_string(S, _, _, _, Full).
 
@@ -556,8 +582,13 @@ test(safe_group_uses_arity_only_clause_cps,
 test(ite_guards_keep_the_full_save) :-
     ra_ensure_built(safe_interpreter),
     ra_lib(safe_interpreter, S),
-    once(sub_string(S, _, _, _, 'Instruction::TryMeElse("L_ite_else_')),
-    \+ sub_string(S, _, _, _, 'Instruction::TryMeElseArgs("L_ite_else_').
+    once(sub_string(S, _, _, _, 'Instruction::TryMeElseItePc(')),
+    findall(PC, ( ra_label_pc_prefix(S, "L_ite_else_", PC) ), PCs),
+    PCs \== [],
+    forall(member(PC, PCs),
+           (   format(string(Args), 'Instruction::TryMeElsePcArgs(~w,', [PC]),
+               \+ sub_string(S, _, _, _, Args)
+           )).
 
 % The full_save group fails the check: its clause chains keep the full-save
 % TryMeElse, and no arity-only choice point is emitted anywhere.
@@ -567,7 +598,10 @@ test(full_save_group_keeps_the_full_save,
     ra_ensure_built(Build),
     ra_lib(Build, S),
     \+ sub_string(S, _, _, _, 'TryMeElseArgs('),
-    format(string(Full), 'Instruction::TryMeElse("L_~w_~w_2".to_string())', [F, A]),
+    \+ sub_string(S, _, _, _, 'TryMeElsePcArgs('),
+    format(string(L), "L_~w_~w_2", [F, A]),
+    ra_label_pc(S, L, PC),
+    format(string(Full), 'Instruction::TryMeElsePc(~w)', [PC]),
     once(sub_string(S, _, _, _, Full)).
 
 % Arity-only WITHOUT the check breaks every full_save shape.
@@ -575,7 +609,7 @@ test(unchecked_arity_only_breaks_the_full_save_shapes,
      [forall(ra_group_program(full_save, Name))]) :-
     ra_ensure_built(full_save_unchecked),
     ra_lib(full_save_unchecked, S),
-    once(sub_string(S, _, _, _, 'TryMeElseArgs(')),
+    once(sub_string(S, _, _, _, 'TryMeElsePcArgs(')),
     swi_all(Name, SOut, SOk),
     rust_all(full_save_unchecked, Name, ROut, ROk),
     \+ ( SOut == ROut, SOk == ROk ).

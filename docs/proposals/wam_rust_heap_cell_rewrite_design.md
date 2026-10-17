@@ -342,6 +342,37 @@ Spike evidence for this bucket: register decode, the register file, the
 register trail and labels are ~18.5% of N=40, plus `step` self at ~76 Ir per
 instruction **[S]**.
 
+**As landed on main (R1, D139, `docs/reports/wam_rust_r1_numeric_encoding.md`).**
+R1 shipped on today's `Value` runtime, before R2, and differs from the list
+above in these ways:
+
+- `Reg` is one `u16` for all three banks (bit 15: Y; for A/X the low bits
+  are the flat index `reg_index` gives, bit 14 the `A` prefix). It is an
+  exact image of the runtime's name decode, including the `_XT<N>` findall
+  template registers the shared compiler emits, which decode to flat slot 0.
+- No separate X/Y variants: the remaining register-kind test is one operand
+  bit with the Y path out of line (estimated under 0.1 M Ir at N=40).
+- Control: clause choice points are `TryMeElsePc`/`TryMeElsePcArgs` (R0a),
+  guards `TryMeElseItePc`, plus `TryPc`/`RetryPc`/`TrustPc`, `JumpPc` and
+  the `*Pc` switch tables (`SwitchOnConstantPc` PC 0 = `default`). Calls are
+  `CallPc`/`ExecutePc` except for `lowered_call` targets and unlabelled
+  targets, which keep the by-name form.
+- Builtins: `BuiltinCallR(route, name, arity)`. The four core builtins run
+  inline; every other name enters the family cascade at the first family
+  that names it (built from the generated family code). The in-family match
+  is still by name.
+- Constants were already load-time `Value`s; R1 pre-encodes the
+  `get/put_structure` functor (`Functor`: both arity rules, the `str(...)`
+  spelling, the `Sym` on first use) and interns the step arms' placeholder
+  atoms once. No constant-box arena (that is R2's heap).
+- Not done in R1 (R2 work): `LevelId` (the level is keyed by name on
+  `ChoicePoint::levels`), `TryMeElseIte{live}`, `FunctorId` switch keys,
+  the Y-without-Allocate check.
+
+Measured: −2.82 M Ir per warm resolve at N=40 (20.06 → 17.24 M, −14.0%):
+registers −1.11 M, labels −0.87 M, builtin dispatch −0.02 M, interning and
+functor decode −0.81 M. N=5000: −3.22 M (389.02 → 385.80 M).
+
 ## 5. Trail, rollback obligations and backtracking
 
 ### 5.1 Trail entries
@@ -1737,7 +1768,7 @@ each as separately reviewed changes. G0 is a measurement gate before R2.
 | **R−1** (recommended, main; owner's decision) | §12.1: R−1f, then R−1a–R−1d, optionally R−1e, each its own D-row | the rewrite needs L3 anyway; byte identity should target corrected behavior | each item's SWI comparison; full gate set; explicit re-freeze of the byte-identity baseline after each |
 | **R0a** (optional, main) | Arity-only register save at **clause-entry** `try_me_else`/`TryMeElsePc` (not `L_ite_else_*`). The generator emits the arity; no label parsing. Keeps the environment stack snapshot, `restore_ax_regs` clear-then-restore, and the register trail. **Not** ITE guards, aggregate frames, builtin/fact/dynamic/foreign CPs, `lo_clause_snapshot` or any lowered mid-clause snapshot: those keep `save_regs` | measured s1→s2: −1.83 M Ir (−7.9% of base), on top of s1; lib 260/260 in the spike | the full D127 gate set; lib tests; new tests: an unsaved temporary is `Uninit` in clause 2 as today; ITE guards still restore temporaries |
 | **R0b** (optional, main) | Remove **A/X** register trail entries. Y entries stay until R2's env-slot trail replaces them. First: (1) an audit table of every rollback consumer (the 61 + 35 `unwind_trail_to` sites, plus `lo_restore_clause`, `catch/3`, `predsort_order`), each classified as *restores registers explicitly*, *reads no A/X register that the scope could have clobbered*, or *relies on register entries*; (2) explicit saves for the third class. The lowered ITE (`LE:838-855`) is a known candidate: its condition's `vm.step` arms trail the registers they write, and the else branch reads registers; (3) targeted tests, written and passing before the removal: a failed `call/1` disjunction whose left branch clobbers A1; a lowered ITE whose condition calls a predicate and whose else reads A1; `\+` then a temporary read; `forall`; include/exclude with a failing goal; `catch/3` goal failure | measured s2→s3: −1.88 M Ir (−8.1% of base) is an upper bound: s3 also dropped Y entries and was never lib-tested. The spike calls s3 unsound in general | the audit table in the PR; the targeted tests; the full D127 gate set; lib tests |
-| **R1** | Generator: numeric `Reg` operands, X/Y split variants, PC-resolved control, `BuiltinId` (from the 216-key inventory), constant table with the constant-box arena, `TryMeElse{arity}`, `TryMeElseIte{live}`, `LevelId` operands, `FunctorId` switch keys, the Y-without-Allocate check. The other instruction emitters move with it: both benchmark generators (`examples/benchmark/generate_wam_effective_distance_benchmark.pl`, `generate_wam_rust_matrix_benchmark.pl`, both backends) and the runtime's textual instruction parser (`ST:7059-7063`) | bucket (b) is ~18.5% and `step` self ~8% of N=40. Everything after it is written against the new encoding, so it comes first | the crate compiles against R2's skeleton; generator plunit |
+| **R1** | Generator: numeric `Reg` operands, X/Y split variants, PC-resolved control, `BuiltinId` (from the 216-key inventory), constant table with the constant-box arena, `TryMeElse{arity}`, `TryMeElseIte{live}`, `LevelId` operands, `FunctorId` switch keys, the Y-without-Allocate check. The other instruction emitters move with it: both benchmark generators (`examples/benchmark/generate_wam_effective_distance_benchmark.pl`, `generate_wam_rust_matrix_benchmark.pl`, both backends) and the runtime's textual instruction parser (`ST:7059-7063`) | bucket (b) is ~18.5% and `step` self ~8% of N=40. Everything after it is written against the new encoding, so it comes first | the crate compiles against R2's skeleton; generator plunit. **Landed on main ahead of R2 (D139)**, on the `Value` runtime, with the differences listed at the end of §4 |
 | **G0** (gate, before R2) | Prototype on the proposed representation, in a scratch crate like the spike: (1) one native sort/comparator path (`msort` + `sort/2` dedup with `compare_std`) on the N=5000 catalog lists; (2) one large region (`group_keyed`, 59.8 M today) on cells. Measure Ir, wall, **boundary copy-in and copy-out**, and **peak memory** | §14's N=5000 ranges for these two are unvalidated; the spike measured cost today, not on cells | the measured residuals, with boundary cost, are inside §14's targets, or §14 and the R4/R5 scope are revised before R2 starts |
 | **R2** | Core machine: `Cell`, heap, `VAR` names, trail (heap + env slot), obligations and scopes, CP plus arg stack, env stack with EB, execution snapshots, ITE barriers, S register, every step arm, `backtrack`, cut, `run`. All builtins through the **bridge** | buckets (a), (c) and (d), about 32% of N=40, plus construction ~8% | builds and runs; the model and targeted tests (§11.2) pass |
 | **R3** | Boundary: `vm.call` copy-in/out, both shims, fact sources, kernels, `par_aggregate` (fork, §9.4), detached holders (findall/`copy_term`/assert/exceptions/`read_term`/parser `ops`), all six `rust_target.pl` wrappers (§8), the benchmark driver and benchmark-generator read-backs (`_N`, `Hops`), `tests/fixtures/wam_rust_dynamic_builtins.rs`. The tracked crate `examples/pkg_resolver/rust/uw_resolve_wam/` is regenerated from the changed templates, never hand-ported | nothing runs end-to-end without it, so R2+R3 is the first point where the differential can run | **differential, corpus and byte identity green** with every builtin bridged |

@@ -716,12 +716,18 @@ test(dispatch_shapes_emitted) :-
     fd_ensure_built(interpreter),
     atomic_list_concat([Dir, '/src/lib.rs'], LibRs),
     read_file_to_string(LibRs, S, []),
-    forall(member(Needle, ["Instruction::Try(\"L_d3_2_2_body\"",
-                           "Instruction::Retry(\"L_d3_2_4_body\"",
-                           "Instruction::Trust(\"L_d3_2_5_body\"",
-                           "Instruction::SwitchOnStructure(",
-                           "Instruction::SwitchOnConstantFallthrough(",
-                           "Instruction::SwitchOnConstantA2("]),
+    % R1: chain and switch targets are emitted as PCs (TryPc(<pc of the
+    % body label>), SwitchOnStructurePc, ...).
+    fd_label_pc(S, "L_d3_2_2_body", P2),
+    fd_label_pc(S, "L_d3_2_4_body", P4),
+    fd_label_pc(S, "L_d3_2_5_body", P5),
+    format(string(T2), "Instruction::TryPc(~w)", [P2]),
+    format(string(T4), "Instruction::RetryPc(~w)", [P4]),
+    format(string(T5), "Instruction::TrustPc(~w)", [P5]),
+    forall(member(Needle, [T2, T4, T5,
+                           "Instruction::SwitchOnStructurePc(",
+                           "Instruction::SwitchOnConstantFallthroughPc(",
+                           "Instruction::SwitchOnConstantA2Pc("]),
            (   sub_string(S, _, _, _, Needle)
            ->  true
            ;   format(user_error, 'missing in generated code: ~w~n', [Needle]),
@@ -729,3 +735,13 @@ test(dispatch_shapes_emitted) :-
            )).
 
 :- end_tests(wam_rust_first_arg_dispatch).
+
+%% fd_label_pc(+LibRs, +Label, -PC): the PC `labels.insert` gives Label.
+fd_label_pc(S, Label, PC) :-
+    format(string(Pre), "labels.insert(\"~w\".to_string(), ", [Label]),
+    sub_string(S, B, L, _, Pre),
+    E is B + L,
+    sub_string(S, E, 12, _, Tail),
+    split_string(Tail, ")", "", [PCS|_]),
+    number_string(PC, PCS),
+    !.

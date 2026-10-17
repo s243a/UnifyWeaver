@@ -40,6 +40,7 @@
     wam_classify_constant_token/2,
     wam_tokenize_line/2
 ]).
+:- use_module('../targets/wam_rust_reg', [rust_reg_literal/2]).
 :- use_module('../targets/wam_rust_lowered_emitter', [
     wam_rust_lowerable/3,
     lower_predicate_to_rust/4,
@@ -112,8 +113,7 @@ compile_step_arm(ArmCode) :-
 % --- Head Unification Instructions ---
 
 wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
-    Body = '                let raw_val = self.get_reg_raw(ai);
-                let val = raw_val.map(|v| self.deref_var(&v));
+    Body = '                let val = self.reg_raw_ref_r(*ai).map(|v| self.deref_var(v));
                 match val {
                     Some(v) if v == *c => { self.pc += 1; true }
                     // Empty-list aliasing: the [] atom and an empty Value::List
@@ -125,8 +125,8 @@ wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
                         self.pc += 1; true
                     }
                     Some(Value::Unbound(ref var_name)) => {
-                        self.trail_binding(ai);
-                        self.set_reg_str(ai, c.clone());
+                        self.trail_reg(*ai);
+                        self.set_reg_r(*ai, c.clone());
                         self.bind_var(var_name, c.clone());
                         self.pc += 1;
                         true
@@ -135,10 +135,10 @@ wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
                 }'.
 
 wam_instruction_arm('Instruction::GetVariable(xn, ai)', Body) :-
-    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
-                    let val = self.deref_var(&raw);
-                    self.trail_binding(xn);
-                    self.put_reg(xn, val);
+    Body = '                if let Some(raw) = self.reg_raw_ref_r(*ai).map(|__r| self.deref_var(__r)) {
+                    let val = raw;
+                    self.trail_reg(*xn);
+                    self.put_reg_r(*xn, val);
                     self.pc += 1;
                     true
                 } else { false }'.
@@ -151,8 +151,8 @@ wam_instruction_arm('Instruction::GetValue(xn, ai)', Body) :-
                 // accumulated result list against a tail cell. Route through
                 // unify(), which derefs (incl. Ref->heap), binds vars, and
                 // structurally unifies with cons-cell aliasing.
-                let val_a = self.get_reg_raw(ai);
-                let val_x = self.get_reg(xn);
+                let val_a = self.get_reg_raw_r(*ai);
+                let val_x = self.get_reg_r(*xn);
                 match (val_a, val_x) {
                     (Some(a), Some(x)) => {
                         if self.unify(&a, &x) { self.pc += 1; true } else { false }
@@ -161,7 +161,7 @@ wam_instruction_arm('Instruction::GetValue(xn, ai)', Body) :-
                 }'.
 
 wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
-    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
+    Body = '                if let Some(raw) = self.reg_raw_ref_r(*ai).map(|__r| self.deref_var(__r)) {
                     // Deref BEFORE the unbound test, for the same reason
                     // GetList does (see below): a variable that is already
                     // bound is still *typed* Unbound, so testing the raw
@@ -175,29 +175,27 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                     // broke multi-clause discrimination on a nested functor
                     // (`[cnum(V)|_]` / `[csym(V)|_]` / ...), because the
                     // first clause always "matched" by construction.
-                    let val = self.deref_var(&raw);
+                    let val = raw;
                     if val.is_unbound() {
                         // Write mode
                         let addr = self.heap.len();
-                        let arity = fn_str.split(\'/\').nth(1)
-                            .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
-                        self.heap.push(Value::strv(fn_str.clone(), vec![]));
+                        let arity = fn_str.get_arity;
+                        self.heap.push(Value::strv(fn_str.sym(), vec![]));
                         for _ in 0..arity {
-                            self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
+                            self.heap.push(Self::struct_arg_atom());
                         }
-                        self.trail_binding(ai);
+                        self.trail_reg(*ai);
                         if let Value::Unbound(ref name) = val {
                             self.bind_var(name, Value::Ref(addr));
                         }
-                        self.set_reg_str(ai, Value::Ref(addr));
+                        self.set_reg_r(*ai, Value::Ref(addr));
                         self.smut().push(StackEntry::WriteCtx(addr));
                         self.pc += 1; true
                     } else if let Value::Ref(addr) = &val {
                         // Read mode on heap ref
                         if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
-                            if s == fn_str || s == &format!("str({})", fn_str) {
-                                let arity = fn_str.split(\'/\').nth(1)
-                                    .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+                            if s.as_str() == fn_str.as_str() || s.as_str() == fn_str.str_text.as_str() {
+                                let arity = fn_str.get_arity;
                                 let args = self.heap_subargs(addr + 1, arity);
                                 self.smut().push(StackEntry::UnifyCtx(args));
                                 self.pc += 1; true
@@ -217,7 +215,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         // the built form for any bare-name Str.
                         let matches_functor =
                             f == fn_str.as_str()
-                            || Self::functor_key_eq(f, args.len(), fn_str);
+                            || Self::functor_key_eq(f, args.len(), fn_str.as_str());
                         if matches_functor {
                             self.smut().push(StackEntry::UnifyCtx(args.to_vec()));
                             self.pc += 1; true
@@ -226,21 +224,21 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::GetList(ai)', Body) :-
-    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
+    Body = '                if let Some(raw) = self.reg_raw_ref_r(*ai).map(|__r| self.deref_var(__r)) {
                     // Deref BEFORE the unbound test: a bound variable is still
                     // typed Unbound, and treating a bound list tail as unbound
                     // would wrongly take the write-mode branch.
-                    let val = self.deref_var(&raw);
+                    let val = raw;
                     if val.is_unbound() {
                         let addr = self.heap.len();
                         self.heap.push(Value::strv("./2".to_string(), vec![]));
-                        self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
-                        self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
-                        self.trail_binding(ai);
+                        self.heap.push(Self::struct_arg_atom());
+                        self.heap.push(Self::struct_arg_atom());
+                        self.trail_reg(*ai);
                         if let Value::Unbound(ref name) = val {
                             self.bind_var(name, Value::Ref(addr));
                         }
-                        self.set_reg_str(ai, Value::Ref(addr));
+                        self.set_reg_r(*ai, Value::Ref(addr));
                         self.smut().push(StackEntry::WriteCtx(addr));
                         self.pc += 1; true
                     } else if let Value::List(items) = &val {
@@ -278,15 +276,15 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
                         if !rest.is_empty() {
                             self.smut().push(StackEntry::UnifyCtx(rest));
                         }
-                        self.trail_binding(xn);
-                        self.put_reg(xn, arg);
+                        self.trail_reg(*xn);
+                        self.put_reg_r(*xn, arg);
                         self.pc += 1; true
                     } else { false }
                 } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
                     let var = Value::Unbound(Self::fresh_var_sym(b''H'', self.var_counter));
                     self.var_counter += 1;
                     self.set_heap_or_list(var.clone());
-                    self.put_reg(xn, var);
+                    self.put_reg_r(*xn, var);
                     self.pc += 1; true
                 } else { false }'.
 
@@ -302,7 +300,7 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
                         // but left the second slot unbound: the caller''s
                         // term never became p(a,a). unify() binds both
                         // directions and knows the list/cons aliasings.
-                        let ok = match self.get_reg(xn) {
+                        let ok = match self.get_reg_r(*xn) {
                             Some(v) => self.unify(&arg, &v),
                             None => false,
                         };
@@ -316,7 +314,7 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
                         } else { false }
                     } else { false }
                 } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
-                    if let Some(val) = self.get_reg(xn) {
+                    if let Some(val) = self.get_reg_r(*xn) {
                         self.set_heap_or_list(val);
                         self.pc += 1; true
                     } else { false }
@@ -357,35 +355,34 @@ wam_instruction_arm('Instruction::UnifyConstant(c)', Body) :-
 % --- Body Construction Instructions ---
 
 wam_instruction_arm('Instruction::PutConstant(c, ai)', Body) :-
-    Body = '                self.trail_binding(ai);
-                self.set_reg_str(ai, c.clone());
+    Body = '                self.trail_reg(*ai);
+                self.set_reg_r(*ai, c.clone());
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutVariable(xn, ai)', Body) :-
     Body = '                let var = Value::Unbound(Self::fresh_var_sym(b''V'', self.var_counter));
                 self.var_counter += 1;
-                self.trail_binding(xn);
-                self.trail_binding(ai);
-                self.put_reg(xn, var.clone());
-                self.set_reg_str(ai, var);
+                self.trail_reg(*xn);
+                self.trail_reg(*ai);
+                self.put_reg_r(*xn, var.clone());
+                self.set_reg_r(*ai, var);
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutValue(xn, ai)', Body) :-
-    Body = '                if let Some(val) = self.get_reg(xn) {
-                    self.trail_binding(ai);
-                    self.set_reg_str(ai, val);
+    Body = '                if let Some(val) = self.get_reg_r(*xn) {
+                    self.trail_reg(*ai);
+                    self.set_reg_r(*ai, val);
                     self.pc += 1; true
                 } else { false }'.
 
 wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
     Body = '                // Parse arity from functor string (e.g. "member/2" -> arity=2)
-                let arity: usize = fn_str.split(''/'').last()
-                    .and_then(|s| s.parse().ok()).unwrap_or(0);
+                let arity: usize = fn_str.put_arity;
                 // Reserve heap slots for the structure header + args
                 let addr = self.heap.len();
-                self.heap.push(Value::strv(fn_str.clone(), vec![])); // placeholder
+                self.heap.push(Value::strv(fn_str.sym(), vec![])); // placeholder
                 for _ in 0..arity {
-                    self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
+                    self.heap.push(Self::struct_arg_atom());
                 }
                 // Enter structure-write mode: next N SetValue/SetConstant calls fill args
                 self.smut().push(StackEntry::WriteCtx(addr));
@@ -404,14 +401,14 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                 // (set_variable Xn), so the bind-through is conditioned on
                 // the register class — the same design the LLVM target
                 // adopted in M140 after the identical bug.
-                if ai.as_bytes().first() != Some(&b''A'') {
-                    if let Some(cur) = self.get_reg_raw(ai) {
+                if !ai.is_a() {
+                    if let Some(cur) = self.get_reg_raw_r(*ai) {
                         if let Value::Unbound(name) = self.deref_var(&cur) {
                             self.bind_var(&name, Value::Ref(addr));
                         }
                     }
                 }
-                self.set_reg_str(ai, Value::Ref(addr));
+                self.set_reg_r(*ai, Value::Ref(addr));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutList(ai)', Body) :-
@@ -421,16 +418,16 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
                 // use the heap as a scratch area: push a sentinel, then
                 // collect two values; after the second, build the list.
                 let marker = self.heap.len();
-                self.heap.push(Value::Atom("__list_head__".to_string().into()));
-                self.heap.push(Value::Atom("__list_tail__".to_string().into()));
-                self.set_reg_str(ai, Value::Integer(marker as i64));
+                self.heap.push(Self::list_head_atom());
+                self.heap.push(Self::list_tail_atom());
+                self.set_reg_r(*ai, Value::Integer(marker as i64));
                 self.smut().push(StackEntry::WriteCtx(marker));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
     Body = '                let var = Value::Unbound(Self::fresh_var_sym(b''H'', self.var_counter));
                 self.var_counter += 1;
-                self.put_reg(xn, var.clone());
+                self.put_reg_r(*xn, var.clone());
                 // Write the fresh variable into the current structure/list arg
                 // slot, exactly as set_value/set_constant do. Without this the
                 // placeholder never lands in the term being built, so any
@@ -440,7 +437,7 @@ wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetValue(xn)', Body) :-
-    Body = '                if let Some(val) = self.get_reg(xn) {
+    Body = '                if let Some(val) = self.get_reg_r(*xn) {
                     self.set_heap_or_list(val);
                     self.pc += 1; true
                 } else { false }'.
@@ -450,24 +447,24 @@ wam_instruction_arm('Instruction::SetConstant(c)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::LoadRegisterConstant(c, reg, skip)', Body) :-
-    Body = '                self.trail_binding(reg);
-                self.put_reg(reg, c.clone());
+    Body = '                self.trail_reg(*reg);
+                self.put_reg_r(*reg, c.clone());
                 self.pc += *skip; true'.
 
 wam_instruction_arm('Instruction::Cons(head_reg, tail_reg, out_reg, skip)', Body) :-
-    Body = '                if let (Some(head), Some(tail)) = (self.get_reg(head_reg), self.get_reg(tail_reg)) {
+    Body = '                if let (Some(head), Some(tail)) = (self.get_reg_r(*head_reg), self.get_reg_r(*tail_reg)) {
                     self.heap.push(head.clone());
                     self.heap.push(tail.clone());
                     let list = match tail {
                         Value::List(items) => Value::List(items.cons(head)),
                         tail_val => Value::list(vec![head, tail_val]),
                     };
-                    self.set_reg_str(&out_reg, list);
+                    self.set_reg_r(*out_reg, list);
                     self.pc += *skip; true
                 } else { false }'.
 
 wam_instruction_arm('Instruction::NotMember(elem_reg, list_reg, skip)', Body) :-
-    Body = '                if let (Some(elem), Some(list_val)) = (self.get_reg(elem_reg), self.get_reg(list_reg)) {
+    Body = '                if let (Some(elem), Some(list_val)) = (self.get_reg_r(*elem_reg), self.get_reg_r(*list_reg)) {
                     let needle = self.deref_var(&elem);
                     let haystack = self.deref_var(&list_val);
                     let found = match &haystack {
@@ -478,7 +475,7 @@ wam_instruction_arm('Instruction::NotMember(elem_reg, list_reg, skip)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::ListLengthLt(list_reg, limit_reg, skip)', Body) :-
-    Body = '                if let (Some(list_val), Some(limit_val)) = (self.get_reg(list_reg), self.get_reg(limit_reg)) {
+    Body = '                if let (Some(list_val), Some(limit_val)) = (self.get_reg_r(*list_reg), self.get_reg_r(*limit_reg)) {
                     let len = match self.deref_var(&list_val) {
                         Value::List(items) => items.len() as i64,
                         direct => match self.deref_heap(&direct) {
@@ -499,7 +496,7 @@ wam_instruction_arm('Instruction::ListLengthLt(list_reg, limit_reg, skip)', Body
                 } else { false }'.
 
 wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visited_reg)', Body) :-
-    Body = '                let cat = match self.get_reg(cat_reg) {
+    Body = '                let cat = match self.get_reg_r(*cat_reg) {
                     Some(Value::Atom(s)) => s,
                     Some(val) => match self.deref_var(&val) {
                         Value::Atom(s) => s,
@@ -507,7 +504,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                     },
                     None => return false,
                 };
-                let target = match self.get_reg(target_reg) {
+                let target = match self.get_reg_r(*target_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -515,7 +512,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                     Value::Atom(s) => s.clone(),
                     _ => return false,
                 };
-                let visited = match self.get_reg(visited_reg) {
+                let visited = match self.get_reg_r(*visited_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -546,7 +543,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                 }'.
 
 wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, hops_reg, visited_reg)', Body) :-
-    Body = '                let cat = match self.get_reg(cat_reg) {
+    Body = '                let cat = match self.get_reg_r(*cat_reg) {
                     Some(Value::Atom(s)) => s,
                     Some(val) => match self.deref_var(&val) {
                         Value::Atom(s) => s,
@@ -554,7 +551,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, 
                     },
                     None => return false,
                 };
-                let target = match self.get_reg(target_reg) {
+                let target = match self.get_reg_r(*target_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -562,7 +559,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, 
                     Value::Atom(s) => s.clone(),
                     _ => return false,
                 };
-                let visited = match self.get_reg(visited_reg) {
+                let visited = match self.get_reg_r(*visited_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -581,7 +578,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, 
                 if !parent_matches {
                     return false;
                 }
-                let hops_val = match self.get_reg(hops_reg) {
+                let hops_val = match self.get_reg_r(*hops_reg) {
                     Some(val) => val,
                     None => return false,
                 };
@@ -615,15 +612,15 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestor(mid_reg, root_reg, chi
                 self.step(&instr)'.
 
 wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, child_hops_reg, visited_reg, target_pc, skip)', Body) :-
-    Body = '                let mid = match self.get_reg(mid_reg) {
+    Body = '                let mid = match self.get_reg_r(*mid_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
-                let root = match self.get_reg(root_reg) {
+                let root = match self.get_reg_r(*root_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
-                let visited = match self.get_reg(visited_reg) {
+                let visited = match self.get_reg_r(*visited_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -635,18 +632,18 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, c
                 };
                 // R0b: only the child-hops register can be a Y register;
                 // A1-A4 are argument staging and are not trailed.
-                self.trail_binding(child_hops_reg);
-                self.put_reg(child_hops_reg, child_hops.clone());
-                self.set_reg_str("A1", mid);
-                self.set_reg_str("A2", root);
-                self.set_reg_str("A3", child_hops);
-                self.set_reg_str("A4", next_visited);
+                self.trail_reg(*child_hops_reg);
+                self.put_reg_r(*child_hops_reg, child_hops.clone());
+                self.set_reg_r(Reg::a(1), mid);
+                self.set_reg_r(Reg::a(2), root);
+                self.set_reg_r(Reg::a(3), child_hops);
+                self.set_reg_r(Reg::a(4), next_visited);
                 self.cp = self.pc + *skip;
                 self.pc = *target_pc;
                 true'.
 
 wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
-    Body = '                let in_val = match self.get_reg(in_reg) {
+    Body = '                let in_val = match self.get_reg_r(*in_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -673,7 +670,7 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
                     },
                     _ => return false,
                 };
-                let out_val = match self.get_reg(out_reg) {
+                let out_val = match self.get_reg_r(*out_reg) {
                     Some(val) => val,
                     None => return false,
                 };
@@ -758,7 +755,7 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                 } else if p == "assert/1" {
                     self.execute_assert_builtin("assert/1")
                 } else if p == "read_term/2" {
-                    let options = self.get_reg_raw("A2");
+                    let options = self.get_reg_raw_r(Reg::a(2));
                     self.execute_read_term_builtin(options.as_ref())
                 } else if self.foreign_predicates.contains(p) {
                     self.cp = self.pc + 1;
@@ -802,11 +799,11 @@ wam_instruction_arm('Instruction::CallForeign(pred, arity)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
-    Body = '                let key = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+    Body = '                let key = match self.get_reg_raw_r(Reg::a(1)).map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(s)) => s,
                     _ => return false,
                 };
-                let a2 = match self.get_reg_raw("A2") {
+                let a2 = match self.get_reg_raw_r(Reg::a(2)) {
                     Some(val) => val,
                     None => return false,
                 };
@@ -855,7 +852,7 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                         true
                     } else { false }
                 } else if p == "read_term/2" {
-                    let options = self.get_reg_raw("A2");
+                    let options = self.get_reg_raw_r(Reg::a(2));
                     if self.execute_read_term_builtin(options.as_ref()) {
                         self.pc = self.cp;
                         true
@@ -946,6 +943,7 @@ wam_instruction_arm('Instruction::GetLevel(yn)', Body) :-
                 let depth = self.choice_points.len();
                 let next_is_try = matches!(self.code.get(self.pc),
                     Some(Instruction::TryMeElse(_)) | Some(Instruction::TryMeElsePc(_))
+                    | Some(Instruction::TryMeElseItePc(_))
                     | Some(Instruction::TryMeElseArgs(_, _))
                     | Some(Instruction::TryMeElsePcArgs(_, _)));
                 if next_is_try {
@@ -988,6 +986,26 @@ wam_instruction_arm('Instruction::CutIte', Body) :-
 
 wam_instruction_arm('Instruction::BuiltinCall(op, arity)', Body) :-
     Body = '                self.execute_builtin(op, *arity)'.
+
+% R1: a builtin with a generator-resolved route (instructions.rs
+% `builtin_route`). The four core arms are execute_builtin's own core arms;
+% any other route enters the family cascade at that family (D124: a family
+% that does not claim a name returns false untouched, so skipping the
+% families before the first one that names it gives the same result).
+wam_instruction_arm('Instruction::BuiltinCallR(route, op, arity)', Body) :-
+    Body = '                match *route {
+                    crate::instructions::builtin_route::TRUE => { self.pc += 1; true }
+                    crate::instructions::builtin_route::FAIL => false,
+                    crate::instructions::builtin_route::CUT => {
+                        self.choice_points.truncate(self.cut_barrier); self.pc += 1; true
+                    }
+                    crate::instructions::builtin_route::UNIFY => {
+                        let a1 = self.get_reg_raw_r(Reg::a(1)).unwrap_or(Value::Uninit);
+                        let a2 = self.get_reg_raw_r(Reg::a(2)).unwrap_or(Value::Uninit);
+                        if self.unify(&a1, &a2) { self.pc += 1; true } else { false }
+                    }
+                    r => self.execute_builtin_from(r, op, *arity),
+                }'.
 
 wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg)', Body) :-
     Body = '                // R-1b: one accumulator per active aggregate frame. The
@@ -1057,7 +1075,7 @@ wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::EndAggregate(value_reg)', Body) :-
-    Body = '                if let Some(val) = self.get_reg(value_reg) {
+    Body = '                if let Some(val) = self.get_reg_r(*value_reg) {
                     self.aggregate_acc.push(self.deref_var(&self.deref_heap(&val)));
                     self.aggregate_return_pc = self.pc + 1;
                     self.backtrack()
@@ -1299,6 +1317,79 @@ wam_instruction_arm('Instruction::Trust(label)', Body) :-
                     true
                 } else { false }'.
 
+
+% R1: TryMeElse for an if-then-else / disjunction guard (`L_ite_else_*`) with
+% a pre-resolved alternative PC. Same as TryMeElse(label) for such a label:
+% the guard choice point parks no clause barrier.
+wam_instruction_arm('Instruction::TryMeElseItePc(next_pc)', Body) :-
+    Body = '                self.choice_points.push(ChoicePoint {
+                    next_pc: *next_pc,
+                    saved_args: self.save_regs(),
+                    cp: self.cp,
+                    stack: self.stack.clone(),
+                    trail_len: self.trail.len(),
+                    heap_len: self.heap.len(),
+                    builtin_state: None,
+                    cut_barrier: self.cut_barrier,
+                    levels: self.pending_level.take().into_iter().collect(),
+                });
+                self.pending_cut_barrier = None;
+                self.pc += 1; true'.
+
+
+% R1: the D138 dispatch-chain entries and `jump` with pre-resolved PCs.
+wam_instruction_arm('Instruction::TryPc(target)', Body) :-
+    Body = '                let target = *target;
+                let clause_barrier = self.choice_points.len();
+                self.choice_points.push(ChoicePoint {
+                    next_pc: self.pc + 1,
+                    saved_args: self.save_regs(),
+                    cp: self.cp,
+                    stack: self.stack.clone(),
+                    trail_len: self.trail.len(),
+                    heap_len: self.heap.len(),
+                    builtin_state: None,
+                    cut_barrier: self.cut_barrier,
+                    levels: Vec::new(),
+                });
+                self.pending_cut_barrier = Some((clause_barrier, target));
+                self.pc = target;
+                true'.
+
+wam_instruction_arm('Instruction::RetryPc(target)', Body) :-
+    Body = '                let target = *target;
+                let resume = self.pc + 1;
+                if let Some(cp) = self.choice_points.last_mut() {
+                    cp.next_pc = resume;
+                }
+                self.pending_cut_barrier = Some((self.choice_points.len().saturating_sub(1), target));
+                self.pc = target;
+                true'.
+
+wam_instruction_arm('Instruction::TrustPc(target)', Body) :-
+    Body = '                self.choice_points.pop();
+                self.pc = *target;
+                true'.
+
+wam_instruction_arm('Instruction::JumpPc(target)', Body) :-
+    Body = '                self.pc = *target;
+                true'.
+
+% R1: SwitchOnConstantFallthrough with pre-resolved PCs (entries whose label
+% the program does not define are left out: the by-name form skips them).
+wam_instruction_arm('Instruction::SwitchOnConstantFallthroughPc(table)', Body) :-
+    Body = '                let raw = self.get_reg_raw_r(Reg::a(1)).map(|v| Self::index_key(self.deref_var(&v)));
+                if let Some(val) = raw {
+                    if !val.is_unbound() {
+                        for (key, target_pc) in table {
+                            if *key == val {
+                                return self.enter_indexed_clause(*target_pc);
+                            }
+                        }
+                    }
+                }
+                self.pc += 1; true'.
+
 % --- Indexing Instructions ---
 %
 % D138: every jump to a table target goes through enter_indexed_clause/1
@@ -1309,7 +1400,7 @@ wam_instruction_arm('Instruction::Trust(label)', Body) :-
 % Value::List as the atom [] (the aliasing GetConstant applies).
 
 wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
-    Body = '                let raw = self.get_reg_raw("A1").map(|v| Self::index_key(self.deref_var(&v)));
+    Body = '                let raw = self.get_reg_raw_r(Reg::a(1)).map(|v| Self::index_key(self.deref_var(&v)));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         // Linear scan by value equality. (A binary search would
@@ -1339,7 +1430,7 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantFallthrough(table)', Body) :-
-    Body = '                let raw = self.get_reg_raw("A1").map(|v| Self::index_key(self.deref_var(&v)));
+    Body = '                let raw = self.get_reg_raw_r(Reg::a(1)).map(|v| Self::index_key(self.deref_var(&v)));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         for (key, label) in table {
@@ -1360,7 +1451,7 @@ wam_instruction_arm('Instruction::SwitchOnConstantFallthrough(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
-    Body = '                let raw = self.get_reg_raw("A1").map(|v| Self::index_key(self.deref_var(&v)));
+    Body = '                let raw = self.get_reg_raw_r(Reg::a(1)).map(|v| Self::index_key(self.deref_var(&v)));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         // Linear scan by value equality (see SwitchOnConstant:
@@ -1368,6 +1459,9 @@ wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
                         // binary search dropped keys).
                         for (key, target_pc) in table {
                             if *key == val {
+                                // R1: 0 is the "default" entry (fall through
+                                // to the try_me_else chain).
+                                if *target_pc == 0 { self.pc += 1; return true; }
                                 return self.enter_indexed_clause(*target_pc);
                             }
                         }
@@ -1377,7 +1471,7 @@ wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw("A1") {
+    Body = '                if let Some(val) = self.get_reg_raw_r(Reg::a(1)) {
                     if let Some((f, args)) = val.univ() {
                         // D126: compare each key with `f/N` in place instead
                         // of building `format!("{}/{}", f, args.len())`.
@@ -1394,7 +1488,7 @@ wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw("A1") {
+    Body = '                if let Some(val) = self.get_reg_raw_r(Reg::a(1)) {
                     if let Some((f, args)) = val.univ() {
                         // D126: compare each key with `f/N` in place (see
                         // SwitchOnStructure).
@@ -1409,7 +1503,7 @@ wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw("A2").map(Self::index_key) {
+    Body = '                if let Some(val) = self.get_reg_raw_r(Reg::a(2)).map(Self::index_key) {
                     if !val.is_unbound() {
                         for (key, label) in table {
                             if *key == val {
@@ -1423,7 +1517,7 @@ wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantA2Pc(table)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw("A2").map(Self::index_key) {
+    Body = '                if let Some(val) = self.get_reg_raw_r(Reg::a(2)).map(Self::index_key) {
                     if !val.is_unbound() {
                         for (key, target_pc) in table {
                             if *key == val {
@@ -1657,6 +1751,22 @@ compile_execute_builtin_to_rust(Code) :-
                 false
             }
         }
+    }
+
+    /// R1: the family cascade entered at `route` (instructions.rs
+    /// `builtin_route`; ARITH..META), for a name the generator found first in
+    /// that family. FULL (or anything else) is the whole `execute_builtin`.
+    pub fn execute_builtin_from(&mut self, route: u8, op: &str, arity: usize) -> bool {
+        use crate::instructions::builtin_route as br;
+        if !(br::ARITH..=br::META).contains(&route) {
+            return self.execute_builtin(op, arity);
+        }
+        if route <= br::ARITH && self.execute_arith_builtin(op, arity) { return true; }
+        if route <= br::IO && self.execute_io_builtin(op, arity) { return true; }
+        if route <= br::TYPE && self.execute_type_builtin(op, arity) { return true; }
+        if route <= br::TERM && self.execute_term_builtin(op, arity) { return true; }
+        if route <= br::EXT && self.execute_ext_builtin(op, arity) { return true; }
+        self.execute_meta_builtin(op, arity)
     }'.
 
 compile_execute_arith_builtin_to_rust(Code) :-
@@ -8560,7 +8670,12 @@ rust_foreign_result_layout_literal(Layout, Layout).
 wam_code_to_rust_instructions(WamCode, PredIndicator, Options, InstrLiterals, LabelLiterals) :-
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines),
-    wam_lines_to_rust(Lines, 1, PredIndicator, Options, InstrParts, LabelParts),
+    % R1: this predicate is its own program (PCs from 1), so its local branch
+    % targets resolve against its own labels. Calls keep the by-name form.
+    empty_assoc(A0),
+    rust_wam_label_assoc([g(Lines, 1)], A0, LabelAssoc),
+    wam_lines_to_rust(Lines, 1, PredIndicator, ['$rust_labels'(LabelAssoc)|Options],
+                      InstrParts, LabelParts),
     atomic_list_concat(InstrParts, '\n', InstrLiterals),
     atomic_list_concat(LabelParts, '\n', LabelLiterals).
 
@@ -8591,76 +8706,210 @@ wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
 
 %% wam_line_to_rust_instr(+Parts, +PredIndicator, +Options, -RustExpr)
 %  Converts parsed WAM instruction parts to a Rust Instruction enum literal.
+% R1: register operands are emitted as decoded `Reg` values
+% (wam_rust_reg:rust_reg_literal/2), not as `"A1".to_string()` names.
 wam_line_to_rust_instr(["get_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     rust_const_value(CC, VExpr),
+    rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetConstant(~w, "~w".to_string())',
-        [VExpr, CAi]).
+        'Instruction::GetConstant(~w, ~w)',
+        [VExpr, RAi]).
 wam_line_to_rust_instr(["get_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    rust_reg_literal(CXn, RXn), rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetVariable("~w".to_string(), "~w".to_string())',
-        [CXn, CAi]).
+        'Instruction::GetVariable(~w, ~w)',
+        [RXn, RAi]).
 wam_line_to_rust_instr(["get_value", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    rust_reg_literal(CXn, RXn), rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetValue("~w".to_string(), "~w".to_string())',
-        [CXn, CAi]).
+        'Instruction::GetValue(~w, ~w)',
+        [RXn, RAi]).
 wam_line_to_rust_instr(["get_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetStructure("~w".to_string(), "~w".to_string())',
-        [CFN, CAi]).
+        'Instruction::GetStructure(Functor::new("~w"), ~w)',
+        [CFN, RAi]).
 wam_line_to_rust_instr(["get_list", Ai], _, _, Rust) :-
     clean_comma(Ai, CAi),
+    rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetList("~w".to_string())', [CAi]).
+        'Instruction::GetList(~w)', [RAi]).
 wam_line_to_rust_instr(["unify_variable", Xn], _, _, Rust) :-
+    rust_reg_literal(Xn, RXn),
     format(string(Rust),
-        'Instruction::UnifyVariable("~w".to_string())', [Xn]).
+        'Instruction::UnifyVariable(~w)', [RXn]).
 wam_line_to_rust_instr(["unify_value", Xn], _, _, Rust) :-
+    rust_reg_literal(Xn, RXn),
     format(string(Rust),
-        'Instruction::UnifyValue("~w".to_string())', [Xn]).
+        'Instruction::UnifyValue(~w)', [RXn]).
 wam_line_to_rust_instr(["unify_constant", C], _, _, Rust) :-
     rust_const_value(C, VExpr),
     format(string(Rust), 'Instruction::UnifyConstant(~w)', [VExpr]).
 wam_line_to_rust_instr(["put_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     rust_const_value(CC, VExpr),
+    rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::PutConstant(~w, "~w".to_string())',
-        [VExpr, CAi]).
+        'Instruction::PutConstant(~w, ~w)',
+        [VExpr, RAi]).
 
 wam_line_to_rust_instr(["put_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    rust_reg_literal(CXn, RXn), rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::PutVariable("~w".to_string(), "~w".to_string())',
-        [CXn, CAi]).
+        'Instruction::PutVariable(~w, ~w)',
+        [RXn, RAi]).
 wam_line_to_rust_instr(["put_value", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    rust_reg_literal(CXn, RXn), rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::PutValue("~w".to_string(), "~w".to_string())',
-        [CXn, CAi]).
+        'Instruction::PutValue(~w, ~w)',
+        [RXn, RAi]).
 wam_line_to_rust_instr(["put_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::PutStructure("~w".to_string(), "~w".to_string())',
-        [CFN, CAi]).
+        'Instruction::PutStructure(Functor::new("~w"), ~w)',
+        [CFN, RAi]).
 wam_line_to_rust_instr(["put_list", Ai], _, _, Rust) :-
+    rust_reg_literal(Ai, RAi),
     format(string(Rust),
-        'Instruction::PutList("~w".to_string())', [Ai]).
+        'Instruction::PutList(~w)', [RAi]).
 wam_line_to_rust_instr(["set_variable", Xn], _, _, Rust) :-
+    rust_reg_literal(Xn, RXn),
     format(string(Rust),
-        'Instruction::SetVariable("~w".to_string())', [Xn]).
+        'Instruction::SetVariable(~w)', [RXn]).
 wam_line_to_rust_instr(["set_value", Xn], _, _, Rust) :-
+    rust_reg_literal(Xn, RXn),
     format(string(Rust),
-        'Instruction::SetValue("~w".to_string())', [Xn]).
+        'Instruction::SetValue(~w)', [RXn]).
 wam_line_to_rust_instr(["set_constant", C], _, _, Rust) :-
     rust_const_value(C, VExpr),
     format(string(Rust), 'Instruction::SetConstant(~w)', [VExpr]).
 wam_line_to_rust_instr(["allocate"], _, _, "Instruction::Allocate").
 wam_line_to_rust_instr(["deallocate"], _, _, "Instruction::Deallocate").
+% R1: control resolved to PCs when the program is generated.
+%
+% When the caller passes the program's label table ('$rust_labels'(Assoc),
+% built by rust_wam_label_assoc/3 with the same label -> PC numbering
+% wam_lines_to_rust/6 emits into `labels`), every branch target the table
+% knows is emitted as a PC, so the hot path never looks a label up by name:
+%
+%   try_me_else L      -> TryMeElsePc / TryMeElsePcArgs (R0a) /
+%                         TryMeElseItePc (L_ite_else_*: no clause barrier)
+%   retry_me_else L    -> RetryMeElsePc
+%   try/retry/trust L  -> TryPc / RetryPc / TrustPc (D138 dispatch chains)
+%   jump L             -> JumpPc
+%   switch_on_*        -> the *Pc tables (a key whose label the table does not
+%                         know is dropped where the runtime skips it, and the
+%                         string form is kept where the runtime fails on it)
+%
+% `call P`/`execute P` resolve only in the shared table of a project
+% ('$rust_pc_calls'(LoweredKeys)): the Call/Execute arms try `lowered_call`
+% BEFORE the label, so a predicate the lowered dispatch names keeps the
+% by-name form; for every other label the arm's first live branch is the
+% jump, which CallPc/ExecutePc perform. A target with no label (builtins,
+% foreign, dynamic, fact tables) keeps the by-name form and its fallbacks.
+% `labels` itself is still emitted in full for entry lookup and meta-calls.
+wam_line_to_rust_instr(["call", P, N], Pred/Arity, Options, Rust) :-
+    memberchk('$rust_pc_calls'(Lowered), Options),
+    memberchk('$rust_labels'(Assoc), Options),
+    clean_comma(P, CP), clean_comma(N, CN),
+    escape_rust_string(CP, ECP),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    \+ rust_foreign_rewrite_call(Options, Pred/Arity, ECP, Num, _, _),
+    text_to_string(CP, CPS),
+    \+ memberchk(CPS, Lowered),
+    get_assoc(CPS, Assoc, PC),
+    !,
+    format(string(Rust), 'Instruction::CallPc(~w, ~w)', [PC, Num]).
+wam_line_to_rust_instr(["execute", P], Pred/Arity, Options, Rust) :-
+    memberchk('$rust_pc_calls'(Lowered), Options),
+    memberchk('$rust_labels'(Assoc), Options),
+    escape_rust_string(P, EP),
+    \+ rust_foreign_rewrite_execute(Options, Pred/Arity, EP, _, _),
+    text_to_string(P, PS),
+    \+ memberchk(PS, Lowered),
+    get_assoc(PS, Assoc, PC),
+    !,
+    format(string(Rust), 'Instruction::ExecutePc(~w)', [PC]).
+wam_line_to_rust_instr(["try_me_else", Label], Pred/Arity, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    text_to_string(Label, LabelS),
+    (   memberchk('$r0a_clause_cp_args', Options),
+        format(string(Expected), "L_~w_~w_2", [Pred, Arity]),
+        LabelS == Expected
+    ->  format(string(Rust), 'Instruction::TryMeElsePcArgs(~w, ~w)', [PC, Arity])
+    ;   sub_string(LabelS, 0, _, _, "L_ite_else_")
+    ->  format(string(Rust), 'Instruction::TryMeElseItePc(~w)', [PC])
+    ;   format(string(Rust), 'Instruction::TryMeElsePc(~w)', [PC])
+    ).
+wam_line_to_rust_instr(["retry_me_else", Label], _, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    format(string(Rust), 'Instruction::RetryMeElsePc(~w)', [PC]).
+wam_line_to_rust_instr(["try", Label], _, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    format(string(Rust), 'Instruction::TryPc(~w)', [PC]).
+wam_line_to_rust_instr(["retry", Label], _, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    format(string(Rust), 'Instruction::RetryPc(~w)', [PC]).
+wam_line_to_rust_instr(["trust", Label], _, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    format(string(Rust), 'Instruction::TrustPc(~w)', [PC]).
+wam_line_to_rust_instr(["jump", Label], _, Options, Rust) :-
+    rust_label_pc(Options, Label, PC),
+    !,
+    format(string(Rust), 'Instruction::JumpPc(~w)', [PC]).
+% switch_on_constant FAILS on a key whose label is unknown, and falls through
+% on "default" (PC 0 in the Pc table), so it resolves only when every entry
+% does.
+wam_line_to_rust_instr(["switch_on_constant"|Entries0], _, Options, Rust) :-
+    memberchk('$rust_labels'(Assoc), Options),
+    rust_index_entries(Entries0, Entries),
+    maplist(rust_pc_entry_constant(Assoc, default_zero), Entries, Resolved),
+    \+ memberchk(unresolved, Resolved),
+    !,
+    atomic_list_concat(Resolved, ', ', Joined),
+    format(string(Rust), 'Instruction::SwitchOnConstantPc(vec![~w])', [Joined]).
+% The other three forms skip a matching key whose label is unknown and go on
+% scanning, so such entries are dropped.
+wam_line_to_rust_instr(["switch_on_constant_fallthrough"|Entries0], _, Options, Rust) :-
+    memberchk('$rust_labels'(Assoc), Options),
+    !,
+    rust_index_entries(Entries0, Entries),
+    rust_drop_default_keys(Entries, JumpEntries),
+    maplist(rust_pc_entry_constant(Assoc, unresolved), JumpEntries, Resolved0),
+    exclude(==(unresolved), Resolved0, Resolved),
+    atomic_list_concat(Resolved, ', ', Joined),
+    format(string(Rust),
+        'Instruction::SwitchOnConstantFallthroughPc(vec![~w])', [Joined]).
+wam_line_to_rust_instr(["switch_on_structure"|Entries0], _, Options, Rust) :-
+    memberchk('$rust_labels'(Assoc), Options),
+    !,
+    rust_index_entries(Entries0, Entries),
+    maplist(rust_pc_entry_structure(Assoc), Entries, Resolved0),
+    exclude(==(unresolved), Resolved0, Resolved),
+    atomic_list_concat(Resolved, ', ', Joined),
+    format(string(Rust), 'Instruction::SwitchOnStructurePc(vec![~w])', [Joined]).
+wam_line_to_rust_instr(["switch_on_constant_a2"|Entries0], _, Options, Rust) :-
+    memberchk('$rust_labels'(Assoc), Options),
+    !,
+    rust_index_entries(Entries0, Entries1),
+    rust_drop_default_keys(Entries1, Entries),
+    maplist(rust_pc_entry_constant(Assoc, unresolved), Entries, Resolved0),
+    exclude(==(unresolved), Resolved0, Resolved),
+    atomic_list_concat(Resolved, ', ', Joined),
+    format(string(Rust), 'Instruction::SwitchOnConstantA2Pc(vec![~w])', [Joined]).
+
 wam_line_to_rust_instr(["call", P, N], Pred/Arity, Options, Rust) :-
     clean_comma(P, CP), clean_comma(N, CN),
     escape_rust_string(CP, ECP),
@@ -8692,6 +8941,26 @@ wam_line_to_rust_instr(["call_foreign", P, N], _, _, Rust) :-
     format(string(Rust),
         'Instruction::CallForeign("~w".to_string(), ~w)', [ECP, Num]).
 wam_line_to_rust_instr(["proceed"], _, _, "Instruction::Proceed").
+% R1: builtin calls carry a dispatch route resolved here (instructions.rs
+% `builtin_route`). The four core builtins get their own route and run inline
+% in the step arm; any other name enters execute_builtin's family cascade at
+% the first family whose generated code contains the name as a string
+% literal. A family's only claims are literal `"name/N" =>` arms (no guard
+% arms; checked by tests/test_wam_rust_r1_encoding.pl), so every family before
+% that one does not claim the name, and a family that does not claim a name
+% returns false without touching the machine (D124). A name no family's code
+% contains takes the full path (route FULL), exactly as before.
+wam_line_to_rust_instr(["builtin_call", Op, N], _, Options, Rust) :-
+    \+ memberchk(rust_named_calls(true), Options),
+    clean_comma(Op, COp), clean_comma(N, CN),
+    escape_rust_string(COp, ECOp),
+    (   number_string(Num, CN) -> true ; Num = 0 ),
+    text_to_string(ECOp, ES),
+    rust_builtin_route(ES, Route),
+    !,
+    format(string(Rust),
+        'Instruction::BuiltinCallR(~w, "~w".to_string(), ~w)', [Route, ECOp, Num]).
+
 wam_line_to_rust_instr(["builtin_call", Op, N], _, _, Rust) :-
     clean_comma(Op, COp), clean_comma(N, CN),
     escape_rust_string(COp, ECOp),
@@ -8730,8 +8999,9 @@ wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg, Witness],
     ).
 wam_line_to_rust_instr(["end_aggregate", ValueReg], _, _, Rust) :-
     clean_comma(ValueReg, CValueReg),
+    rust_reg_literal(CValueReg, RValueReg),
     format(string(Rust),
-        'Instruction::EndAggregate("~w".to_string())', [CValueReg]).
+        'Instruction::EndAggregate(~w)', [RValueReg]).
 % T7 route 2: par_aggregate AggType, EnumLabel, BodyLabel, ResultReg [, InReg...]
 % (EnumLabel/BodyLabel are predicate-indicator entry labels, e.g.
 % __par_enum_foo/2). Any trailing tokens are the container registers holding the
@@ -8965,6 +9235,120 @@ parse_index_entry_structure(Entry, Rust) :-
         escape_rust_string(Functor0, Functor),
         format(string(Rust), '("~w".to_string(), "~w".to_string())', [Functor, Label])
     ;   format(string(Rust), '("~w".to_string(), "unknown".to_string())', [Entry])
+    ).
+
+
+%% rust_label_pc(+Options, +Label, -PC) is semidet.
+rust_label_pc(Options, Label, PC) :-
+    memberchk('$rust_labels'(Assoc), Options),
+    text_to_string(Label, LabelS),
+    get_assoc(LabelS, Assoc, PC).
+
+%% rust_pc_entry_constant(+Assoc, +DefaultMode, +Entry, -Rust)
+%  `(Value, pc)` for a `Key:Label` entry, or `unresolved`. DefaultMode
+%  default_zero maps a "default" label to PC 0 (fall through).
+rust_pc_entry_constant(Assoc, DefaultMode, Entry, Rust) :-
+    (   rust_index_entry_split(Entry, ValStr, Label)
+    ->  (   Label == "default", DefaultMode == default_zero
+        ->  PC = 0
+        ;   get_assoc(Label, Assoc, PC)
+        ->  true
+        ;   PC = none
+        ),
+        (   PC == none
+        ->  Rust = unresolved
+        ;   rust_const_value(ValStr, VExpr),
+            format(string(Rust), '(~w, ~w)', [VExpr, PC])
+        )
+    ;   Rust = unresolved
+    ).
+
+%% rust_pc_entry_structure(+Assoc, +Entry, -Rust)
+rust_pc_entry_structure(Assoc, Entry, Rust) :-
+    (   rust_index_entry_split(Entry, FunctorTok, Label),
+        get_assoc(Label, Assoc, PC)
+    ->  wam_classify_constant_token(FunctorTok, Class),
+        (   Class = atom(Functor0) -> true ; Functor0 = FunctorTok ),
+        escape_rust_string(Functor0, Functor),
+        format(string(Rust), '("~w".to_string(), ~w)', [Functor, PC])
+    ;   Rust = unresolved
+    ).
+
+%% rust_wam_label_assoc(+Groups, +Assoc0, -Assoc)
+%  Groups: g(Lines, StartPC) per predicate, in program order. The label -> PC
+%  table wam_lines_to_rust/6 emits as `labels.insert(..)` lines: a label names
+%  the PC of the next instruction line, and a later insert of the same label
+%  replaces an earlier one, as HashMap::insert does.
+rust_wam_label_assoc([], A, A).
+rust_wam_label_assoc([g(Lines, PC0)|Gs], A0, A) :-
+    rust_wam_lines_labels(Lines, PC0, A0, A1),
+    rust_wam_label_assoc(Gs, A1, A).
+
+rust_wam_lines_labels([], _, A, A).
+rust_wam_lines_labels([Line|Rest], PC, A0, A) :-
+    wam_tokenize_line(Line, Parts),
+    (   Parts == []
+    ->  rust_wam_lines_labels(Rest, PC, A0, A)
+    ;   Parts = [First|_],
+        sub_string(First, _, 1, 0, ":")
+    ->  sub_string(First, 0, _, 1, Name0),
+        text_to_string(Name0, Name),
+        put_assoc(Name, A0, PC, A1),
+        rust_wam_lines_labels(Rest, PC, A1, A)
+    ;   PC1 is PC + 1,
+        rust_wam_lines_labels(Rest, PC1, A0, A)
+    ).
+
+%% rust_lowered_dispatch_keys(+DispatchCode, -Keys)
+%  The predicate keys `lowered_call` routes (its `"<key>" =>` arms).
+rust_lowered_dispatch_keys(Code, Keys) :-
+    split_string(Code, "\n", "", Lines),
+    findall(Key,
+            ( member(L, Lines),
+              sub_string(L, 0, 9, _, "        \""),
+              sub_string(L, 9, _, 0, Rest),
+              sub_string(Rest, B, _, _, "\" =>"),
+              sub_string(Rest, 0, B, _, Key) ),
+            Keys).
+
+
+%% rust_builtin_route(+EscapedName, -Route) is det.
+%  R1 builtin dispatch route (instructions.rs `builtin_route`): 0..3 for the
+%  four core builtins execute_builtin matches first, 4..9 for the first
+%  family (arith, io, type, term, ext, meta: the cascade order) whose
+%  generated code contains the name as a Rust string literal, 10 (the full
+%  path) otherwise. EscapedName is the name as escape_rust_string/2 writes it,
+%  which is how it appears inside the families' literals.
+rust_builtin_route("true/0", 0) :- !.
+rust_builtin_route("fail/0", 1) :- !.
+rust_builtin_route("!/0", 2) :- !.
+rust_builtin_route("=/2", 3) :- !.
+rust_builtin_route(Name, Route) :-
+    rust_builtin_family_codes(Families),
+    format(string(Quoted), "\"~w\"", [Name]),
+    (   member(R-Code, Families),
+        sub_string(Code, _, _, _, Quoted)
+    ->  Route = R
+    ;   Route = 10
+    ).
+
+:- dynamic rust_builtin_family_codes_cache/1.
+
+%% rust_builtin_family_codes(-Families) is det.
+%  Route-Code for each builtin family, in cascade order: exactly the Rust
+%  code compile_wam_helpers_to_rust/2 emits for that family.
+rust_builtin_family_codes(Families) :-
+    (   rust_builtin_family_codes_cache(Families0)
+    ->  Families = Families0
+    ;   compile_execute_arith_builtin_to_rust(C4),
+        compile_execute_io_builtin_to_rust(C5),
+        compile_execute_type_builtin_to_rust(C6),
+        compile_execute_term_builtin_to_rust(C7),
+        compile_execute_ext_builtin_to_rust(C8),
+        compile_execute_meta_builtin_to_rust(C9),
+        Families0 = [4-C4, 5-C5, 6-C6, 7-C7, 8-C8, 9-C9],
+        assertz(rust_builtin_family_codes_cache(Families0)),
+        Families = Families0
     ).
 
 clean_comma(Str, Clean) :-
@@ -9619,7 +10003,18 @@ compile_predicates_for_project(Predicates0, Options, Code) :-
     % Pass 2: collect WAM entries with cumulative PCs, build shared table
     % R0a: decide, for the whole shared table, whether clause-entry choice
     % points may save only A1..An (rust_r0a_instr_options/4).
-    rust_r0a_instr_options(Classified, EmbeddedRewrites, Options, InstrOpts),
+    rust_r0a_instr_options(Classified, EmbeddedRewrites, Options, InstrOpts0),
+    % D55 sound intermediate: a crate-level lowered_call referenced by the
+    % Call/Execute handlers (always emitted; empty match when nothing is
+    % eligible). R1: computed before the shared table, because a call to a
+    % predicate it routes keeps the by-name Call/Execute form (see
+    % wam_line_to_rust_instr/4); every other labelled call becomes CallPc.
+    rust_lowered_dispatch_fn(Classified, Options, LoweredDispatchCode),
+    (   option(rust_named_calls(true), Options)
+    ->  InstrOpts = [rust_named_calls(true)|InstrOpts0]
+    ;   rust_lowered_dispatch_keys(LoweredDispatchCode, LoweredKeys),
+        InstrOpts = ['$rust_pc_calls'(LoweredKeys)|InstrOpts0]
+    ),
     collect_wam_entries(Classified, 1, EmbeddedRewrites, InstrOpts, WamEntries, AllInstrParts, AllLabelParts),
     % Generate shared WAM table if any WAM predicates exist
     (   WamEntries \== []
@@ -9685,9 +10080,7 @@ pub fn shared_wam_program() -> (Vec<Instruction>, HashMap<String, usize>) {
     % T9 call-site dispatch: a crate-level fact_table_call referenced by the
     % Call/Execute handlers (always emitted; empty match when no fact tables).
     rust_fact_table_dispatch_fn(Classified, DispatchCode),
-    % D55 sound intermediate: a crate-level lowered_call referenced by the same
-    % two handlers (always emitted; empty match when nothing is eligible).
-    rust_lowered_dispatch_fn(Classified, Options, LoweredDispatchCode),
+    % (LoweredDispatchCode was built before the shared table, above.)
     format(string(Code), "~w\n\n~w\n\n~w", [Body1, DispatchCode, LoweredDispatchCode]).
 
 %% rust_fact_table_dispatch_fn(+Classified, -Code)
@@ -11681,34 +12074,55 @@ rust_r0a_call_violation(PI, Kind, EffT, OpenT, Labels, Live, N,
 %  Iterates over classified predicates, collecting WAM code with cumulative PCs.
 %  WamEntries is a list of wam_entry(Pred, Arity, StartPC) terms. InstrOpts are
 %  the program-wide instruction options (R0a: see rust_r0a_instr_options/4).
-collect_wam_entries([], _, _, _, [], [], []).
-collect_wam_entries([classified(_, Pred, Arity, wam, WamCode)|Rest], PC, Rewrites, InstrOpts,
-                    [wam_entry(Pred, Arity, PC)|RestEntries],
-                    AllInstrs, AllLabels) :-
+%  R1: a first pass numbers every label of the shared table (the same numbering
+%  the `labels.insert` lines get), and the emitting pass receives that table
+%  as '$rust_labels'(Assoc) so branch targets are emitted as PCs.
+collect_wam_entries(Classified, PC0, Rewrites, InstrOpts0, Entries, Instrs, Labels) :-
+    rust_wam_groups(Classified, PC0, Rewrites, Groups),
+    findall(g(Lines, PC), member(wg(_, _, PC, Lines), Groups), LGroups),
+    empty_assoc(A0),
+    rust_wam_label_assoc(LGroups, A0, Assoc),
+    InstrOpts = ['$rust_labels'(Assoc)|InstrOpts0],
+    rust_emit_wam_groups(Groups, InstrOpts, Entries, Instrs, Labels).
+
+%% rust_wam_groups(+Classified, +PC, +Rewrites, -Groups)
+%  wg(Pred, Arity, StartPC, Lines) for each predicate of the shared table.
+rust_wam_groups([], _, _, []).
+rust_wam_groups([C|Rest], PC, Rewrites, [wg(Pred, Arity, PC, Lines)|Groups]) :-
+    rust_shared_wam_code(C, Pred, Arity, WamCode),
+    !,
     atom_string(WamCode, WamStr),
     split_string(WamStr, "\n", "", Lines0),
     rust_rewrite_embedded_aggregate(Lines0, Pred/Arity, Rewrites, Lines),
+    rust_wam_instr_count(Lines, 0, Count),
+    NextPC is PC + Count,
+    rust_wam_groups(Rest, NextPC, Rewrites, Groups).
+rust_wam_groups([_|Rest], PC, Rewrites, Groups) :-
+    rust_wam_groups(Rest, PC, Rewrites, Groups).
+
+rust_shared_wam_code(classified(_, Pred, Arity, wam, WamCode), Pred, Arity, WamCode).
+rust_shared_wam_code(classified(_, Pred, Arity, lowered, lowered_code(_, WamCode, _)), Pred, Arity, WamCode).
+
+%  The number of instruction lines (what wam_lines_to_rust/6 emits one vec!
+%  entry for): non-empty lines whose first token is not a `label:`.
+rust_wam_instr_count([], N, N).
+rust_wam_instr_count([Line|Rest], N0, N) :-
+    wam_tokenize_line(Line, Parts),
+    (   Parts == []
+    ->  N1 = N0
+    ;   Parts = [First|_], sub_string(First, _, 1, 0, ":")
+    ->  N1 = N0
+    ;   N1 is N0 + 1
+    ),
+    rust_wam_instr_count(Rest, N1, N).
+
+rust_emit_wam_groups([], _, [], [], []).
+rust_emit_wam_groups([wg(Pred, Arity, PC, Lines)|Gs], InstrOpts,
+                     [wam_entry(Pred, Arity, PC)|Entries], AllInstrs, AllLabels) :-
     wam_lines_to_rust(Lines, PC, Pred/Arity, InstrOpts, InstrParts, LabelParts),
-    % Count instructions to compute next PC
-    length(InstrParts, InstrCount),
-    NextPC is PC + InstrCount,
-    collect_wam_entries(Rest, NextPC, Rewrites, InstrOpts, RestEntries, RestInstrs, RestLabels),
+    rust_emit_wam_groups(Gs, InstrOpts, Entries, RestInstrs, RestLabels),
     append(InstrParts, RestInstrs, AllInstrs),
     append(LabelParts, RestLabels, AllLabels).
-collect_wam_entries([classified(_, Pred, Arity, lowered, lowered_code(_, WamCode, _))|Rest], PC, Rewrites, InstrOpts,
-                    [wam_entry(Pred, Arity, PC)|RestEntries],
-                    AllInstrs, AllLabels) :-
-    atom_string(WamCode, WamStr),
-    split_string(WamStr, "\n", "", Lines0),
-    rust_rewrite_embedded_aggregate(Lines0, Pred/Arity, Rewrites, Lines),
-    wam_lines_to_rust(Lines, PC, Pred/Arity, InstrOpts, InstrParts, LabelParts),
-    length(InstrParts, InstrCount),
-    NextPC is PC + InstrCount,
-    collect_wam_entries(Rest, NextPC, Rewrites, InstrOpts, RestEntries, RestInstrs, RestLabels),
-    append(InstrParts, RestInstrs, AllInstrs),
-    append(LabelParts, RestLabels, AllLabels).
-collect_wam_entries([_|Rest], PC, Rewrites, InstrOpts, Entries, Instrs, Labels) :-
-    collect_wam_entries(Rest, PC, Rewrites, InstrOpts, Entries, Instrs, Labels).
 
 %% generate_predicate_codes(+Classified, +WamEntries, +Options, -PredCodes)
 %  Generates Rust code for each classified predicate. Options is threaded so the
