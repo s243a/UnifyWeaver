@@ -67,12 +67,14 @@ test(rules_still_required_to_be_parsed_when_present) :-
 
 % The empty-rules clause must not turn malformed input into a zero-rule program:
 % `eos` still has to be reached, so junk after the clauses is still an error.
+% (A bare word is not junk: `foo` and `{ print $1 }\nzzz` are variable patterns,
+% which gawk accepts.)
 test(malformed_programs_still_rejected) :-
-    forall(member(Src, ["foo\n",
+    forall(member(Src, ["foo +\n",
                         "{ print $1\n",
                         "BEGIN { print \"x\" }\n%%%\n",
                         "}\n",
-                        "{ print $1 }\nzzz\n"]),
+                        "{ print $1 }\nzzz {\n"]),
         ( plawk_parse_string(Src, P)
         -> format(user_error, "~nunexpectedly parsed: ~w -> ~q~n", [Src, P]), fail
         ;  true
