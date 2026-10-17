@@ -7682,6 +7682,9 @@ plawk_while_cond_vars(cmp(L, _Op, R), Vars) :-
     plawk_cond_operand_vars(L, VL),
     plawk_cond_operand_vars(R, VR),
     append(VL, VR, Vars).
+plawk_while_cond_vars(cmp(length(var(V)), _Op, R), [V | VR]) :-
+    !,
+    plawk_cond_operand_vars(R, VR).
 plawk_while_cond_vars(cmp(special(_), _Op, int(_N)), []) :- !.
 plawk_while_cond_vars(cmp(special(_), _Op, var(W)), [W]) :- !.
 plawk_while_cond_vars(cmp(special(_), _Op, special(_)), []) :- !.
@@ -8001,6 +8004,9 @@ plawk_while_cond_ir(Cond, Slots, CondValues, FieldSeparator, Base, CondVar, IR) 
     plawk_while_cond_build(Cond, Slots, CondValues, FieldSeparator, Base, '', CondVar, Lines),
     atomic_list_concat(Lines, '\n', IR).
 
+% a comparison already lowered (plawk_cond_str_cmps/9)
+plawk_while_cond_build(pre(CondVar), _Slots, _CV, _FS, _Base, _Path, CondVar, []) :-
+    !.
 plawk_while_cond_build(and(A, B), Slots, CV, FS, Base, Path, CondVar, Lines) :-
     !,
     atom_concat(Path, 'l', PA),
@@ -8449,6 +8455,19 @@ plawk_while_cond_operand(special('NR'), _Slots, _CondValues, Base, _Path, _Side,
     -> Ref = '%plawk_nr'
     ;  Ref = '%current_nr'
     ).
+% `length(s)` of a text slot: the byte length of its current text
+plawk_while_cond_operand(length(var(Name)), Slots, CondValues, Base, Path, Side, Ref,
+        [TextL, LenL]) :-
+    nth0(Idx, Slots, Slot),
+    plawk_slot_name(Slot, Name),
+    !,
+    plawk_slot_holds_text(Slot),
+    nth0(Idx, CondValues, Id),
+    format(atom(Ref), '%~w_cond~w_~w_svlen', [Base, Path, Side]),
+    format(atom(TextL), '  %~w_cond~w_~w_svs = call i8* @wam_sv_cstr(i64 ~w)',
+        [Base, Path, Side, Id]),
+    format(atom(LenL), '  ~w = call i64 @strlen(i8* %~w_cond~w_~w_svs)',
+        [Ref, Base, Path, Side]).
 plawk_while_cond_operand(var(Name), Slots, CondValues, _Base, _Path, _Side, Ref, []) :-
     nth0(Idx, Slots, Slot),
     plawk_slot_name(Slot, Name),
@@ -8568,6 +8587,22 @@ plawk_if_cond_ir(scalar_if(cmp(var(Name), Op, string(Value))), Slots, Values0,
     format(atom(CondValue), '%~w_cond', [GlobalBase]),
     plawk_scalar_str_cmp_ir('', SlotValue, Op, Value, GlobalBase, CondValue,
         GlobalIR, IR).
+% A string-scalar comparison INSIDE `&&` / `||` / `!` (`if (s == "a" || s == "b")`,
+% `if (m == "" || x < m)`): each is lowered first by the same emitter as a lone
+% one -- it needs a global for the literal, which the boolean emitter has no
+% channel for -- and replaced by a pre(CondVar) leaf that emitter passes through.
+plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, AssocPlan, FieldSeparator,
+        GlobalBase, CondValue, GlobalIR-IR) :-
+    Cond \= cmp(_, _, _),
+    sub_term(T, Cond), compound(T), T = cmp(var(_), _, string(_)),
+    !,
+    plawk_cond_str_cmps(Cond, Slots, Values0, GlobalBase, 0, _, Cond1, Globals,
+        Lines),
+    plawk_if_cond_ir(scalar_if(Cond1), Slots, Values0, AssocPlan, FieldSeparator,
+        GlobalBase, CondValue, GlobalIR0-IR0),
+    plawk_join_nonempty_ir([GlobalIR0 | Globals], GlobalIR),
+    append(Lines, [IR0], IRLines),
+    atomic_list_concat(IRLines, '\n', IR).
 % A condition that READS ARRAY ELEMENTS (arrays PR 3a): each `assoc(var(A), Key)`
 % operand is computed first -- the key interned exactly as the writes intern it, the
 % element read with @wam_assoc_i64_get (absent -> 0) -- and replaced by an ssa(Ref)
@@ -8599,6 +8634,39 @@ plawk_if_cond_ir(Pattern, _Slots, _Values0, AssocPlan, FieldSeparator,
     ;   plawk_pattern_guard_ir(Pattern, FieldSeparator, GlobalBase, CondValue,
             GuardGlobalIR-GuardIR)
     ).
+
+%% plawk_cond_str_cmps(+Cond, +Slots, +Values, +Base, +I0, -I, -Cond1, -Globals, -Lines)
+%  Replace every `cmp(var(S), Op, string(Lit))` in Cond, S a text slot, by
+%  pre(CondVar), emitting its comparison (numbered I0.. under Base). A numeric S
+%  fails: awk compares a number against a string as text, which is not lowered.
+plawk_cond_str_cmps(cmp(var(Name), Op, string(Lit)), Slots, Values, Base, I0, I,
+        pre(CondVar), [G], [IR]) :-
+    !,
+    nth0(Idx, Slots, Slot),
+    plawk_slot_name(Slot, Name),
+    !,
+    plawk_slot_holds_text(Slot),
+    nth0(Idx, Values, SlotValue),
+    format(atom(B), '~w_sc~w', [Base, I0]),
+    format(atom(CondVar), '%~w_cond', [B]),
+    plawk_scalar_str_cmp_ir('', SlotValue, Op, Lit, B, CondVar, G, IR),
+    I is I0 + 1.
+plawk_cond_str_cmps(T, Slots, Values, Base, I0, I, T1, Globals, Lines) :-
+    compound(T),
+    T =.. [F | Args],
+    memberchk(F, [and, or, not]),
+    !,
+    plawk_cond_str_cmps_list(Args, Slots, Values, Base, I0, I, Args1, Globals, Lines),
+    T1 =.. [F | Args1].
+plawk_cond_str_cmps(T, _Slots, _Values, _Base, I, I, T, [], []).
+
+plawk_cond_str_cmps_list([], _Slots, _Values, _Base, I, I, [], [], []).
+plawk_cond_str_cmps_list([A | As], Slots, Values, Base, I0, I, [A1 | As1], Globals,
+        Lines) :-
+    plawk_cond_str_cmps(A, Slots, Values, Base, I0, I1, A1, G1, L1),
+    plawk_cond_str_cmps_list(As, Slots, Values, Base, I1, I, As1, G2, L2),
+    append(G1, G2, Globals),
+    append(L1, L2, Lines).
 
 % Surface comparison op -> ordered LLVM fcmp predicate (row values are finite,
 % so ordered comparisons are correct; a NaN column fails every guard).
@@ -11299,6 +11367,8 @@ plawk_strnum_cond_unsafe_read(Cond, _Set, Name) :-
 % key, not compared -- the key path interns a strnum/string slot's value as the
 % key (plawk_assoc_scalar_key_id/5) -- so it is masked out of the unsafe-read scan.
 plawk_strnum_mask_elem_key(assoc(var(A), var(_)), elem_read(A)) :- !.
+% `length(x)` measures the text, which a strnum slot holds: no numeric read of x
+plawk_strnum_mask_elem_key(length(var(_)), int(0)) :- !.
 plawk_strnum_mask_elem_key(Operand, Operand).
 
 % an element operand (as the scan sees it: masked key, or already read) of a text
@@ -11382,6 +11452,7 @@ plawk_strnum_print_field_safe(Field, Name) :-
     \+ plawk_strnum_term_mentions(Field, Name),
     !.
 plawk_strnum_print_field_safe(var(Name), Name) :- !.
+plawk_strnum_print_field_safe(length(var(Name)), Name) :- !.
 plawk_strnum_print_field_safe(assoc(var(_), var(Name)), Name) :- !.
 plawk_strnum_print_field_safe(concat(Parts), Name) :-
     !,
@@ -19159,6 +19230,10 @@ plawk_rule_body_print_field(blob_dyncall_at_named(Name, Source, Args)) :-
 plawk_rule_body_print_field(Expr) :-
     plawk_f64_print_expr(Expr).
 plawk_rule_body_print_field(length(field(_))).
+% `length(s)` before substitution: becomes sv_len(Ref) for a text slot; any other
+% slot stays length(var(_)), which no emitter takes, so the program declines
+plawk_rule_body_print_field(length(var(V))) :- atom(V).
+plawk_rule_body_print_field(sv_len(_Ref)).
 plawk_rule_body_print_field(match_expr(field(_), _Regex)).
 plawk_rule_body_print_field(special('RSTART')).
 plawk_rule_body_print_field(special('RLENGTH')).
@@ -19829,8 +19904,14 @@ plawk_end_scalar_expr(Expr) :-
     plawk_end_scalar_operand_expr(Left),
     plawk_end_scalar_operand_expr(Right).
 
+% `length(s)`: substituted to sv_len over the final slot when s holds text
+plawk_end_scalar_expr(length(var(Name))) :-
+    atom(Name).
+
 plawk_end_scalar_operand_expr(int(Value)) :-
     integer(Value).
+plawk_end_scalar_operand_expr(length(var(Name))) :-
+    atom(Name).
 plawk_end_scalar_operand_expr(var(Name)) :-
     atom(Name).
 plawk_end_scalar_operand_expr(special('NR')).
@@ -19922,6 +20003,16 @@ plawk_substitute_scalar_reads(field_var(Name, Offset), Slots, Values, Substitute
     (   plawk_substitute_scalar_reads(var(Name), Slots, Values, ssa(Value))
     ->  Substituted = field_dyn(Value, Offset)
     ;   Substituted = field_var(Name, Offset)
+    ).
+% `length(s)` of a string / strnum slot: the byte length of its text (sv_len).
+plawk_substitute_scalar_reads(length(var(Name)), Slots, Values, Substituted) :-
+    !,
+    (   nth0(SlotIndex, Slots, Slot),
+        plawk_slot_name(Slot, Name),
+        plawk_slot_holds_text(Slot)
+    ->  nth0(SlotIndex, Values, Value),
+        Substituted = sv_len(Value)
+    ;   Substituted = length(var(Name))
     ).
 plawk_substitute_scalar_reads(var(Name), Slots, Values, Substituted) :-
     !,
@@ -20143,6 +20234,14 @@ plawk_substitute_scalar_reads(Expr, _Slots, _Values, Expr).
 %  END-position substitution: var(Name) becomes the final slot value and
 %  NR becomes %plawk_nr, the loop-head record phi, which dominates
 %  end_print via close_stream / break_close_stream.
+plawk_substitute_end_reads(length(var(Name)), StatePlan, Substituted) :-
+    !,
+    (   plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
+        plawk_slot_holds_text(Slot)
+    ->  format(atom(Value), '%final_slot_~w', [SlotIndex]),
+        Substituted = sv_len(Value)
+    ;   Substituted = length(var(Name))
+    ).
 plawk_substitute_end_reads(var(Name), StatePlan, Substituted) :-
     !,
     plawk_state_slot_lookup(StatePlan, Name, SlotIndex, Slot),
@@ -20175,6 +20274,8 @@ plawk_i64_binary_primary_expr(int(field(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_i64_binary_primary_expr(length(field(FieldIndex))) :-
     FieldIndex >= 0.
+plawk_i64_binary_primary_expr(sv_len(_Ref)).
+plawk_i64_binary_primary_expr(length(var(V))) :- atom(V).
 plawk_i64_binary_primary_expr(index(field(FieldIndex), string(Needle))) :-
     FieldIndex >= 0,
     string(Needle).
@@ -20185,6 +20286,8 @@ plawk_i64_scalar_primary_expr(int(field(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_i64_scalar_primary_expr(length(field(FieldIndex))) :-
     FieldIndex >= 0.
+plawk_i64_scalar_primary_expr(sv_len(_Ref)).
+plawk_i64_scalar_primary_expr(length(var(V))) :- atom(V).
 plawk_i64_scalar_primary_expr(index(field(FieldIndex), string(Needle))) :-
     FieldIndex >= 0,
     string(Needle).
@@ -22831,6 +22934,13 @@ plawk_i64_expr_ir(length(field(FieldIndex)), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts) :-
     plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, GlobalBase,
         ValueIR, GlobalParts, SetupParts).
+% the byte length of a string value's text (`length(s)`, s a text slot)
+plawk_i64_expr_ir(sv_len(Ref), _FieldSeparator, Base, _GlobalBase, ValueIR, [],
+        [TextL, LenL]) :-
+    !,
+    format(atom(ValueIR), '%~w_svlen', [Base]),
+    format(atom(TextL), '  %~w_svs = call i8* @wam_sv_cstr(i64 ~w)', [Base, Ref]),
+    format(atom(LenL), '  ~w = call i64 @strlen(i8* %~w_svs)', [ValueIR, Base]).
 plawk_i64_expr_ir(length(FieldIndex), FieldSeparator, Base, _GlobalBase, ValueIR, [], [CallIR]) :-
     plawk_record_i64_read(length(FieldIndex), '%line', FieldSeparator, Base, CallIR),
     format(atom(ValueIR), '%~w', [Base]).
@@ -27003,6 +27113,12 @@ plawk_emit_print_expr_for_context(blob_dyncall_at_named(Name, Source, Args),
     plawk_blob_expr_ir(blob_dyncall_at_named(Name, Source, Args),
         FieldSeparator, Base, LenIR, PtrIR, GlobalParts, SetupParts).
 
+plawk_emit_print_expr_for_context(sv_len(Ref), FieldSeparator, Context,
+        i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
+    plawk_print_expr_value_base(Context, length, Base),
+    plawk_print_expr_output_names(Context, length, FmtPrefix, PrintPrefix),
+    plawk_i64_expr_ir(sv_len(Ref), FieldSeparator, Base, Base,
+        ValueIR, GlobalParts, SetupParts).
 plawk_emit_print_expr_for_context(length(field(FieldIndex)), FieldSeparator, Context,
         i64(FmtPrefix, PrintPrefix, ValueIR), GlobalParts, SetupParts) :-
     plawk_print_expr_value_base(Context, length, Base),

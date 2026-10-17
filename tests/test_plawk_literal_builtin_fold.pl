@@ -293,9 +293,14 @@ test(a_nested_literal_call_folds, [condition(clang_available)]) :-
     run_with("x\n", "{ print length(toupper(\"ab\")) }\n", "2\n"),
     !.
 
+% A variable argument is outside the vocabulary of the other builtins (exit 2).
+% length() admits one (tests/test_plawk_length_split_strcmp.pl): a text slot
+% compiles, and a variable with no text slot declines (exit 3).
 test(a_variable_argument_is_outside_the_argument_vocabulary) :-
-    build_status("{ print length(v) }\n", 2),
-    build_status("{ v = $2; print length(v) }\n", 2),
+    build_status("{ print toupper(v) }\n", 2),
+    build_status("{ v = $2; print substr(v, 1, 2) }\n", 2),
+    build_status("{ print length(v) }\n", 3),
+    build_status("{ v = $2; print length(v) }\n", 0),
     !.
 
 % `int("3.7")` is deliberately NOT in this vocabulary. int() over a string is numeric

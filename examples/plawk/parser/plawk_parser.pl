@@ -3328,8 +3328,32 @@ split_separator(string(Sep)) -->
     quoted_string(SepCodes),
     { SepCodes \== [], string_codes(Sep, SepCodes) },
     !.
+% A `/re/` literal is always a regex. The separator string is one already: a
+% single byte splits literally, anything longer is an ERE -- so a one-character
+% regex that means something other than itself is spelled as a longer one (`/./`
+% any character, `/ /` one space, which as " " would be the default whitespace
+% splitting). A lone ERE operator (`/*/`, `/|/`) is not parsed.
+split_separator(string(Sep)) -->
+    ",",
+    ws,
+    "/", regex_body_codes(Codes), "/",
+    { split_regex_separator(Codes, Sep) },
+    !.
 split_separator(fs) -->
     [].
+
+split_regex_separator([C], Sep) :-
+    !,
+    (   C == 0'.
+    ->  Sep = "(.)"
+    ;   C == 0'\s
+    ->  Sep = "[ ]"
+    ;   \+ memberchk(C, `*+?^$|()[]{}\\`)
+    ->  string_codes(Sep, [C])
+    ).
+split_regex_separator(Codes, Sep) :-
+    Codes = [_, _ | _],
+    string_codes(Sep, Codes).
 
 %% plawk_fold_unset_truth(+Program0, +Others, -Program) is det.
 %
@@ -3614,6 +3638,11 @@ while_cmp(cmp(special(Name), Op, Rhs)) -->
 % parenthesised `length($0)`) rather than becoming a third copy of them.
 while_cmp(cmp(special(length), Op, Rhs)) -->
     special_cmp_operand(length),
+    ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+% `length(s)` of a variable as the left operand
+while_cmp(cmp(length(var(V)), Op, Rhs)) -->
+    "length", ws, "(", ws, identifier(V), ws, ")",
+    { plawk_length_builtin_arg(var(V)) },
     ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
 % The identifier fallback. The reserved-name guard is what makes the two lists above
 % FAIL SAFE rather than silently disagree: without it, any special this grammar has not
@@ -4554,7 +4583,7 @@ scalar_delta_expr(length(Field)) -->
     field_expr(Field),
     ws,
     ")",
-    { plawk_builtin_string_arg(Field) }.
+    { ( plawk_builtin_string_arg(Field) ; Field = var(V), plawk_length_builtin_arg(var(V)) ) }.
 scalar_delta_expr(length(field(0))) -->
     "length",
     length_no_argument.
@@ -5103,6 +5132,12 @@ plawk_case_builtin_arg(substr(Inner, _Start, _Len)) :-
 % `length(substr($0, 3))`): both are byte slices of the same field.
 plawk_length_builtin_arg(Field) :-
     plawk_builtin_string_arg(Field),
+    !.
+% `length(s)` of a variable: the codegen measures a string / strnum slot's text
+% (a numeric one declines -- its text is a number formatting).
+plawk_length_builtin_arg(var(V)) :-
+    atom(V),
+    \+ plawk_surface_reserved_name(V),
     !.
 plawk_length_builtin_arg(Field) :-
     ( Field = toupper(_) ; Field = tolower(_) ; Field = substr(_, _, _) ),
@@ -5694,6 +5729,15 @@ i64_binary_primary_expr(length(Field)) -->
     "(",
     ws,
     builtin_string_arg(Field),
+    ws,
+    ")".
+i64_binary_primary_expr(length(var(V))) -->
+    "length",
+    ws,
+    "(",
+    ws,
+    identifier(V),
+    { plawk_length_builtin_arg(var(V)) },
     ws,
     ")".
 i64_binary_primary_expr(length(field(0))) -->
