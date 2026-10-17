@@ -132,6 +132,20 @@ test(split_space_is_default_splitting, [condition(clang_available)]) :-
     assertion(St2 == 0), assertion(Out2 == "1 x\n2 y\n"),
     !.
 
+% Each split clears the previous pieces by walking only until the table's count
+% of occupied entries is seen (not the whole capacity, which was most of
+% split's cost). A long record then shorter ones, with a delete between, must
+% leave no stale piece behind. gawk 5.1.0.
+test(split_clears_after_long_records_and_deletes, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'clr', "{ n = split($0, p, \" \"); print n, p[1] p[2] p[3] p[10] }\n",
+        "a b c d e f g h i j\nx y\nq\n", Out, St),
+    assertion(St == 0), assertion(Out == "10 abcj\n2 xy\n1 q\n"),
+    build_run(Dir, 'clrd', "{ split($0, p, \" \"); delete p[2] }\nEND { for (k in p) print k, p[k] }\n",
+        "a b c d e f g h i j\nx y\nq\n", Out2, St2),
+    assertion(St2 == 0), assertion(Out2 == "1 q\n"),
+    !.
+
 % `split($N, arr)` separates on FS: the default " " (whitespace splitting) or a
 % BEGIN-only literal FS, resolved after parsing. An FS assigned in a rule leaves
 % the `fs` marker, and the program declines. gawk 5.1.0.

@@ -261,6 +261,26 @@ test(gsub_field_with_assign, [condition(clang_available)]) :-
         "a,b,c9c9\n", Out, St),
     assertion(St == 0), assertion(Out == "X,b,c#c#\n"), !.
 
+% A field sub that matches nothing does not assign the field, so $0 is left as
+% read -- it was rebuilt with OFS regardless (`x,y` printed `x y`). Only a
+% substitution rebuilds; any one of several does. gawk 5.1.0.
+test(field_sub_without_a_match_keeps_the_record, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'nm', "BEGIN { FS = \",\" }\n{ sub(/b/, \"B\", $2); print $0 }\n",
+        "a,b0\nx,y\nzz,b\n", Out, St),
+    assertion(St == 0), assertion(Out == "a B0\nx,y\nzz B\n"),
+    build_run(Dir, 'nm2', "BEGIN { FS = \",\" }\n{ sub(/b/, \"B\", $2); sub(/q/, \"Q\", $1); print $0 }\n",
+        "a,b0\nx,y\n", Out2, St2),
+    assertion(St2 == 0), assertion(Out2 == "a B0\nx,y\n"),
+    !.
+
+% A field ASSIGNMENT always rebuilds, even to the field's own value.
+test(field_assign_always_rebuilds, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'ar', "BEGIN { FS = \",\" }\n{ sub(/q/, \"Q\", $2); $1 = $1; print $0 }\n",
+        "a,b\n", Out, St),
+    assertion(St == 0), assertion(Out == "a b\n"), !.
+
 :- end_tests(plawk_subgsub_match).
 
 % --- helpers ---------------------------------------------------------------

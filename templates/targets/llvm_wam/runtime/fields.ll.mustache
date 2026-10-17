@@ -17,6 +17,11 @@ entry:
   br i1 %table_null, label %sp.ret0, label %sp.clear_load
 
 sp.clear_load:
+  ; only the occupied entries need freeing, and positions 1..n hash to slots
+  ; 1..n (key mod cap), so stop once the table's count of them is seen -- the
+  ; walk over the whole capacity (4096) on every record was most of split's cost
+  %sp.count_slot0 = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  %sp.left0 = load i64, i64* %sp.count_slot0
   %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
   %cap = load i64, i64* %cap_slot
   %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
@@ -25,8 +30,11 @@ sp.clear_load:
 
 sp.clear_loop:
   %ci = phi i64 [ 0, %sp.clear_load ], [ %ci.next, %sp.clear_body ]
+  %sp.left = phi i64 [ %sp.left0, %sp.clear_load ], [ %sp.left_next, %sp.clear_body ]
   %ci.done = icmp uge i64 %ci, %cap
-  br i1 %ci.done, label %sp.clear_done, label %sp.clear_body
+  %sp.none_left = icmp eq i64 %sp.left, 0
+  %sp.stop = or i1 %ci.done, %sp.none_left
+  br i1 %sp.stop, label %sp.clear_done, label %sp.clear_body
 
 sp.clear_body:
   %ce = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %ci
@@ -37,6 +45,8 @@ sp.clear_body:
   %ce_own = select i1 %ce_live, i64 %ce_val, i64 0
   call void @wam_sv_free(i64 %ce_own)
   store i1 false, i1* %ce_occ
+  %sp.live64 = zext i1 %ce_live to i64
+  %sp.left_next = sub i64 %sp.left, %sp.live64
   %ci.next = add i64 %ci, 1
   br label %sp.clear_loop
 
@@ -160,6 +170,8 @@ entry:
   br i1 %spr.tnull, label %spr.ret0, label %spr.clear_load
 
 spr.clear_load:
+  %spr.count_slot0 = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 0
+  %spr.left0 = load i64, i64* %spr.count_slot0
   %spr.cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
   %spr.cap = load i64, i64* %spr.cap_slot
   %spr.entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
@@ -168,8 +180,11 @@ spr.clear_load:
 
 spr.clear_loop:
   %spr.ci = phi i64 [ 0, %spr.clear_load ], [ %spr.ci_next, %spr.clear_body ]
+  %spr.left = phi i64 [ %spr.left0, %spr.clear_load ], [ %spr.left_next, %spr.clear_body ]
   %spr.ci_done = icmp uge i64 %spr.ci, %spr.cap
-  br i1 %spr.ci_done, label %spr.clear_done, label %spr.clear_body
+  %spr.none_left = icmp eq i64 %spr.left, 0
+  %spr.stop = or i1 %spr.ci_done, %spr.none_left
+  br i1 %spr.stop, label %spr.clear_done, label %spr.clear_body
 
 spr.clear_body:
   %spr.ce = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %spr.entries, i64 %spr.ci
@@ -180,6 +195,8 @@ spr.clear_body:
   %spr.ce_own = select i1 %spr.ce_live, i64 %spr.ce_val, i64 0
   call void @wam_sv_free(i64 %spr.ce_own)
   store i1 false, i1* %spr.ce_occ
+  %spr.live64 = zext i1 %spr.ce_live to i64
+  %spr.left_next = sub i64 %spr.left, %spr.live64
   %spr.ci_next = add i64 %spr.ci, 1
   br label %spr.clear_loop
 
