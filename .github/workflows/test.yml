@@ -262,6 +262,13 @@ jobs:
         run: |
           swipl -q -f init.pl -s tests/test_wam_cross_target_conformance.pl -g "seed_sampler,run_tests" -t halt
 
+      - name: Run Rust WAM first-argument dispatch regressions
+        if: matrix.target == 'rust'
+        run: |
+          cargo --version
+          mkdir -p output/advanced
+          swipl -q -g run_tests -t halt tests/test_wam_rust_first_arg_dispatch.pl
+
       - name: Run C++ WAM template contracts
         if: matrix.target == 'cpp'
         run: |

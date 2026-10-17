@@ -895,7 +895,7 @@ partition_by_key(K, [Other|Rest], Match, [Other|NonMatch]) :-
 %    - "default" if the first matching clause is clause 1;
 %    - L_<Pred>_<Arity>_<I>_body if exactly one clause matches and
 %      it is not clause 1;
-%    - L_<Pred>_<Arity>_<kind>_<sanitized_key>_dispatch when >1
+%    - L_<Pred>_<Arity>_<kind>_<sanitized_key>_<first_index>_dispatch when >1
 %      clauses match (none of which is clause 1) — a chain is
 %      emitted in DispatchCode targeting the body labels.
 groups_to_entries_and_chains([], _, _, _, [], "").
@@ -920,8 +920,12 @@ group_label_and_chain(_, [I], Pred, Arity, _, Label, "") :-
     format(atom(Label), "L_~w_~w_~w_body", [Pred, Arity, I]).
 group_label_and_chain(Key, Indices, Pred, Arity, Kind, Label, ChainCode) :-
     sanitize_dispatch_key(Key, Kind, KeyAtom),
-    format(atom(Label), "L_~w_~w_~w_~w_dispatch",
-           [Pred, Arity, Kind, KeyAtom]),
+    % Sanitization is not injective ('a-b' and a_b both become a_b).
+    % Groups have disjoint clause indices, so the first index makes each
+    % chain label unique even when distinct keys have the same spelling.
+    Indices = [First|_],
+    format(atom(Label), "L_~w_~w_~w_~w_~w_dispatch",
+           [Pred, Arity, Kind, KeyAtom, First]),
     format_dispatch_chain(Label, Indices, Pred, Arity, ChainCode).
 
 %% sanitize_dispatch_key(+Key, +Kind, -Atom)
