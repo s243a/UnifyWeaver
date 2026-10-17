@@ -51,10 +51,12 @@ test(field_set_scalar_in_arithmetic, [condition(clang_available)]) :-
     !.
 
 % One scalar both set from a field and accumulated: the array-rule driver
-% steps aside (its global would hold an id and a number), and the program is
-% compiled elsewhere, correctly.
-test(set_and_accumulated_scalar, [condition(clang_available)]) :-
-    run("{ x = $1; x += 1; c[$1]++; print x }\n", "1\n1\n1\n1\n1\n1\n1\n"),
+% steps aside (its global would hold an id and a number). No other driver can
+% hold it either -- x is a number slot, and the field copy's strict integer
+% parse read "1.5" as 0 (`x += 1` printed 1; gawk 2.5) -- so it declines.
+test(set_and_accumulated_scalar) :-
+    build_status("{ x = $1; x += 1; c[$1]++; print x }\n", Status),
+    assertion(Status == 3),
     !.
 
 :- end_tests(plawk_assoc_text_reads).
@@ -65,6 +67,18 @@ odir(Dir) :-
     current_prolog_flag(tmp_dir, Tmp),
     directory_file_path(Tmp, 'uw_plawk_assoc_text_reads', Dir),
     ( exists_directory(Dir) -> true ; make_directory_path(Dir) ).
+
+build_status(Src, Status) :-
+    odir(Dir),
+    directory_file_path(Dir, 'st_bin', Bin),
+    directory_file_path(Dir, 'st', Prog0),
+    atom_concat(Prog0, '.plawk', Prog),
+    setup_call_cleanup(open(Prog, write, S, [encoding(utf8)]),
+        write(S, Src), close(S)),
+    process_create(path(swipl),
+        ['examples/plawk/bin/plawk', build, Prog, '-o', Bin],
+        [stdout(null), stderr(null), process(BPid)]),
+    process_wait(BPid, exit(Status)).
 
 run(Src, Expected) :-
     odir(Dir),

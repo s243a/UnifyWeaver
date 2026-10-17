@@ -29,13 +29,19 @@ Copyright (c) 2026 John William Creighton (@s243a)
   `if (n == 5)`) via a second runtime primitive `@wam_strnum_cmp_int` (numeric
   when the field looks numeric, else lexical against the integer formatted as a
   decimal string — so `"abc" > 3` is lexically true and `"5x" == 5` is false).
-  A dedicated `plawk_while_cond_build` clause dispatches it.
+  A dedicated `plawk_while_cond_build` clause dispatches it. A **float literal**
+  (`if (x > 5.5)`, `x > 5.5 { … }`, END `if`) goes the same way through
+  `@wam_strnum_cmp_double`: numeric when the text looks numeric, else lexical
+  against the number's text, so `"9x" > 5.5` is true.
 
   **Step 3c** adds arithmetic **coercion**: a strnum read in a pure arithmetic
   expression (`y = x + 1`, `c += x`) is coerced to a number — to i64 via the
   *same* field parser the pre-strnum path used (so the result is byte-identical,
   incl. the not-a-number → 0 default), or to double via `strtod` in an f64
   context. The read tag is `ssa_strnum`; the i64/f64 expression leaves coerce it.
+  A float literal in the tree (`x * 2.5`, `print x + 0.5`) makes it double, read
+  through strtod; it used to deactivate the strnum, and the strict integer parse
+  then read "9x" and "5.5" as 0.
   This lets a field copy used in **both** arithmetic and a string/number
   comparison (`x = $1; y = x + 1; if (x == "42") …`) be a full strnum.
 
@@ -67,8 +73,12 @@ Copyright (c) 2026 John William Creighton (@s243a)
   closed** if a strnum operand ever reaches it in an unsupported form, so no path
   emits a raw `icmp` on an atom id.
 
-**Not yet built**: comparison against a **non-integer / float literal** or a
-**non-strnum var**; strnum reads inside **calls / ternary / index / concat**;
+**A field copy into a numeric slot declines** (text mode): a name written both a
+field and a number (`x = 0`, `x = x * 2`) is a counter or double, and awk's value
+after `x = $2` is the field's text, which one static numeric kind cannot hold --
+the strict integer parse read "10.5" as 0. A typed binary field still copies.
+
+**Not yet built**: comparison against a **non-strnum var**; strnum reads inside **calls / ternary / index / concat**;
 non-field sources that don't yet exist (`getline`, `ARGV`/`ENVIRON`) or live in
 another subsystem (`split()` array elements); nested-block field copies (blocked
 on the nested-assignment control-flow limitation). §4–§5 describe model aspects
