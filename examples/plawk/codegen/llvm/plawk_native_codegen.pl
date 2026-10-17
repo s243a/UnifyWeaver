@@ -7612,6 +7612,7 @@ plawk_while_cond_ok(not(A)) :-
     plawk_while_cond_ok(A).
 % a truth test of a scalar or a numeric special (`while (n)`, `while (!done)`)
 plawk_while_cond_ok(truth(var(_V))) :- !.
+plawk_while_cond_ok(truth(int(N))) :- !, integer(N).
 plawk_while_cond_ok(truth(special(Name))) :-
     !,
     plawk_match_special(Name).
@@ -7955,6 +7956,12 @@ plawk_truth_cond_lines(var(Name), Slots, CV, _FS, Base, Path, CondVar,
     format(atom(ByteL), '  %~w_tr~w_c = load i8, i8* %~w_tr~w_s', [Base, Path, Base, Path]),
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
     format(atom(CmpL), '  ~w = icmp ne i8 %~w_tr~w_c, 0', [CondVar, Base, Path]).
+% A constant (a never-assigned variable, folded by the parser to int(0)).
+plawk_truth_cond_lines(int(N), _Slots, _CV, _FS, Base, Path, CondVar, [CmpL]) :-
+    integer(N),
+    !,
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(CmpL), '  ~w = icmp ne i64 ~w, 0', [CondVar, N]).
 % A field is a strnum; there is no current record in END.
 plawk_truth_cond_lines(field(N), _Slots, _CV, FS, Base, Path, CondVar, [TextL | Lines]) :-
     !,
@@ -18759,6 +18766,15 @@ plawk_resolve_scalar_cmp(scalar_str_cmp(Name, Op, Str), StatePlan, Index,
     ),
     !,
     plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
+% A bare variable pattern (`f { … }`): awk's truth value by the slot's kind.
+plawk_resolve_scalar_cmp(truth_pat(var(Name)), StatePlan, Index,
+        truth_scalar_resolved(Slot, SSARef)) :-
+    !,
+    member(Slot, [scalar_counter(Name), scalar_double(Name), scalar_strnum(Name),
+                  scalar_string(Name)]),
+    plawk_state_slot_index(StatePlan, Slot, SlotIndex),
+    !,
+    plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
 plawk_resolve_scalar_cmp(not_pat(P), StatePlan, Index, not_pat(P1)) :-
     !,
     plawk_resolve_scalar_cmp(P, StatePlan, Index, P1).
@@ -25540,6 +25556,32 @@ plawk_pattern_guard_ir(truth_pat(field(N)), FieldSeparator, GlobalBase, MatchVal
 '  %~w_tf = call i8* @wam_atom_field_cstr(%Value %line, i64 ~w, i8 ~w)
   ~w = call i1 @wam_strnum_truth(i8* %~w_tf)',
         [GlobalBase, N, FieldSeparator, MatchValue, GlobalBase]).
+% A constant truth pattern (a never-assigned variable, folded to int(0)).
+plawk_pattern_guard_ir(truth_pat(int(N)), _FieldSeparator, _GlobalBase, MatchValue,
+        ''-GuardCallIR) :-
+    integer(N),
+    format(atom(GuardCallIR), '  ~w = icmp ne i64 ~w, 0', [MatchValue, N]).
+% A bare variable pattern, resolved to its slot: a number is `!= 0`, a strnum
+% goes through @wam_strnum_truth, a string is true when non-empty.
+plawk_pattern_guard_ir(truth_scalar_resolved(scalar_counter(_), SSARef), _FieldSeparator,
+        _GlobalBase, MatchValue, ''-GuardCallIR) :-
+    format(atom(GuardCallIR), '  ~w = icmp ne i64 ~w, 0', [MatchValue, SSARef]).
+plawk_pattern_guard_ir(truth_scalar_resolved(scalar_double(_), SSARef), _FieldSeparator,
+        _GlobalBase, MatchValue, ''-GuardCallIR) :-
+    format(atom(GuardCallIR), '  ~w = fcmp une double ~w, 0.0', [MatchValue, SSARef]).
+plawk_pattern_guard_ir(truth_scalar_resolved(scalar_strnum(_), SSARef), _FieldSeparator,
+        GlobalBase, MatchValue, ''-GuardCallIR) :-
+    format(atom(GuardCallIR),
+'  %~w_tvs = call i8* @wam_sv_cstr(i64 ~w)
+  ~w = call i1 @wam_strnum_truth(i8* %~w_tvs)',
+        [GlobalBase, SSARef, MatchValue, GlobalBase]).
+plawk_pattern_guard_ir(truth_scalar_resolved(scalar_string(_), SSARef), _FieldSeparator,
+        GlobalBase, MatchValue, ''-GuardCallIR) :-
+    format(atom(GuardCallIR),
+'  %~w_tvs = call i8* @wam_sv_cstr(i64 ~w)
+  %~w_tvc = load i8, i8* %~w_tvs
+  ~w = icmp ne i8 %~w_tvc, 0',
+        [GlobalBase, SSARef, GlobalBase, GlobalBase, MatchValue, GlobalBase]).
 plawk_pattern_guard_ir(truth_pat(special('NF')), FieldSeparator, GlobalBase, MatchValue,
         ''-GuardCallIR) :-
     integer(FieldSeparator),
