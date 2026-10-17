@@ -71,14 +71,14 @@ test(key_forms, [condition(clang_available)]) :-
 % item 5(d) (tests/test_plawk_strnum_elem_reads.pl).
 test(strnum_reads_in_conditions, [condition(clang_available)]) :-
     run_exact("{ c[$1] = $2; if (c[$1] > 3) print $1 }\n", "b\nb\na\n"),
+    % a string-kind table compares as a string ("5" > "3", "4" > "3", "7" > "3")
+    run_exact("{ c[$1] = $2 \"\"; if (c[$1] > 3) print $1 }\n", "b\nb\na\n"),
     !.
 
 test(unadmitted_reads_decline) :-
     forall(member(Src,
             [ % a string comparison
               "{ c[$1]++; if (c[$1] == \"1\") print $1 }\n",
-              % a string-kind table (compares as a string)
-              "{ c[$1] = $2 \"\"; if (c[$1] > 3) print $1 }\n",
               % a loop condition
               "{ c[$1]++; while (c[$1] < 3) c[$1]++ ; print $1, c[$1] }\n",
               % never written: no counter table to read
@@ -91,7 +91,7 @@ test(unadmitted_reads_decline) :-
 % not leave that context behind: a later rule-level `break` in the same process
 % branched to the dead loop's exit label instead of break_close_stream.
 test(declined_loop_body_leaves_no_loop_context) :-
-    plawk_parse_string("{ a[$1] = $2 \"\"; for (i = 1; i <= 2; i++) if (a[$1] > 5) print \"found\" }\n", P1),
+    plawk_parse_string("{ c[$1]++; for (i = 1; i <= 2; i++) if (c[$1] == \"1\") print \"found\" }\n", P1),
     \+ plawk_program_native_driver_ir(P1, 'input.txt', _),
     ( nb_current(plawk_loopctx, Stack) -> true ; Stack = [] ),
     assertion(Stack == []),

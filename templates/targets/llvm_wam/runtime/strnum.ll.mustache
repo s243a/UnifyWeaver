@@ -50,6 +50,33 @@ ln.yes:
 ln.no:
   ret i1 0
 }
+{{case wam_strnum_truth}}
+; awk's truth value of a strnum text (a field, an input-derived value) in a
+; boolean context: when it LOOKS numeric, its number is nonzero ("0", " 0.0 " are
+; false); otherwise it is true when non-empty ("x", "0x" are true). A null pointer
+; is "".
+define i1 @wam_strnum_truth(i8* %s) {
+entry:
+  %st.null = icmp eq i8* %s, null
+  br i1 %st.null, label %st.no, label %st.test
+
+st.test:
+  %st.num = call i1 @wam_looks_numeric(i8* %s)
+  br i1 %st.num, label %st.numeric, label %st.text
+
+st.numeric:
+  %st.v = call double @strtod(i8* %s, i8** null)
+  %st.nz = fcmp une double %st.v, 0.0
+  ret i1 %st.nz
+
+st.text:
+  %st.c = load i8, i8* %s
+  %st.ne = icmp ne i8 %st.c, 0
+  ret i1 %st.ne
+
+st.no:
+  ret i1 false
+}
 {{case wam_strnum_cmp}}
 ; @wam_strnum_cmp(as, akind, bs, bkind): compare two operands given as their
 ; NUL-terminated string forms plus a kind tag per operand -- 0 = number,

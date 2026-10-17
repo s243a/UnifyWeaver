@@ -1809,6 +1809,18 @@ fsn.slow:
   %fsn.sr = call i1 @wam_i64_cmp_value(i64 %fsn.sign64, i64 0, i32 %op)
   ret i1 %fsn.sr
 }
+{{case wam_atom_field_strnum_cmp_double}}
+; `$N OP 5.5`: like @wam_atom_field_strnum_cmp_int against a double constant --
+; numeric when the field looks numeric, else a string comparison against the
+; number's text (@wam_strnum_cmp_double). A missing field is "".
+define i1 @wam_atom_field_strnum_cmp_double(%Value %atom_value, i64 %field_index, i8 %sep, double %expected, i32 %op) {
+entry:
+  %fsd.s = call i8* @wam_atom_field_cstr(%Value %atom_value, i64 %field_index, i8 %sep)
+  %fsd.sign = call i32 @wam_strnum_cmp_double(i8* %fsd.s, i8 1, double %expected)
+  %fsd.sign64 = sext i32 %fsd.sign to i64
+  %fsd.r = call i1 @wam_i64_cmp_value(i64 %fsd.sign64, i64 0, i32 %op)
+  ret i1 %fsd.r
+}
 {{case wam_atom_field_i64_cmp_value}}
 define i1 @wam_atom_field_i64_cmp_value(%Value %atom_value, i64 %field_index, i8 %sep, i64 %expected, i32 %op) {
 entry:
