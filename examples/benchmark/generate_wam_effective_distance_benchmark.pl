@@ -277,7 +277,7 @@ mod instructions;
 mod state;
 
 use value::Value;
-use instructions::{Instruction, Reg};
+use instructions::{Functor, Instruction, Reg};
 use state::WamState;
 
 #[derive(Debug)]
