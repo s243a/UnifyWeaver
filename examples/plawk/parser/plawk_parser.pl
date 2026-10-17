@@ -3641,6 +3641,13 @@ while_cmp(cmp(Elem, Op, FC)) -->
 while_cmp(cmp(Elem, Op, Rhs)) -->
     cond_elem_read(Elem),
     ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+% A variable against a FLOAT literal (`if (x > 5.5)`, `while (t >= 0.5)`), before
+% the int RHS for the same reason as the element clause above.
+while_cmp(cmp(var(V), Op, FC)) -->
+    identifier(V),
+    { \+ scalar_cmp_reserved_name(V) },
+    ws, numeric_cmp_op(Op), ws, signed_float_lit(FC),
+    !.
 while_cmp(cmp(var(V), Op, Rhs)) -->
     identifier(V),
     { \+ scalar_cmp_reserved_name(V) },
