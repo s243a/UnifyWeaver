@@ -7645,6 +7645,7 @@ plawk_match_special(length).
 
 plawk_while_cond_rhs_ok(int(N)) :- integer(N).
 plawk_while_cond_rhs_ok(var(_W)).
+plawk_while_cond_rhs_ok(float_const(M, D)) :- integer(M), integer(D).
 plawk_while_cond_rhs_ok(special(Name)) :- plawk_match_special(Name).
 
 %% plawk_while_cond_vars(+Cond, -Vars)
@@ -7686,6 +7687,7 @@ plawk_while_cond_vars(cmp(special(_), _Op, special(_)), []) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, special(_)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, int(_N)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, string(_S)), [V]) :- !.
+plawk_while_cond_vars(cmp(var(V), _Op, float_const(_, _)), [V]) :- !.
 plawk_while_cond_vars(cmp(var(V), _Op, var(W)), [V, W]).
 
 plawk_cond_operand_vars(var(V), [V]) :- !.
@@ -8113,6 +8115,27 @@ plawk_while_cond_build(cmp(var(L), Op, int(N)), Slots, CondValues, _FS, Base,
     plawk_while_cond_operand(var(L), Slots, CondValues, Base, Path, l, LId, _),
     plawk_icmp_pred(Op, Pred),
     plawk_strnum_cmp_int_lines(Base, Path, LId, N, Pred, CondVar, Lines).
+% strnum-vs-float-literal (`x > 5.5`): @wam_strnum_cmp_double, which compares
+% numerically when the text looks numeric and otherwise as a string against the
+% number's text, like the integer case. Either side; a float LHS swaps.
+plawk_while_cond_build(cmp(L0, Op0, R0), Slots, CondValues, _FS, Base,
+        Path, CondVar, Lines) :-
+    (   L0 = var(L), R0 = float_const(M, D), Op = Op0
+    ;   R0 = var(L), L0 = float_const(M, D), plawk_swap_cmp_op(Op0, Op)
+    ),
+    plawk_cond_var_is_strnum(L, Slots),
+    !,
+    plawk_while_cond_operand(var(L), Slots, CondValues, Base, Path, l, LId, _),
+    plawk_icmp_pred(Op, Pred),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(B), '~w_snf~w', [Base, Path]),
+    plawk_text_operand_lines(B, LId, 1, Text, Kind, TLines),
+    format(atom(RhsL), '  %~w_d = fdiv double ~w.0, ~w.0', [B, M, D]),
+    format(atom(RcL),
+        '  %~w_rc = call i32 @wam_strnum_cmp_double(i8* ~w, i8 ~w, double %~w_d)',
+        [B, Text, Kind, B]),
+    format(atom(CmpL), '  ~w = icmp ~w i32 %~w_rc, 0', [CondVar, Pred, B]),
+    append(TLines, [RhsL, RcL, CmpL], Lines).
 % `N OP x`: swap to `x swap(Op) N` so the strnum stays the left operand.
 plawk_while_cond_build(cmp(int(N), Op, var(R)), Slots, CondValues, _FS, Base,
         Path, CondVar, Lines) :-
@@ -11169,7 +11192,9 @@ plawk_strnum_action_unsafe_read(if(scalar_if(Cond), Then, Else), Set, Name) :-
 % recurse into the branches.
 plawk_strnum_action_unsafe_read(if(Pattern, Then, Else), Set, Name) :-
     !,
-    ( Pattern \= scalar_if(_), plawk_strnum_term_mentions(Pattern, Name)
+    ( Pattern \= scalar_if(_),
+      plawk_strnum_mask_float_cmp(Pattern, Name, Masked),
+      plawk_strnum_term_mentions(Masked, Name)
     ; member(A, Then), plawk_strnum_action_unsafe_read(A, Set, Name)
     ; member(A, Else), plawk_strnum_action_unsafe_read(A, Set, Name)
     ).
@@ -11212,6 +11237,24 @@ plawk_strnum_action_unsafe_read(delete_assoc(var(_Arr), var(Name)), _Set, Name) 
 % Any other action: mentioning Name at all is an unsupported read.
 plawk_strnum_action_unsafe_read(Action, _Set, Name) :-
     plawk_strnum_term_mentions(Action, Name).
+
+% `Name OP 5.5` (scalar_f64_cmp) is a SUPPORTED read: the guard resolves the
+% strnum to text and compares through @wam_strnum_cmp_double (numeric when the text
+% looks numeric, else against the number's text), so it is masked out of the scan --
+% through the !/&&/|| combinators that hold it.
+plawk_strnum_mask_float_cmp(scalar_f64_cmp(Name, _Op, float_const(_, _)), Name, true) :- !.
+plawk_strnum_mask_float_cmp(not_pat(P), Name, not_pat(M)) :-
+    !,
+    plawk_strnum_mask_float_cmp(P, Name, M).
+plawk_strnum_mask_float_cmp(and_pat(L, R), Name, and_pat(ML, MR)) :-
+    !,
+    plawk_strnum_mask_float_cmp(L, Name, ML),
+    plawk_strnum_mask_float_cmp(R, Name, MR).
+plawk_strnum_mask_float_cmp(or_pat(L, R), Name, or_pat(ML, MR)) :-
+    !,
+    plawk_strnum_mask_float_cmp(L, Name, ML),
+    plawk_strnum_mask_float_cmp(R, Name, MR).
+plawk_strnum_mask_float_cmp(Pattern, _Name, Pattern).
 
 % A comparison condition reads Name unsafely when Name appears in it but not in
 % a supported comparison form (strnum-vs-strnum with the partner in Set, or
@@ -11277,6 +11320,8 @@ plawk_strnum_cmp_supported(var(Name), string(_), _Set, Name).
 plawk_strnum_cmp_supported(string(_), var(Name), _Set, Name).
 plawk_strnum_cmp_supported(var(Name), int(_), _Set, Name).
 plawk_strnum_cmp_supported(int(_), var(Name), _Set, Name).
+plawk_strnum_cmp_supported(var(Name), float_const(_, _), _Set, Name).
+plawk_strnum_cmp_supported(float_const(_, _), var(Name), _Set, Name).
 
 % A strnum-coercible numeric update: a `set`/`add` whose expression is a PURE
 % arithmetic tree (binary arithmetic over fields / vars / literals / length /
@@ -11292,6 +11337,8 @@ plawk_strnum_numeric_operation(add(const(_))).
 plawk_strnum_arith_expr(var(_)) :- !.
 plawk_strnum_arith_expr(int(_)) :- !.
 plawk_strnum_arith_expr(const(_)) :- !.
+% a float literal (`x * 2.5`): the tree is double, so the strnum reads through strtod
+plawk_strnum_arith_expr(float_const(_, _)) :- !.
 plawk_strnum_arith_expr(field(_)) :- !.
 plawk_strnum_arith_expr(field_i64(_)) :- !.
 plawk_strnum_arith_expr(field_int(_)) :- !.
@@ -18664,11 +18711,18 @@ plawk_resolve_scalar_cmp(scalar_cmp(Name, Op, Value), StatePlan, Index, Resolved
     ).
 % A bare scalar vs a float literal: the scalar must be a double slot; emit an
 % fcmp against the exact-rational double literal.
+% A strnum scalar (`x = $2`) compares as awk does: numerically when its text looks
+% numeric, else as a string against the number's text.
 plawk_resolve_scalar_cmp(scalar_f64_cmp(Name, Op, FloatConst), StatePlan, Index,
-        scalar_dbl_cmp_resolved(SSARef, Op, FloatConst)) :-
+        Resolved) :-
     !,
-    plawk_state_slot_index(StatePlan, scalar_double(Name), SlotIndex),
-    plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef).
+    (   plawk_state_slot_index(StatePlan, scalar_double(Name), SlotIndex)
+    ->  plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef),
+        Resolved = scalar_dbl_cmp_resolved(SSARef, Op, FloatConst)
+    ;   plawk_state_slot_index(StatePlan, scalar_strnum(Name), SlotIndex),
+        plawk_scalar_rule_slot_input(Index, SlotIndex, SSARef),
+        Resolved = scalar_strnum_dbl_cmp_resolved(SSARef, Op, FloatConst)
+    ).
 % A field compared to a scalar. A counter (i64) scalar uses the numeric field
 % comparison (the scalar's value passes straight into @wam_atom_field_i64_cmp_value
 % as the expected i64). A string/strnum scalar (its slot an interned atom id) uses
@@ -21897,6 +21951,19 @@ plawk_action_subaction(do_while_loop(Body, _Cond), Sub) :-
     plawk_action_subaction(Outer, Sub).
 plawk_action_subaction(Action, Action).
 
+% A bare field copy `x = $N` into a NUMERIC slot, in text mode, declines. The
+% slot is numeric because x is also written a number (`x = 0`, `x = x * 2`), and
+% awk's x then holds whichever value was assigned last -- after `x = $2` the
+% field's TEXT, which prints as written and compares as a strnum. One static
+% numeric kind cannot hold that: the counter's strict integer parse read "9x",
+% "x" and "10.5" as 0 (`v = $2; v = v * 2` printed 0 for 10.5), and a double
+% would print "007" as 7. A typed binary field is a number, so it still copies.
+plawk_scalar_update_operation_ir_(set(field_i64(_FieldIndex)), Slot, FieldSeparator,
+        _Prefix, _SlotIndex, _OpIndex, _InputValue, _NextValue, _) :-
+    integer(FieldSeparator),
+    \+ plawk_slot_holds_text(Slot),
+    !,
+    fail.
 plawk_scalar_update_operation_ir_(add(Expr), scalar_double(_Name), FieldSeparator,
         Prefix, SlotIndex, OpIndex, InputValue, NextValue, GlobalIR-IR) :-
     !,
@@ -25381,6 +25448,18 @@ plawk_pattern_guard_ir(scalar_dbl_cmp_resolved(SSARef, Op, float_const(M, D)), _
   ~w = fcmp ~w double ~w, %~w_drhs',
         [GlobalBase, M, D,
          MatchValue, Pred, SSARef, GlobalBase]).
+% Bare strnum-scalar pattern `x OP 5.5` (x = $N): the slot's text and kind (unset
+% reads as the number 0) through @wam_strnum_cmp_double, its sign against 0.
+plawk_pattern_guard_ir(scalar_strnum_dbl_cmp_resolved(SSARef, Op, float_const(M, D)), _FieldSeparator, GlobalBase, MatchValue, ''-GuardCallIR) :-
+    plawk_icmp_pred(Op, Pred),
+    format(atom(B), '~w_snd', [GlobalBase]),
+    plawk_text_operand_lines(B, SSARef, 1, Text, Kind, TLines),
+    format(atom(RhsL), '  %~w_drhs = fdiv double ~w.0, ~w.0', [B, M, D]),
+    format(atom(RcL), '  %~w_rc = call i32 @wam_strnum_cmp_double(i8* ~w, i8 ~w, double %~w_drhs)',
+        [B, Text, Kind, B]),
+    format(atom(CmpL), '  ~w = icmp ~w i32 %~w_rc, 0', [MatchValue, Pred, B]),
+    append(TLines, [RhsL, RcL, CmpL], Lines),
+    atomic_list_concat(Lines, '\n', GuardCallIR).
 % Field-vs-scalar pattern `$I OP NAME` (already resolved to the rule's slot SSA
 % value by plawk_resolve_scalar_cmp/4). Reuse the same field-comparison runtime as
 % `$I OP int` -- @wam_atom_field_strnum_cmp_int takes the expected value as a

@@ -45,6 +45,12 @@ plawk types every scalar **statically**, into one storage kind (chosen by
 | `scalar_string(N)` | string value (`i64`): atom id or owned handle | `s = "a" "b"`, `sub/gsub` target |
 | `scalar_strnum(N)` | string value (`i64`) holding the field bytes | `x = $1` |
 
+A field copy `x = $N` stores the field's text, so it needs a string or strnum
+slot. In text mode a name that is also written a number (`x = 0`, `x = x * 2`)
+types numeric, and its field copy **declines**: awk's value after the copy is the
+text, which a counter or double cannot hold (the counter's strict integer parse
+read "10.5" as 0).
+
 A **string value** is an interned atom id (a literal, `ENVIRON` / `ARGV`, a
 for-in key, a `gsub` result) or an **owned handle** (`2^61 | ptr`) for text built
 at run time (a field copy, a concatenation, `sprintf`). Every reader resolves
@@ -146,6 +152,8 @@ table's absent position prints `""` through `@wam_assoc_str_print`.
 - `tests/test_plawk_mixed_rules.pl`: absent array elements print `""`.
 - `tests/test_plawk_assoc_f64_scalar.pl`, `tests/test_plawk_crosspass_scalar.pl`:
   the array-rule driver's double accumulators, unset print, cross-pass sums.
+- `tests/test_plawk_strnum_scalar_float.pl`: scalars against float literals, a
+  strnum in float arithmetic, and the field-copy-into-numeric-slot decline.
 
 ## 8. Open edges
 
