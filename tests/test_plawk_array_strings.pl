@@ -101,11 +101,9 @@ test(numeric_folds, [condition(clang_available)]) :-
     run_exact("{ a[$1] = $0 } END { for (k in a) t += a[k]; print t }\n", "0\n"),
     !.
 
-test(string_kind_comparison_declines) :-
-    forall(member(Src,
-            [ "{ a[$1] = $2 \"\"; n++; if (a[$1] > 9) print $1 }\n"
-            ]),
-        build_status_is(Src, 3)),
+% A string-kind element compares as a string: no single digit is > "9".
+test(string_kind_comparison, [condition(clang_available)]) :-
+    run_exact("{ a[$1] = $2 \"\"; n++; if (a[$1] > 9) print $1 }\n", ""),
     !.
 
 % tac and its relatives: output ORDER is the point, so these compare exactly.

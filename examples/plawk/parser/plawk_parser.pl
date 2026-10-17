@@ -69,7 +69,8 @@ plawk_parse_source(Source, Program, PrologClauses) :-
     plawk_normalise_c_for(Program0, Program1),
     plawk_normalise_getline_loops(Program1, Program2),
     plawk_fold_literal_builtins(Program2, Program3),
-    plawk_desugar_assoc_postinc_patterns(Program3, Program),
+    plawk_desugar_assoc_postinc_patterns(Program3, Program4),
+    plawk_resolve_split_fs(Program4, Program),
     append(BlockClauses, FunctionClauses, PrologClauses),
     plawk_dynentry_reserved_check(DynEntries, PrologClauses).
 
@@ -1374,6 +1375,14 @@ base_pattern(assoc_postinc(KeyExpr, ArrayName)) -->
 base_pattern(Pattern) -->
     field_match_pattern(Pattern),
     !.
+% A bare `$N` or `NF` pattern is a TRUTH test (`NF { print }` skips blank
+% lines; `$3 { ... }` is true for a non-empty, non-zero field). Only these two:
+% a bare variable pattern is not taken here. The lookahead keeps `$2 > 1` and
+% `NF == 3` for their comparison productions.
+base_pattern(truth_pat(X)) -->
+    truth_pat_operand(X),
+    \+ ( ws, truth_pat_continues ),
+    !.
 % Reversed string comparison (`"a" == $1`). Its leading quote is unambiguous
 % here -- no other pattern starts with one -- so ordering against the field-first
 % productions does not matter.
@@ -1402,6 +1411,11 @@ base_pattern(Pattern) -->
     !.
 base_pattern(Pattern) -->
     field_field_cmp_pattern(Pattern),
+    !.
+% Before field_i64: a float RHS (`$2 > 5.5`) would otherwise match `$2 > 5` and
+% leave `.5` to fail the rule.
+base_pattern(Pattern) -->
+    field_f64_cmp_pattern(Pattern),
     !.
 base_pattern(Pattern) -->
     field_i64_cmp_pattern(Pattern),
@@ -1891,6 +1905,27 @@ field_i64_cmp_pattern(field_cmp(Index, Op, Value)) -->
       number_codes(Index, IndexCodes),
       Index > 0
     }.
+
+% Field-vs-float-literal pattern: `$N OP 5.5` (and reversed `5.5 OP $N`), parsed
+% to field_fcmp(N, Op, float_const(M, D)) with Op field-relative. Only a literal
+% with a decimal point: an integer keeps field_cmp/3.
+field_f64_cmp_pattern(field_fcmp(Index, Op, FC)) -->
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [], number_codes(Index, IndexCodes), Index > 0 },
+    ws,
+    numeric_cmp_op(Op),
+    ws,
+    signed_float_lit(FC).
+field_f64_cmp_pattern(field_fcmp(Index, Op, FC)) -->
+    signed_float_lit(FC),
+    ws,
+    numeric_cmp_op(ReadOp),
+    ws,
+    "$",
+    integer_codes(IndexCodes),
+    { IndexCodes \== [], number_codes(Index, IndexCodes), Index > 0,
+      swap_cmp_op(ReadOp, Op) }.
 
 % Field-vs-scalar pattern: `$I OP NAME { … }` (and reversed `NAME OP $I`), a
 % field compared to a user scalar variable, e.g. `$1 > threshold { … }`,
@@ -3253,9 +3288,9 @@ subgsub_keyword(0) --> "sub".
 %
 %  `split($N, arr, "sep")` -- split field $N on the single-char separator into
 %  positional array `arr` (keys 1..n, string values). Parses to
-%  split_into(field(N), var(Arr), string(Sep)). v1: field source, string-literal
-%  separator; the return count and a default (FS) separator are follow-ons.
-split_action(split_into(field(N), var(Arr), string(Sep))) -->
+%  split_into(field(N), var(Arr), string(Sep)). v1: field source; the separator
+%  is a string literal, or omitted -- FS (plawk_resolve_split_fs/2).
+split_action(split_into(field(N), var(Arr), SepTerm)) -->
     "split",
     ws,
     "(",
@@ -3268,12 +3303,73 @@ split_action(split_into(field(N), var(Arr), string(Sep))) -->
     ws,
     identifier(Arr),
     ws,
+    split_separator(SepTerm),
+    ws,
+    ")".
+
+% `, "sep"`, or nothing: the two-argument form separates on FS, the `fs` marker
+% resolved by plawk_resolve_split_fs/2 once the whole program is parsed.
+split_separator(string(Sep)) -->
     ",",
     ws,
     quoted_string(SepCodes),
     { SepCodes \== [], string_codes(Sep, SepCodes) },
-    ws,
-    ")".
+    !.
+split_separator(fs) -->
+    [].
+
+%% plawk_resolve_split_fs(+Program0, -Program) is det.
+%
+%  The two-argument `split($N, arr)` separates on FS. Resolved here when FS is
+%  static: never assigned (the default " ", whitespace splitting) or assigned only
+%  in BEGIN, each time to the same string literal. Any other FS (set in a rule, or
+%  to different values) leaves the `fs` marker, which no driver lowers -- the
+%  program declines rather than split on a stale separator.
+plawk_resolve_split_fs(Program0, Program) :-
+    (   sub_term(T, Program0), T == fs
+    ->  plawk_static_fs(Program0, FsTerm),
+        plawk_replace_split_fs(Program0, FsTerm, Program)
+    ;   Program = Program0
+    ).
+
+plawk_static_fs(program(Begin, Rules, End), Fs) :-
+    findall(V, ( sub_term(T, Begin), compound(T), T = set(var('FS'), V) ), BeginSets),
+    (   ( sub_term(T2, Rules) ; sub_term(T2, End) ),
+        compound(T2), T2 = set(var('FS'), _)
+    ->  Fs = fs                                   % FS changes at run time
+    ;   BeginSets == []
+    ->  Fs = string(" ")
+    ;   sort(BeginSets, [string(S)])
+    ->  Fs = string(S)
+    ;   Fs = fs
+    ).
+plawk_static_fs(_Other, fs).
+
+plawk_replace_split_fs(T, _Fs, T) :-
+    var(T),
+    !.
+plawk_replace_split_fs(split_into(Src, Arr, fs), Fs, split_into(Src, Arr, Fs)) :-
+    !.
+plawk_replace_split_fs(T0, Fs, T) :-
+    compound(T0),
+    !,
+    T0 =.. [F | As0],
+    maplist([A0, A]>>plawk_replace_split_fs(A0, Fs, A), As0, As),
+    T =.. [F | As].
+plawk_replace_split_fs(T, _Fs, T).
+
+truth_pat_operand(field(N)) -->
+    "$", integer_codes(NCodes),
+    { NCodes \== [], number_codes(N, NCodes), N >= 1 }.
+truth_pat_operand(special('NF')) -->
+    "NF", identifier_boundary.
+
+% What may follow a pattern operand that makes it more than a bare truth test: a
+% comparison, a match, or arithmetic.
+truth_pat_continues --> numeric_cmp_op(_).
+truth_pat_continues --> "~".
+truth_pat_continues --> "!~".
+truth_pat_continues --> [C], { memberchk(C, `+-*/%^`) }.
 
 %% delete_action(-Action)//
 %
@@ -3459,6 +3555,13 @@ while_cmp(cmp(special(length), Op, Rhs)) -->
 % the element numerically (an absent element is 0) on counter tables only; every
 % other table kind, and every route without element-read support (loop
 % conditions, END), declines.
+% An element against a FLOAT literal (`if (a[$1] > 5.5)`): before the int RHS,
+% which would take `5` and leave `.5`. Only after an element -- a variable LHS
+% keeps scalar_f64_cmp (if_condition falls through to the pattern grammar).
+while_cmp(cmp(Elem, Op, FC)) -->
+    cond_elem_read(Elem),
+    ws, numeric_cmp_op(Op), ws, signed_float_lit(FC),
+    !.
 while_cmp(cmp(Elem, Op, Rhs)) -->
     cond_elem_read(Elem),
     ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
@@ -3466,6 +3569,31 @@ while_cmp(cmp(var(V), Op, Rhs)) -->
     identifier(V),
     { \+ scalar_cmp_reserved_name(V) },
     ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+% A bare operand is a TRUTH test (`if (n)`, `if (!seen)`, `while (x)`,
+% `if (c[$1])`, `if ($1)`, `if (NF)`): awk's truth value -- a number is true
+% when nonzero, a string when non-empty, a strnum (a field, input-derived text)
+% numerically when it looks numeric and by emptiness otherwise. Tried last: an
+% operand followed by a comparison the clauses above cannot take leaves that
+% comparison unparsed, so the `if` falls back to the pattern grammar.
+while_cmp(not(C)) -->
+    "!", ws,
+    while_cmp(C).
+while_cmp(truth(X)) -->
+    truth_operand(X).
+
+truth_operand(special(Name)) -->
+    match_special_name(Name), identifier_boundary,
+    !.
+truth_operand(field(N)) -->
+    "$", integer_codes(NCodes),
+    { NCodes \== [], number_codes(N, NCodes), N >= 1 },
+    !.
+truth_operand(Elem) -->
+    cond_elem_read(Elem),
+    !.
+truth_operand(var(V)) -->
+    identifier(V),
+    { \+ scalar_cmp_reserved_name(V) }.
 
 match_special_name('RSTART') --> "RSTART".
 match_special_name('RLENGTH') --> "RLENGTH".
