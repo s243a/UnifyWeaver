@@ -1298,6 +1298,7 @@ plawk_program_native_driver_ir(
     plawk_pattern_guard_ir(Pattern, FieldSeparator, GuardGlobalIR-GuardCallIR),
     plawk_field_assign_sets_ir(SetFields, AssignGlobalIR, SetBodyIR),
     plawk_field_gsub_free_ir(SetFields, GsubFreeIR),
+    plawk_field_edit_output_ir(SetFields, OutDirtyIR, OutPtr),
     plawk_field_ofs_global(OutputSeparator, FieldOfsGlobal, OfsArrLen, OfsSepLen),
     % The OFS-joined record, then the ORS via the shared terminator. OFS
     % separates the record's fields; ORS terminates the record -- two separate
@@ -1311,15 +1312,15 @@ plawk_program_native_driver_ir(
 print_line:
   %fa_fb = call %WamFieldBuf* @wam_fields_new(i8* %line_s, i8 ~w)
 ~w
-  %fa_joined = call i8* @wam_fields_join_str(%WamFieldBuf* %fa_fb, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_field_ofs, i64 0, i64 0), i64 ~w)
+  %fa_joined = call i8* @wam_fields_join_str(%WamFieldBuf* %fa_fb, i8* getelementptr inbounds ([~w x i8], [~w x i8]* @.plawk_field_ofs, i64 0, i64 0), i64 ~w)~w
   %fa_out_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_string, i32 0, i32 0
-  %fa_out_pr = call i32 (i8*, ...) @printf(i8* %fa_out_fmt, i8* %fa_joined)
+  %fa_out_pr = call i32 (i8*, ...) @printf(i8* %fa_out_fmt, i8* ~w)
 ~w
   call void @free(i8* %fa_joined)
   call void @wam_fields_free(%WamFieldBuf* %fa_fb)~w
   br label %continue_loop',
         [GuardCallIR, FieldSeparator, SetBodyIR, OfsArrLen, OfsArrLen, OfsSepLen,
-         FieldAssignTermIR, GsubFreeIR]),
+         OutDirtyIR, OutPtr, FieldAssignTermIR, GsubFreeIR]),
     plawk_ors_global_line(BeginClauses, OrsGlobalLine),
     format(atom(RuntimeGlobals),
 '@.plawk_surface_print_line = private constant [4 x i8] c"%s\\0A\\00"
@@ -1338,6 +1339,39 @@ print_line:
         driver_blocks(RuntimeGlobals, BeginIR, '', lowered_match, RecordIR, '',
             success, 'success:\n  ret i32 0'),
         DriverIR).
+
+%% plawk_field_edit_output_ir(+SetFields, -DirtyIR, -OutPtr)
+%  What `print $0` prints after the edits. A field assignment always rebuilds $0
+%  with OFS (awk assigns the field even to its own value: `$1 = $1`), so the joined
+%  record is printed -- DirtyIR is '' and the IR is as before. When every edit is a
+%  sub/gsub, the field is assigned only if a substitution happened: a sub that
+%  matches nothing leaves $0 as read (gawk prints `a,b0` unchanged under FS ","
+%  where the rebuild printed `a b0`). Each call's count (@plawk_gsub_count, loaded
+%  right after it into %fa_gs_<I>_cnt) decides, and a select picks the joined
+%  record or the input line. Each DirtyIR line carries its leading newline.
+plawk_field_edit_output_ir(SetFields, '', '%fa_joined') :-
+    memberchk(set_field(_, _), SetFields),
+    !.
+plawk_field_edit_output_ir(SetFields, DirtyIR, '%fa_out_ptr') :-
+    findall(I, nth0(I, SetFields, regex_sub_field(_, _, _, _)), Is),
+    findall(Line,
+        ( member(I, Is),
+          format(atom(Line), '\n  %fa_gs_~w_hit = icmp sgt i64 %fa_gs_~w_cnt, 0', [I, I]) ),
+        HitLines),
+    plawk_field_edit_or_lines(Is, '%fa_dirty', OrLines, DirtyVar),
+    format(atom(SelL),
+        '\n  %fa_out_ptr = select i1 ~w, i8* %fa_joined, i8* %line_s', [DirtyVar]),
+    append([HitLines, OrLines, [SelL]], Lines),
+    atomic_list_concat(Lines, DirtyIR).
+
+% OR the per-call hit flags together (a single call needs no `or`).
+plawk_field_edit_or_lines([I], _Name, [], Var) :-
+    !,
+    format(atom(Var), '%fa_gs_~w_hit', [I]).
+plawk_field_edit_or_lines([I | Is], Name, [Line | Lines], Var) :-
+    plawk_field_edit_or_lines(Is, Name, Lines, RestVar),
+    format(atom(Var), '~w_~w', [Name, I]),
+    format(atom(Line), '\n  ~w = or i1 %fa_gs_~w_hit, ~w', [Var, I, RestVar]).
 
 %% plawk_field_gsub_free_ir(+SetFields, -FreeIR)
 %  A field sub/gsub result is an owned handle that the field buffer points into
@@ -1395,7 +1429,8 @@ plawk_field_assign_fold([regex_sub_field(Global, Regex, Repl, N) | Rest], Index,
 %  `sub/gsub(/re/, repl, $N)`: read field N's current slice from the buffer, run
 %  @wam_regex_gsub over it (per-site pattern/cache; `&` expands to the match),
 %  resolve the result handle to text, and store it back into field N. Rebuilds
-%  $0 at the join, like a field assignment; the handle is freed after the join
+%  $0 at the join when it substituted (its count, %fa_gs_<I>_cnt, read by
+%  plawk_field_edit_output_ir/3); the handle is freed after the join
 %  (plawk_field_gsub_free_ir/2).
 plawk_field_gsub_one(Global, Regex, Repl, N, Index, GlobalPart, BodyPart) :-
     format(atom(PatName), 'fa_gs_~w_pat', [Index]),
@@ -1413,6 +1448,7 @@ plawk_field_gsub_one(Global, Regex, Repl, N, Index, GlobalPart, BodyPart) :-
   %fa_gs_~w_pp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
   %fa_gs_~w_rp = getelementptr [~w x i8], [~w x i8]* @.~w, i64 0, i64 0
   %fa_gs_~w_id = call i64 @wam_regex_gsub(i8* %fa_gs_~w_sp, i64 %fa_gs_~w_sn, i8* %fa_gs_~w_pp, i8** @~w, i8* %fa_gs_~w_rp, i64 ~w, i1 ~w, i64* @plawk_gsub_count)
+  %fa_gs_~w_cnt = load i64, i64* @plawk_gsub_count
   %fa_gs_~w_ns = call i8* @wam_atom_to_string(i64 %fa_gs_~w_id)
   %fa_gs_~w_nl = call i64 @strlen(i8* %fa_gs_~w_ns)
   call void @wam_fields_set(%WamFieldBuf* %fa_fb, i64 ~w, i8* %fa_gs_~w_ns, i64 %fa_gs_~w_nl)',
@@ -1422,6 +1458,7 @@ plawk_field_gsub_one(Global, Regex, Repl, N, Index, GlobalPart, BodyPart) :-
          Index, PatBytes, PatBytes, PatName,
          Index, ReplBytes, ReplBytes, ReplName,
          Index, Index, Index, Index, CacheName, Index, ReplLen, GlobalBool,
+         Index,
          Index, Index,
          Index, Index,
          N, Index, Index]).
@@ -7520,6 +7557,14 @@ plawk_while_cond_ok(or(A, B)) :-
     !,
     plawk_while_cond_ok(A),
     plawk_while_cond_ok(B).
+plawk_while_cond_ok(not(A)) :-
+    !,
+    plawk_while_cond_ok(A).
+% a truth test of a scalar or a numeric special (`while (n)`, `while (!done)`)
+plawk_while_cond_ok(truth(var(_V))) :- !.
+plawk_while_cond_ok(truth(special(Name))) :-
+    !,
+    plawk_match_special(Name).
 plawk_while_cond_ok(cmp(var(_V), Op, Rhs)) :-
     plawk_icmp_pred(Op, _Pred),
     plawk_while_cond_rhs_ok(Rhs).
@@ -7572,6 +7617,13 @@ plawk_while_cond_vars(or(A, B), Vars) :-
 % condition variable is compared as an i64) and turn `k = $1` into a number --
 % so an element read contributes no variables; a scalar key must already have
 % its own slot, or the read declines.
+plawk_while_cond_vars(not(A), Vars) :-
+    !,
+    plawk_while_cond_vars(A, Vars).
+% a truth-tested scalar needs its slot (its kind comes from its assignments)
+plawk_while_cond_vars(truth(X), Vars) :-
+    !,
+    plawk_cond_operand_vars(X, Vars).
 plawk_while_cond_vars(cmp(L, _Op, R), Vars) :-
     ( L = assoc(_, _) ; R = assoc(_, _) ; L = ssa(_) ; R = ssa(_) ),
     !,
@@ -7608,9 +7660,35 @@ plawk_cond_elem_reads(or(A, B), Slots, Vs, Plan, FS, Base, I0, I, or(A1, B1), G,
     plawk_cond_elem_reads(B, Slots, Vs, Plan, FS, Base, I1, I, B1, GB, LB),
     append(GA, GB, G),
     append(LA, LB, L).
+plawk_cond_elem_reads(not(A), Slots, Vs, Plan, FS, Base, I0, I, not(A1), G, L) :-
+    !,
+    plawk_cond_elem_reads(A, Slots, Vs, Plan, FS, Base, I0, I, A1, G, L).
+plawk_cond_elem_reads(truth(X0), Slots, Vs, Plan, FS, Base, I0, I, truth(X1), G, L) :-
+    !,
+    plawk_cond_cmp_operand(X0, Slots, Vs, Plan, FS, Base, I0, I, X1, G, L).
+
+%% plawk_cond_cmp_operand(+Operand0, ..., -Operand, -Globals, -Lines)
+%  A comparison / truth operand. An element of a STRING-kind table (`a[k] = $2 ""`)
+%  is read as ssa_text(Ref, 2): it compares as a string even against a number
+%  (array plan item 5(d)) -- a leaf only conditions produce, so arithmetic never
+%  sees it. Every other operand goes through plawk_cond_elem_operand/11.
+plawk_cond_cmp_operand(assoc(var(A), Key), Slots, Vs, Plan, FS, Base, I0, I,
+        ssa_text(Ref, 2), Globals, Lines) :-
+    plawk_string_array(A),
+    \+ plawk_assoc_plan_posarray_array(Plan, A),
+    !,
+    plawk_assoc_table_index(Plan, A, TableIndex),
+    format(atom(EBase), '~w_e~w', [Base, I0]),
+    plawk_cond_elem_key(Key, Slots, Vs, FS, Base, EBase, KeyId, Globals, KeyLines),
+    format(atom(Ref), '%~w_val', [EBase]),
+    plawk_assoc_elem_call_line(Ref, i64, i64, get, TableIndex, KeyId, ReadL),
+    append(KeyLines, [ReadL], Lines),
+    I is I0 + 1.
+plawk_cond_cmp_operand(Operand, Slots, Vs, Plan, FS, Base, I0, I, Operand1, G, L) :-
+    plawk_cond_elem_operand(Operand, Slots, Vs, Plan, FS, Base, I0, I, Operand1, G, L).
 plawk_cond_elem_reads(cmp(L0, Op, R0), Slots, Vs, Plan, FS, Base, I0, I, cmp(L1, Op, R1), G, L) :-
-    plawk_cond_elem_operand(L0, Slots, Vs, Plan, FS, Base, I0, I1, L1, GL, LL),
-    plawk_cond_elem_operand(R0, Slots, Vs, Plan, FS, Base, I1, I, R1, GR, LR),
+    plawk_cond_cmp_operand(L0, Slots, Vs, Plan, FS, Base, I0, I1, L1, GL, LL),
+    plawk_cond_cmp_operand(R0, Slots, Vs, Plan, FS, Base, I1, I, R1, GR, LR),
     append(GL, GR, G),
     append(LL, LR, L).
 
@@ -7650,6 +7728,20 @@ plawk_posarray_key_ir(var(Name), Slots, Vs, KeyIR) :-
     nth0(Idx, Slots, scalar_counter(Name)),
     !,
     nth0(Idx, Vs, KeyIR).
+
+%% plawk_concat_elem_read_part(+Slots, +Values, +Plan, +FS, +Base, +Part0, -Part,
+%%     +I0-(G0-L0), -I-(G-L))
+%  A concat part that is a strnum element becomes its read ssa_strnum leaf (the read
+%  lines accumulate); any other part is kept. A non-strnum element fails.
+plawk_concat_elem_read_part(Slots, Vs, Plan, FS, Base, assoc(var(A), Key), Leaf,
+        I0-(G0-L0), I-(G-L)) :-
+    !,
+    plawk_cond_elem_operand(assoc(var(A), Key), Slots, Vs, Plan, FS, Base, I0, I,
+        Leaf, G1, L1),
+    Leaf = ssa_strnum(_),
+    append(G0, G1, G),
+    append(L0, L1, L).
+plawk_concat_elem_read_part(_Slots, _Vs, _Plan, _FS, _Base, Part, Part, Acc, Acc).
 
 %% plawk_numeric_read_array(+Array, -Kind) is semidet.
 %  An array whose elements may be READ as numbers: a counter table (i64 cells), a
@@ -7785,6 +7877,61 @@ plawk_cond_elem_key_comp(field(N), fld(N)) :- integer(N), N >= 0.
 plawk_cond_elem_key_comp(string(S), lit(S)).
 plawk_cond_elem_key_comp(int(N), lit(Text)) :- integer(N), number_string(N, Text).
 
+%% plawk_truth_cond_lines(+Operand, +Slots, +Values, +FS, +Base, +Path, -CondVar, -Lines)
+plawk_truth_cond_lines(ssa_strnum(Id), _Slots, _CV, _FS, Base, Path, CondVar, Lines) :-
+    !,
+    plawk_strnum_truth_lines(Id, Base, Path, CondVar, Lines).
+% a string-kind element: true when non-empty
+plawk_truth_cond_lines(ssa_text(Id, 2), _Slots, _CV, _FS, Base, Path, CondVar,
+        [TextL, ByteL, CmpL]) :-
+    !,
+    format(atom(TextL), '  %~w_tr~w_s = call i8* @wam_sv_cstr(i64 ~w)', [Base, Path, Id]),
+    format(atom(ByteL), '  %~w_tr~w_c = load i8, i8* %~w_tr~w_s', [Base, Path, Base, Path]),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(CmpL), '  ~w = icmp ne i8 %~w_tr~w_c, 0', [CondVar, Base, Path]).
+plawk_truth_cond_lines(var(Name), Slots, CV, _FS, Base, Path, CondVar, Lines) :-
+    memberchk(scalar_strnum(Name), Slots),
+    !,
+    plawk_while_cond_operand(var(Name), Slots, CV, Base, Path, t, Id, _),
+    plawk_strnum_truth_lines(Id, Base, Path, CondVar, Lines).
+plawk_truth_cond_lines(var(Name), Slots, CV, _FS, Base, Path, CondVar,
+        [TextL, ByteL, CmpL]) :-
+    memberchk(scalar_string(Name), Slots),
+    !,
+    plawk_while_cond_operand(var(Name), Slots, CV, Base, Path, t, Id, _),
+    format(atom(TextL), '  %~w_tr~w_s = call i8* @wam_sv_cstr(i64 ~w)', [Base, Path, Id]),
+    format(atom(ByteL), '  %~w_tr~w_c = load i8, i8* %~w_tr~w_s', [Base, Path, Base, Path]),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(CmpL), '  ~w = icmp ne i8 %~w_tr~w_c, 0', [CondVar, Base, Path]).
+% A field is a strnum; there is no current record in END.
+plawk_truth_cond_lines(field(N), _Slots, _CV, FS, Base, Path, CondVar, [TextL | Lines]) :-
+    !,
+    integer(FS),
+    integer(N), N >= 1,
+    \+ sub_atom(Base, 0, _, _, plawk_endif),
+    \+ sub_atom(Base, 0, _, _, end_body),
+    format(atom(Text), '%~w_tr~w_f', [Base, Path]),
+    format(atom(TextL),
+        '  ~w = call i8* @wam_atom_field_cstr(%Value %line, i64 ~w, i8 ~w)', [Text, N, FS]),
+    plawk_strnum_text_truth_lines(Text, Base, Path, CondVar, Lines).
+% A number (a counter / double slot, an i64 special, a counter / double element)
+plawk_truth_cond_lines(X, Slots, CV, FS, Base, Path, CondVar, Lines) :-
+    (   X = var(Name)
+    ->  ( memberchk(scalar_counter(Name), Slots) ; memberchk(scalar_double(Name), Slots) )
+    ;   memberchk(X, [special(_), ssa(_), ssa_f64(_)])
+    ->  true
+    ),
+    plawk_while_cond_build(cmp(X, ne, int(0)), Slots, CV, FS, Base, Path, CondVar, Lines).
+
+plawk_strnum_truth_lines(Id, Base, Path, CondVar, [TextL | Lines]) :-
+    format(atom(Text), '%~w_tr~w_s', [Base, Path]),
+    format(atom(TextL), '  ~w = call i8* @wam_sv_cstr(i64 ~w)', [Text, Id]),
+    plawk_strnum_text_truth_lines(Text, Base, Path, CondVar, Lines).
+
+plawk_strnum_text_truth_lines(Text, Base, Path, CondVar, [Line]) :-
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = call i1 @wam_strnum_truth(i8* ~w)', [CondVar, Text]).
+
 %% plawk_while_cond_ir(+Cond, +Slots, +CondValues, +Base, -CondVar, -IR)
 %
 %  Emit the loop-condition test as a block of IR lines ending in an i1 value
@@ -7804,6 +7951,23 @@ plawk_while_cond_build(and(A, B), Slots, CV, FS, Base, Path, CondVar, Lines) :-
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
     format(atom(Line), '  ~w = and i1 ~w, ~w', [CondVar, VA, VB]),
     append([LA, LB, [Line]], Lines).
+% `!C`
+plawk_while_cond_build(not(A), Slots, CV, FS, Base, Path, CondVar, Lines) :-
+    !,
+    atom_concat(Path, 'n', PA),
+    plawk_while_cond_build(A, Slots, CV, FS, Base, PA, VA, LA),
+    format(atom(CondVar), '%~w_cond~w', [Base, Path]),
+    format(atom(Line), '  ~w = xor i1 ~w, true', [CondVar, VA]),
+    append(LA, [Line], Lines).
+% A TRUTH test (`if (x)`, `if (c[$1])`, `if ($1)`, `if (NF)`): awk's truth value
+% by the operand's kind. A number -- a counter or double slot, an i64 special, a
+% counter / double element -- is `!= 0`, the comparison the clauses below emit. A
+% string slot is true when non-empty. A strnum -- a strnum slot or element, a field
+% -- goes through @wam_strnum_truth (numeric when it looks numeric, else by
+% emptiness). Anything else (a name with no slot) declines.
+plawk_while_cond_build(truth(X), Slots, CV, FS, Base, Path, CondVar, Lines) :-
+    !,
+    plawk_truth_cond_lines(X, Slots, CV, FS, Base, Path, CondVar, Lines).
 plawk_while_cond_build(or(A, B), Slots, CV, FS, Base, Path, CondVar, Lines) :-
     !,
     atom_concat(Path, 'l', PA),
@@ -7924,16 +8088,16 @@ plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, _FS, Base,
     plawk_while_cond_operand(var(R), Slots, CondValues, Base, Path, r, RId, _),
     plawk_icmp_pred(Op, Pred),
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
-    format(atom(LineLS),
-        '  %~w_sn~w_ls = call i8* @wam_atom_to_string(i64 ~w)', [Base, Path, LId]),
-    format(atom(LineRS),
-        '  %~w_sn~w_rs = call i8* @wam_atom_to_string(i64 ~w)', [Base, Path, RId]),
+    format(atom(LB), '~w_sn~w_l', [Base, Path]),
+    format(atom(RB), '~w_sn~w_r', [Base, Path]),
+    plawk_text_operand_lines(LB, LId, 1, LS, LK, LLines),
+    plawk_text_operand_lines(RB, RId, 1, RS, RK, RLines),
     format(atom(LineRC),
-        '  %~w_sn~w_rc = call i32 @wam_strnum_cmp(i8* %~w_sn~w_ls, i8 1, i8* %~w_sn~w_rs, i8 1)',
-        [Base, Path, Base, Path, Base, Path]),
+        '  %~w_sn~w_rc = call i32 @wam_strnum_cmp(i8* ~w, i8 ~w, i8* ~w, i8 ~w)',
+        [Base, Path, LS, LK, RS, RK]),
     format(atom(LineCmp),
         '  ~w = icmp ~w i32 %~w_sn~w_rc, 0', [CondVar, Pred, Base, Path]),
-    Lines = [LineLS, LineRS, LineRC, LineCmp].
+    append([LLines, RLines, [LineRC, LineCmp]], Lines).
 % string-vs-string (or string-vs-strnum) slot comparison: a string operand makes
 % the comparison lexical (awk's rule), so both values resolve to text
 % (@wam_sv_cstr: unset reads "") and @wam_strnum_cmp gets kind 2 for a string, 1
@@ -7950,16 +8114,16 @@ plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, _FS, Base,
     plawk_while_cond_operand(var(R), Slots, CondValues, Base, Path, r, RId, _),
     plawk_icmp_pred(Op, Pred),
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
-    format(atom(LineLS),
-        '  %~w_st~w_ls = call i8* @wam_sv_cstr(i64 ~w)', [Base, Path, LId]),
-    format(atom(LineRS),
-        '  %~w_st~w_rs = call i8* @wam_sv_cstr(i64 ~w)', [Base, Path, RId]),
+    format(atom(LB), '~w_st~w_l', [Base, Path]),
+    format(atom(RB), '~w_st~w_r', [Base, Path]),
+    plawk_text_operand_lines(LB, LId, LK, LS, LKV, LLines),
+    plawk_text_operand_lines(RB, RId, RK, RS, RKV, RLines),
     format(atom(LineRC),
-        '  %~w_st~w_rc = call i32 @wam_strnum_cmp(i8* %~w_st~w_ls, i8 ~w, i8* %~w_st~w_rs, i8 ~w)',
-        [Base, Path, Base, Path, LK, Base, Path, RK]),
+        '  %~w_st~w_rc = call i32 @wam_strnum_cmp(i8* ~w, i8 ~w, i8* ~w, i8 ~w)',
+        [Base, Path, LS, LKV, RS, RKV]),
     format(atom(LineCmp),
         '  ~w = icmp ~w i32 %~w_st~w_rc, 0', [CondVar, Pred, Base, Path]),
-    Lines = [LineLS, LineRS, LineRC, LineCmp].
+    append([LLines, RLines, [LineRC, LineCmp]], Lines).
 % A strnum ELEMENT read (ssa_strnum leaf, array plan item 5(d)) as a comparison
 % operand: awk compares a strnum numerically only when its text looks numeric and
 % the other side is a number or another numeric-looking strnum; otherwise as
@@ -7970,20 +8134,25 @@ plawk_while_cond_build(cmp(var(L), Op, var(R)), Slots, CondValues, _FS, Base,
 % clauses below have no ssa_strnum operand row).
 plawk_while_cond_build(cmp(Left, Op, Rhs), Slots, CondValues, _FS, Base,
         Path, CondVar, Lines) :-
-    ( Left = ssa_strnum(_) ; Rhs = ssa_strnum(_) ),
+    ( plawk_text_leaf(Left, _, _) ; plawk_text_leaf(Rhs, _, _) ),
     !,
-    (   Left = ssa_strnum(_)
-    ->  L = Left, R = Rhs, Op1 = Op
-    ;   L = Rhs, R = Left, plawk_swap_cmp_op(Op, Op1)
+    (   plawk_text_leaf(Left, LId, LKind)
+    ->  R = Rhs, Op1 = Op
+    ;   plawk_text_leaf(Rhs, LId, LKind), R = Left, plawk_swap_cmp_op(Op, Op1)
     ),
-    L = ssa_strnum(LId),
     plawk_icmp_pred(Op1, Pred),
     format(atom(B), '~w_se~w', [Base, Path]),
-    format(atom(LS), '  %~w_ls = call i8* @wam_sv_cstr(i64 ~w)', [B, LId]),
+    format(atom(LB), '~w_l', [B]),
+    plawk_text_operand_lines(LB, LId, LKind, _LS, _LK, LLines),
     plawk_strnum_elem_cmp_rhs(R, Slots, CondValues, Base, Path, B, RcLines),
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
     format(atom(CmpL), '  ~w = icmp ~w i32 %~w_rc, 0', [CondVar, Pred, B]),
-    append([[LS], RcLines, [CmpL]], Lines).
+    append([LLines, RcLines, [CmpL]], Lines).
+
+%% plawk_text_leaf(+Leaf, -Id, -Kind) is semidet.
+%  A read text element: ssa_strnum (a strnum, kind 1) or ssa_text(Id, Kind).
+plawk_text_leaf(ssa_strnum(Id), Id, 1).
+plawk_text_leaf(ssa_text(Id, Kind), Id, Kind).
 
 %% plawk_strnum_elem_cmp_rhs(+Rhs, +Slots, +Values, +Base, +Path, +B, -Lines)
 %  %B_rc = the three-way comparison of the strnum text %B_ls with Rhs.
@@ -7991,7 +8160,7 @@ plawk_strnum_elem_cmp_rhs(int(N), _Slots, _Values, _Base, _Path, B, [RcL]) :-
     integer(N),
     !,
     format(atom(RcL),
-        '  %~w_rc = call i32 @wam_strnum_cmp_int(i8* %~w_ls, i8 1, i64 ~w)', [B, B, N]).
+        '  %~w_rc = call i32 @wam_strnum_cmp_int(i8* %~w_l_t, i8 %~w_l_k, i64 ~w)', [B, B, B, N]).
 plawk_strnum_elem_cmp_rhs(string(S), _Slots, _Values, _Base, _Path, B, Lines) :-
     !,
     string_codes(S, Codes),
@@ -8005,39 +8174,44 @@ plawk_strnum_elem_cmp_rhs(string(S), _Slots, _Values, _Base, _Path, B, Lines) :-
         '  %~w_rs = getelementptr [~w x i8], [~w x i8]* %~w_lit, i64 0, i64 0',
         [B, Size, Size, B]),
     format(atom(RcL),
-        '  %~w_rc = call i32 @wam_strnum_cmp(i8* %~w_ls, i8 1, i8* %~w_rs, i8 2)',
-        [B, B, B]),
+        '  %~w_rc = call i32 @wam_strnum_cmp(i8* %~w_l_t, i8 %~w_l_k, i8* %~w_rs, i8 2)',
+        [B, B, B, B]),
     Lines = [BufL, StoreL, PtrL, RcL].
-plawk_strnum_elem_cmp_rhs(ssa_strnum(RId), _Slots, _Values, _Base, _Path, B,
-        [RsL, RcL]) :-
+plawk_strnum_elem_cmp_rhs(RLeaf, _Slots, _Values, _Base, _Path, B,
+        Lines) :-
+    plawk_text_leaf(RLeaf, RId, RK0),
     !,
-    format(atom(RsL), '  %~w_rs = call i8* @wam_sv_cstr(i64 ~w)', [B, RId]),
+    format(atom(RB), '~w_r', [B]),
+    plawk_text_operand_lines(RB, RId, RK0, RS, RK, RLines),
     format(atom(RcL),
-        '  %~w_rc = call i32 @wam_strnum_cmp(i8* %~w_ls, i8 1, i8* %~w_rs, i8 1)',
-        [B, B, B]).
-plawk_strnum_elem_cmp_rhs(var(Name), Slots, Values, Base, Path, B, [RsL, RcL]) :-
-    plawk_cond_var_text_kind(Name, Slots, RK),
+        '  %~w_rc = call i32 @wam_strnum_cmp(i8* %~w_l_t, i8 %~w_l_k, i8* ~w, i8 ~w)',
+        [B, B, B, RS, RK]),
+    append(RLines, [RcL], Lines).
+plawk_strnum_elem_cmp_rhs(var(Name), Slots, Values, Base, Path, B, Lines) :-
+    plawk_cond_var_text_kind(Name, Slots, RK0),
     !,
     plawk_while_cond_operand(var(Name), Slots, Values, Base, Path, r, RId, _),
-    format(atom(RsL), '  %~w_rs = call i8* @wam_sv_cstr(i64 ~w)', [B, RId]),
+    format(atom(RB), '~w_r', [B]),
+    plawk_text_operand_lines(RB, RId, RK0, RS, RK, RLines),
     format(atom(RcL),
-        '  %~w_rc = call i32 @wam_strnum_cmp(i8* %~w_ls, i8 1, i8* %~w_rs, i8 ~w)',
-        [B, B, B, RK]).
+        '  %~w_rc = call i32 @wam_strnum_cmp(i8* %~w_l_t, i8 %~w_l_k, i8* ~w, i8 ~w)',
+        [B, B, B, RS, RK]),
+    append(RLines, [RcL], Lines).
 % any other number: a double (an i64 widens), compared through its value
 plawk_strnum_elem_cmp_rhs(Rhs, Slots, Values, Base, Path, B, Lines) :-
     \+ Rhs = var(_),
     \+ Rhs = string(_),
     plawk_cond_f64_operand(Rhs, Slots, Values, Base, Path, r, RRef, RLines),
     format(atom(RcL),
-        '  %~w_rc = call i32 @wam_strnum_cmp_double(i8* %~w_ls, i8 1, double ~w)',
-        [B, B, RRef]),
+        '  %~w_rc = call i32 @wam_strnum_cmp_double(i8* %~w_l_t, i8 %~w_l_k, double ~w)',
+        [B, B, B, RRef]),
     append(RLines, [RcL], Lines).
 plawk_strnum_elem_cmp_rhs(var(Name), Slots, Values, Base, Path, B, Lines) :-
     ( memberchk(scalar_counter(Name), Slots) ; memberchk(scalar_double(Name), Slots) ),
     plawk_cond_f64_operand(var(Name), Slots, Values, Base, Path, r, RRef, RLines),
     format(atom(RcL),
-        '  %~w_rc = call i32 @wam_strnum_cmp_double(i8* %~w_ls, i8 1, double ~w)',
-        [B, B, RRef]),
+        '  %~w_rc = call i32 @wam_strnum_cmp_double(i8* %~w_l_t, i8 %~w_l_k, double ~w)',
+        [B, B, B, RRef]),
     append(RLines, [RcL], Lines).
 % A comparison with a DOUBLE operand -- a double scalar slot or a double element
 % read: every operand is taken to double (an integer literal as N.0, an i64 value via
@@ -8087,6 +8261,8 @@ plawk_cond_operand_is_double(var(Name), Slots) :-
     atom(Name),
     memberchk(scalar_double(Name), Slots).
 plawk_cond_operand_is_double(ssa_f64(_), _Slots).
+% a float literal (an element compared with `5.5`): an fdiv constant
+plawk_cond_operand_is_double(float_const(_M, _D), _Slots).
 
 %% plawk_cond_f64_operand(+Operand, +Slots, +Values, +Base, +Path, +Side, -Ref, -Lines)
 %  Operand as a double SSA value (or literal).
@@ -8096,6 +8272,12 @@ plawk_cond_f64_operand(int(N), _Slots, _Values, _Base, _Path, _Side, Ref, []) :-
     format(atom(Ref), '~w.0', [N]).
 plawk_cond_f64_operand(ssa_f64(Ref), _Slots, _Values, _Base, _Path, _Side, Ref, []) :-
     !.
+plawk_cond_f64_operand(float_const(M, D), _Slots, _Values, Base, Path, Side, Ref,
+        [Line]) :-
+    integer(M), integer(D), D > 0,
+    !,
+    format(atom(Ref), '%~w_cond~w_~w_fc', [Base, Path, Side]),
+    format(atom(Line), '  ~w = fdiv double ~w.0, ~w.0', [Ref, M, D]).
 plawk_cond_f64_operand(Operand, Slots, Values, _Base, _Path, _Side, Ref, []) :-
     plawk_cond_operand_is_double(Operand, Slots),
     !,
@@ -8116,14 +8298,29 @@ plawk_cmp_has_strnum_operand(Left, Rhs, Slots) :-
 % Pred. Id is the strnum slot's current SSA value.
 plawk_strnum_cmp_int_lines(Base, Path, Id, N, Pred, CondVar, Lines) :-
     format(atom(CondVar), '%~w_cond~w', [Base, Path]),
-    format(atom(LineS),
-        '  %~w_sni~w_s = call i8* @wam_atom_to_string(i64 ~w)', [Base, Path, Id]),
+    format(atom(B), '~w_sni~w', [Base, Path]),
+    plawk_text_operand_lines(B, Id, 1, Text, Kind, TLines),
     format(atom(LineRC),
-        '  %~w_sni~w_rc = call i32 @wam_strnum_cmp_int(i8* %~w_sni~w_s, i8 1, i64 ~w)',
-        [Base, Path, Base, Path, N]),
+        '  %~w_rc = call i32 @wam_strnum_cmp_int(i8* ~w, i8 ~w, i64 ~w)',
+        [B, Text, Kind, N]),
     format(atom(LineCmp),
-        '  ~w = icmp ~w i32 %~w_sni~w_rc, 0', [CondVar, Pred, Base, Path]),
-    Lines = [LineS, LineRC, LineCmp].
+        '  ~w = icmp ~w i32 %~w_rc, 0', [CondVar, Pred, B]),
+    append(TLines, [LineRC, LineCmp], Lines).
+
+%% plawk_text_operand_lines(+B, +Id, +StaticKind, -Text, -Kind, -Lines)
+%  A text value (an atom id or owned handle) as a comparator operand: its text
+%  (@wam_sv_cstr) and its kind byte. Id 0 is UNSET (atom 0 is reserved, so no value
+%  has it): awk's uninitialised value, which is the number 0 against a numeric
+%  operand and "" otherwise -- exactly kind 0 (number) with text "", as strtod("")
+%  is 0. Any other id keeps StaticKind (1 strnum, 2 string). Reading the unset id
+%  through @wam_atom_to_string instead gave atom 0's NULL, and `x > m` before m was
+%  assigned compared against garbage.
+plawk_text_operand_lines(B, Id, StaticKind, Text, Kind, [TextL, ZeroL, KindL]) :-
+    format(atom(Text), '%~w_t', [B]),
+    format(atom(Kind), '%~w_k', [B]),
+    format(atom(TextL), '  ~w = call i8* @wam_sv_cstr(i64 ~w)', [Text, Id]),
+    format(atom(ZeroL), '  %~w_z = icmp eq i64 ~w, 0', [B, Id]),
+    format(atom(KindL), '  ~w = select i1 %~w_z, i8 0, i8 ~w', [Kind, B, StaticKind]).
 
 % Swap a comparison operator for operand-order reversal (`N OP x` -> `x OP' N`).
 plawk_swap_cmp_op(eq, eq).
@@ -10623,7 +10820,20 @@ plawk_scalar_typed_slots(Rules, Names, Slots) :-
           memberchk(Src, Strnums)
         ),
         StrnumAccs0),
-    sort(StrnumAccs0, StrnumAccs),
+    % `t += a[k]` over a strnum table (or its END planning leaf) is a strtod
+    % reading, like `t += $2` -- seeded here, by its `add`, because the Name-Expr
+    % pairs cannot tell it from the copy `x = a[k]`, which is a strnum.
+    findall(Name,
+        ( member(rule(_Pattern2, Actions2), Rules),
+          plawk_trim_control_tails(Actions2, ActionsT),
+          member(ActionE0, ActionsT),
+          plawk_scalar_nested_action(ActionE0, ActionE),
+          plawk_scalar_action_update(ActionE, Name, add(Elem)),
+          plawk_strnum_elem_operand(Elem)
+        ),
+        ElemAccs),
+    append(StrnumAccs0, ElemAccs, StrnumAccs1),
+    sort(StrnumAccs1, StrnumAccs),
     plawk_scalar_double_fixpoint(Updates, Strnums, StrnumAccs, Doubles),
     plawk_scalar_string_names(Rules, Strings0),
     % An ARGV/getline source produces a set_str op, so it also lands in Strings0;
@@ -10633,6 +10843,14 @@ plawk_scalar_typed_slots(Rules, Names, Slots) :-
     % regression). Field strnums are not in Strings0, so this is a no-op for them.
     ord_subtract(Strings0, Strnums, Strings),
     maplist(plawk_scalar_typed_slot(Doubles, Strings, Strnums), Names, Slots).
+
+%% plawk_strnum_elem_operand(+Expr) is semidet.
+%  An element of a strnum table, or its already-read ssa_strnum leaf.
+plawk_strnum_elem_operand(assoc(var(A), _Key)) :-
+    atom(A),
+    plawk_strnum_text_array(A).
+plawk_strnum_elem_operand(ssa_strnum(Ref)) :-
+    atom(Ref).
 
 %% plawk_scalar_nested_action(+Action, -Inner) is nondet.
 %
@@ -10826,6 +11044,10 @@ plawk_scalar_strnum_field_source(set(var(Name), field(FieldIndex)), Name) :-
 % scalar_strnum representation.
 plawk_scalar_strnum_source(Action, Name) :-
     plawk_scalar_strnum_field_source(Action, Name).
+% a copy of a strnum ELEMENT (`x = a[k]`; in END planning, the for-in leaf)
+plawk_scalar_strnum_source(set(var(Name), Elem), Name) :-
+    atom(Name),
+    plawk_strnum_elem_operand(Elem).
 plawk_scalar_strnum_source(set(var(Name), argv_at(N)), Name) :-
     integer(N),
     N >= 0.
@@ -10954,6 +11176,16 @@ plawk_strnum_cond_unsafe_read(or(A, B), Set, Name) :-
     ( plawk_strnum_cond_unsafe_read(A, Set, Name)
     ; plawk_strnum_cond_unsafe_read(B, Set, Name)
     ).
+plawk_strnum_cond_unsafe_read(not(A), Set, Name) :-
+    !,
+    plawk_strnum_cond_unsafe_read(A, Set, Name).
+% A truth test of the strnum itself (`if (x)`) is supported -- @wam_strnum_truth
+% reads its text; any other mention inside the tested operand is not.
+plawk_strnum_cond_unsafe_read(truth(Operand0), _Set, Name) :-
+    !,
+    plawk_strnum_mask_elem_key(Operand0, Operand),
+    Operand \== var(Name),
+    plawk_strnum_term_mentions(Operand, Name).
 plawk_strnum_cond_unsafe_read(cmp(Left0, _Op, Right0), Set, Name) :-
     !,
     plawk_strnum_mask_elem_key(Left0, Left),
@@ -10969,10 +11201,26 @@ plawk_strnum_cond_unsafe_read(Cond, _Set, Name) :-
 plawk_strnum_mask_elem_key(assoc(var(A), var(_)), elem_read(A)) :- !.
 plawk_strnum_mask_elem_key(Operand, Operand).
 
+% an element operand (as the scan sees it: masked key, or already read) of a text
+% table -- strnum or string-kind; both compare through the text comparators
+plawk_strnum_cmp_elem(elem_read(A)) :-
+    plawk_text_array(A).
+plawk_strnum_cmp_elem(assoc(var(A), _Key)) :-
+    atom(A),
+    plawk_string_array(A).
+plawk_strnum_cmp_elem(Elem) :-
+    plawk_strnum_elem_operand(Elem).
+
 % Supported comparison forms that read Name: against another strnum var still in
 % Set, a string literal (handled by the existing string-guard clauses and the
 % strnum-vs-strnum dispatch), or an integer literal (step 3b -- dispatched to
 % @wam_strnum_cmp_int, deciding numeric vs lexical by the strnum's content).
+% a strnum element against the strnum var (`a[k] > m`, the max idiom): the
+% element comparison resolves both to text (plawk_strnum_elem_cmp_rhs/7)
+plawk_strnum_cmp_supported(Elem, var(Name), _Set, Name) :-
+    plawk_strnum_cmp_elem(Elem).
+plawk_strnum_cmp_supported(var(Name), Elem, _Set, Name) :-
+    plawk_strnum_cmp_elem(Elem).
 plawk_strnum_cmp_supported(var(Name), var(Other), Set, Name) :- memberchk(Other, Set).
 plawk_strnum_cmp_supported(var(Other), var(Name), Set, Name) :- memberchk(Other, Set).
 plawk_strnum_cmp_supported(var(Name), string(_), _Set, Name).
@@ -11102,15 +11350,6 @@ plawk_update_expr_is_double(Expr, _Doubles, _Strnums) :-
 plawk_update_expr_is_double(Expr, Doubles, _Strnums) :-
     plawk_expr_scalar_read_name(Expr, Name),
     memberchk(Name, Doubles),
-    !.
-% `t += a[k]` over a strnum table, and that element once read (an END for-in's
-% planning leaf): a strtod reading, like `t += $2`. Not a bare copy `x = a[k]`,
-% which is text (that has no update row, so it never gets here).
-plawk_update_expr_is_double(assoc(var(A), _Key), _Doubles, _Strnums) :-
-    atom(A),
-    plawk_strnum_text_array(A),
-    !.
-plawk_update_expr_is_double(ssa_strnum(_Ref), _Doubles, _Strnums) :-
     !.
 % An arithmetic tree with a strnum variable as an operand (`x + 1`, x = $2).
 plawk_update_expr_is_double(Expr, _Doubles, Strnums) :-
@@ -11394,6 +11633,9 @@ plawk_cond_operand_expr(or(A, B), Expr) :-
     ( plawk_cond_operand_expr(A, Expr) ; plawk_cond_operand_expr(B, Expr) ).
 plawk_cond_operand_expr(cmp(Left, _Op, Right), Expr) :-
     ( Expr = Left ; Expr = Right ).
+plawk_cond_operand_expr(not(A), Expr) :-
+    plawk_cond_operand_expr(A, Expr).
+plawk_cond_operand_expr(truth(X), X).
 
 plawk_scalar_operation_expr(add(Expr), Expr).
 plawk_scalar_operation_expr(set(Expr), Expr).
@@ -19888,6 +20130,12 @@ plawk_scalar_action_update(add(var(Name), ssa(Ref)), Name, add(ssa(Ref))) :-
     atom(Ref).
 plawk_scalar_action_update(add(var(Name), ssa_strnum(Ref)), Name, add(ssa_strnum(Ref))) :-
     atom(Ref).
+% a bare copy of a strnum element (`x = a[k]`, array plan item 5(d)): x is a strnum
+% (plawk_scalar_strnum_source/2); the element is read and copied (duplicated) into
+% x's slot. Only a strnum target lowers -- see the readers of this term.
+plawk_scalar_action_update(set(var(Name), Elem), Name, set(Elem)) :-
+    atom(Name),
+    plawk_strnum_elem_operand(Elem).
 % a bare copy of an element already read (only produced for the iterated element of
 % an END for-in, which is present by construction -- arrays PR 3d-2)
 plawk_scalar_action_update(set(var(Name), ssa(Ref)), Name, set(ssa(Ref))) :-
@@ -20032,6 +20280,8 @@ plawk_scalar_action_update(set(var(Name), compile_file_handle(Arg)), Name,
 plawk_str_scalar_part_ok(field(Index)) :- integer(Index), Index >= 0.
 plawk_str_scalar_part_ok(string(Value)) :- string(Value).
 plawk_str_scalar_part_ok(var(Name)) :- atom(Name).
+% a strnum element (`s = s a[$1]`, array plan item 5(d)), read as its text
+plawk_str_scalar_part_ok(Elem) :- plawk_strnum_elem_operand(Elem).
 % Double-typed update expressions: float literals, float($N), and
 % binary trees mixing them with i64 operands or scalar reads. The
 % written slot becomes a double via plawk_scalar_typed_slots/3.
@@ -20088,6 +20338,41 @@ plawk_f64_scalar_read_operand_expr(Expr) :-
 plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _OutputSeparator, _Prefix, CurrentLabel, _RuleIndex,
         OpIndex, Values, Values, OpIndex, CurrentLabel, []) -->
     [].
+% A bare copy of a strnum element into a strnum slot (`x = a[$1]`, array plan item
+% 5(d)): read the element (absent -> id 0, which reads "") into an ssa_strnum leaf,
+% then the copy duplicates it (plawk_str_copy_ir/7). Any other target declines.
+plawk_scalar_action_sequence_pairs([set(var(Name), assoc(var(A), Key)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { memberchk(scalar_strnum(Name), Slots),
+      plawk_strnum_text_array(A),
+      !,
+      format(atom(RBase), '~w_ec~w', [Prefix, OpIndex]),
+      plawk_cond_elem_operand(assoc(var(A), Key), Slots, Values0, AssocPlan,
+          FieldSeparator, RBase, 0, _, Leaf, Globals, Lines),
+      Leaf = ssa_strnum(_),
+      plawk_join_nonempty_ir(Globals, GlobalIR),
+      atomic_list_concat(Lines, '\n', IR)
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs([set(var(Name), Leaf) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+% Strnum elements inside a string concatenation (`s = s a[$1]`, array plan item
+% 5(d)): each element part is read first into an ssa_strnum leaf, which the
+% concat builder takes as text.
+plawk_scalar_action_sequence_pairs([set(var(Name), concat(Parts)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { member(assoc(var(A0), _), Parts),
+      plawk_strnum_text_array(A0),
+      !,
+      format(atom(RBase), '~w_ecc~w', [Prefix, OpIndex]),
+      foldl(plawk_concat_elem_read_part(Slots, Values0, AssocPlan, FieldSeparator, RBase),
+          Parts, Parts1, 0-([]-[]), _-(Globals-Lines)),
+      plawk_join_nonempty_ir(Globals, GlobalIR),
+      atomic_list_concat(Lines, '\n', IR)
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs([set(var(Name), concat(Parts1)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 % Element reads INSIDE ARITHMETIC (arrays PR 3b): `n = c[$1] * 10`, `t += c[$1]`,
 % `print c[$1] * 2`. Each read whose parent is a binary arithmetic node is computed
 % first (plawk_cond_elem_operand/11: counter tables only, key interned as the writes
@@ -21132,7 +21417,12 @@ plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body00) | Rest],
       format(atom(KeyRef), '%~w_key', [Base]),
       plawk_replace_nth0(KIdx, HeadValues, KeyRef, BodyIn),
       (   plawk_numeric_read_array(A, ElemKind),
-          \+ ( sub_term(set(var(K0), _), Body0), K0 == K )
+          \+ ( sub_term(set(var(K0), _), Body0), K0 == K ),
+          % a bare copy of a strnum element must land in a strnum slot (a
+          % deactivated target would read it as a number)
+          \+ ( ElemKind == text,
+                sub_term(set(var(CN), CE), Body0), CE == assoc(var(A), var(K)),
+                \+ memberchk(scalar_strnum(CN), Slots) )
       ->  format(atom(ElemRef), '%~w_val', [Base]),
           format(atom(SlotRef), '%~w_islot', [Base]),
           % a counter table's element is an i64 (ssa), a double table's an f64
@@ -21911,7 +22201,11 @@ plawk_str_concat_format([], '').
 plawk_str_concat_format([field(_) | Rest], Fmt) :-
     plawk_str_concat_format(Rest, RestFmt),
     atom_concat('%.*s', RestFmt, Fmt).
-% a resolved string-scalar read prints as a null-terminated `%s`.
+% a resolved string-scalar read prints as a null-terminated `%s`; so does a read
+% strnum element (ssa_strnum, its id or handle).
+plawk_str_concat_format([ssa_strnum(_) | Rest], Fmt) :-
+    plawk_str_concat_format(Rest, RestFmt),
+    atom_concat('%s', RestFmt, Fmt).
 plawk_str_concat_format([ssa_str(_) | Rest], Fmt) :-
     plawk_str_concat_format(Rest, RestFmt),
     atom_concat('%s', RestFmt, Fmt).
@@ -21949,6 +22243,14 @@ plawk_str_concat_field_lines([ssa_str(Value) | Rest], B, EmptyName, FieldSep, Po
     Pos1 is Pos + 1,
     plawk_str_concat_field_lines(Rest, B, EmptyName, FieldSep, Pos1, RestLines, Frags),
     append(ThisLines, RestLines, Lines).
+% a read strnum element: its text through @wam_sv_cstr (an absent element, id 0,
+% reads "")
+plawk_str_concat_field_lines([ssa_strnum(Value) | Rest], B, EmptyName, FieldSep, Pos,
+        [Str | RestLines], [Frag | Frags]) :-
+    format(atom(Str), '  %~w_c~w_sptr = call i8* @wam_sv_cstr(i64 ~w)', [B, Pos, Value]),
+    format(atom(Frag), 'i8* %~w_c~w_sptr', [B, Pos]),
+    Pos1 is Pos + 1,
+    plawk_str_concat_field_lines(Rest, B, EmptyName, FieldSep, Pos1, RestLines, Frags).
 plawk_str_concat_field_lines([field(N) | Rest], B, EmptyName, FieldSep, Pos,
         Lines, [Frag | Frags]) :-
     % $0 is the record's own text (the slice helper is 1-based)
@@ -24777,6 +25079,14 @@ plawk_pattern_guard_ir(special_cmp('NR', Op, Value), _FieldSeparator, ''-GuardCa
         [Pred, Value]).
 % Field-vs-field pattern `$I OP $J` (single-rule guard): compare the two field
 % values by POSIX strnum rules.
+% A bare `$N` / `NF` pattern: a truth test (single-rule guard).
+plawk_pattern_guard_ir(truth_pat(X), FieldSeparator, GuardIR) :-
+    plawk_pattern_guard_ir(truth_pat(X), FieldSeparator,
+        plawk_surface_truth, '%is_match', GuardIR).
+% Field-vs-float-literal pattern `$N OP 5.5` (single-rule guard).
+plawk_pattern_guard_ir(field_fcmp(Index, Op, FC), FieldSeparator, GuardIR) :-
+    plawk_pattern_guard_ir(field_fcmp(Index, Op, FC), FieldSeparator,
+        plawk_surface_field_fcmp, '%is_match', GuardIR).
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GuardIR) :-
     integer(FieldSeparator),
     integer(I), I > 0,
@@ -25037,6 +25347,36 @@ plawk_pattern_guard_ir(scalar_str_cmp_resolved(SSARef, Op, Str), _FieldSeparator
         GlobalIR, GuardCallIR).
 % Field-vs-field pattern `$I OP $J` (multi-rule / combined-pattern guard): use
 % the per-rule base for unique slice/comparator temporaries.
+% A bare `$N` pattern (multi-rule guard): the field's strnum truth value
+% (@wam_strnum_truth); a bare `NF` pattern: the record has a field. Text mode only.
+plawk_pattern_guard_ir(truth_pat(field(N)), FieldSeparator, GlobalBase, MatchValue,
+        ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    integer(N), N >= 1,
+    format(atom(GuardCallIR),
+'  %~w_tf = call i8* @wam_atom_field_cstr(%Value %line, i64 ~w, i8 ~w)
+  ~w = call i1 @wam_strnum_truth(i8* %~w_tf)',
+        [GlobalBase, N, FieldSeparator, MatchValue, GlobalBase]).
+plawk_pattern_guard_ir(truth_pat(special('NF')), FieldSeparator, GlobalBase, MatchValue,
+        ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    format(atom(CountRef), '~w_nf', [GlobalBase]),
+    llvm_emit_atom_field_count('%line', FieldSeparator, CountRef, CountLine),
+    format(atom(CmpLine), '  ~w = icmp ne i64 %~w, 0', [MatchValue, CountRef]),
+    atomic_list_concat([CountLine, CmpLine], '\n', GuardCallIR).
+% Field-vs-float-literal pattern `$N OP 5.5` (multi-rule guard): awk strnum
+% semantics against the double M/D (@wam_atom_field_strnum_cmp_double) -- numeric
+% when the field looks numeric, else a string comparison with the number's text.
+% Text mode only; any other descriptor declines.
+plawk_pattern_guard_ir(field_fcmp(Index, Op, float_const(M, D)), FieldSeparator,
+        GlobalBase, MatchValue, ''-GuardCallIR) :-
+    integer(FieldSeparator),
+    integer(Index), Index > 0,
+    plawk_field_cmp_op_code(Op, OpCode),
+    format(atom(GuardCallIR),
+'  %~w_fv = fdiv double ~w.0, ~w.0
+  ~w = call i1 @wam_atom_field_strnum_cmp_double(%Value %line, i64 ~w, i8 ~w, double %~w_fv, i32 ~w)',
+        [GlobalBase, M, D, MatchValue, Index, FieldSeparator, GlobalBase, OpCode]).
 plawk_pattern_guard_ir(field_cmp2(I, Op, J), FieldSeparator, GlobalBase, MatchValue, GuardIR) :-
     integer(FieldSeparator),
     integer(I), I > 0,

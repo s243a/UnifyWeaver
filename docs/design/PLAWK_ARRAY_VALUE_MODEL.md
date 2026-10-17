@@ -402,14 +402,20 @@ each newly admitted input -- not deferred to the declaration PR.
    text value `@wam_strnum_cmp` (lexical unless both look numeric), against any
    other number `@wam_strnum_cmp_double` -- so `a[$1] > 5` is true of "x" and of
    "9x", as in gawk. A split piece is read by its raw position (an integer literal
-   or a counter scalar), tagged for the mixed driver's split-table IR check. A
-   STRING-kind table (`a[k] = $2 ""`) still declines in a comparison (it would
-   compare as a string even against a number, which the leaf does not carry) and
-   in mixed-walker arithmetic; its END fold sums like a strnum one. Still open: a
-   bare copy of a strnum element (`x = a[k]`, so the max idiom
-   `if (a[k] > m) m = a[k]`) and an element inside a concatenation decline -- the
-   copy would be a strnum scalar, and the strnum provenance analysis knows field,
-   ARGV and getline sources only.
+   or a counter scalar), tagged for the mixed driver's split-table IR check.
+   Then the rest of the item. A bare copy of a strnum element (`x = a[k]`, so the
+   max idiom `if (a[k] > m) m = a[k]`) is a strnum source: x is a strnum scalar
+   and the element is duplicated into its slot; an element compared with a strnum
+   variable is a supported strnum read. Only a strnum target lowers -- a copy into
+   a slot that lost its strnum kind declines. An element inside a concatenation
+   reads as its text. A STRING-kind element (`a[k] = $2 ""`) is read in a condition
+   as `ssa_text(Ref, 2)` and always compares as a string (`"10" > 5` false,
+   `"x" > 5` true); it still declines in mixed-walker arithmetic. A comparison
+   operand whose id is 0 -- an unassigned scalar, an absent element -- is awk's
+   uninitialised value: kind 0 (number) with text "", so it is 0 against a
+   numeric-looking strnum and "" otherwise (`plawk_text_operand_lines/6`). Read
+   through `@wam_atom_to_string` it was atom 0's NULL, and `{ x = $2; if (x > m)
+   m = x }` printed nothing.
 5. Declarations (§7), ingress contracts (§6.1), foreign-key normalisation (§2), with
    reason messages.
 
@@ -423,6 +429,8 @@ each newly admitted input -- not deferred to the declaration PR.
   program part, binds as imports, row variables, unknown-use detection).
 - `tests/test_plawk_strnum_elem_reads.pl`: numeric reads of strnum elements --
   arithmetic, END folds, literal lookups, conditions, split pieces (item 5(d)).
+- `tests/test_plawk_text_elem_uses.pl`: element copies and the max idiom, unset
+  comparison operands, elements in concatenations, string-kind conditions.
 - `tests/test_plawk_array_kinds.pl`: special-variable and unassigned keys decline;
   integer-literal keys on counted tables.
 - `tests/test_plawk_posarray_keyspace.pl`, `tests/test_plawk_literal_assoc_key.pl`:

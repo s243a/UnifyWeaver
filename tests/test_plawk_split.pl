@@ -8,8 +8,8 @@
 % table and repopulates -- split replaces the array each call). $0 is the whole
 % record; a positive field uses its slice. Empty pieces are kept (explicit
 % single-char separator, as awk) -- except a single space, which is awk's default
-% whitespace splitting. v1: field source, string-literal single-char
-% separator; the return count and a default (FS) separator are follow-ons.
+% whitespace splitting. v1: field source, string-literal separator (or none:
+% `split($N, arr)` separates on a static FS).
 
 :- use_module(library(plunit)).
 :- use_module(library(process)).
@@ -144,6 +144,28 @@ test(split_clears_after_long_records_and_deletes, [condition(clang_available)]) 
     build_run(Dir, 'clrd', "{ split($0, p, \" \"); delete p[2] }\nEND { for (k in p) print k, p[k] }\n",
         "a b c d e f g h i j\nx y\nq\n", Out2, St2),
     assertion(St2 == 0), assertion(Out2 == "1 q\n"),
+    !.
+
+% `split($N, arr)` separates on FS: the default " " (whitespace splitting) or a
+% BEGIN-only literal FS, resolved after parsing. An FS assigned in a rule leaves
+% the `fs` marker, and the program declines. gawk 5.1.0.
+test(split_two_args_parses) :-
+    plawk_parse_string("BEGIN { FS = \":\" } { split($2, p) }\n",
+        program(_, [rule(always, [split_into(field(2), var(p), string(":"))])], [])),
+    plawk_parse_string("{ split($0, p) }\n",
+        program([], [rule(always, [split_into(field(0), var(p), string(" "))])], [])),
+    plawk_parse_string("{ FS = \":\"; split($0, p) }\n",
+        program([], [rule(always, [_, split_into(field(0), var(p), fs)])], [])),
+    !.
+
+test(split_two_args_uses_fs, [condition(clang_available)]) :-
+    ldir(Dir),
+    build_run(Dir, 'two', "{ n = split($0, p); print n, p[1] \"|\" p[2] }\n",
+        "a:b  c:d\n  x y \nq;r,s\n", Out, St),
+    assertion(St == 0), assertion(Out == "2 a:b|c:d\n2 x|y\n1 q;r,s|\n"),
+    build_run(Dir, 'two_fs', "BEGIN { FS = \":\" } { n = split($0, p); print n, p[2] }\n",
+        "a:b  c:d\n  x y \nq;r,s\n", Out2, St2),
+    assertion(St2 == 0), assertion(Out2 == "3 b  c\n1 \n1 \n"),
     !.
 
 :- end_tests(plawk_split).

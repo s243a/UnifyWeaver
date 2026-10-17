@@ -72,10 +72,10 @@ test(split_pieces, [condition(clang_available)]) :-
         "4 1\n11 1\n3.5 1\n1 1\n8 1\n101 1\n10 1\n"),
     !.
 
-% A string-kind element compares as a string even against a number, which the
-% strnum read does not model: still declined.
-test(string_kind_condition_declines) :-
-    build_status_is("{ a[$1] = $2 \"\"; if (a[$1] > 5) print $1 }\n", 3),
+% A string-kind element compares as a string even against a number
+% (tests/test_plawk_text_elem_uses.pl): "x" > 5 and "9x" > 5, but not "10" or "1e2".
+test(string_kind_condition, [condition(clang_available)]) :-
+    run("{ a[$1] = $2 \"\"; if (a[$1] > 5) print $1 }\n", "c\nb\nh\n"),
     !.
 
 :- end_tests(plawk_strnum_elem_reads).
