@@ -40,6 +40,7 @@
     wam_classify_constant_token/2,
     wam_tokenize_line/2
 ]).
+:- use_module('../targets/wam_rust_reg', [rust_reg_literal/2]).
 :- use_module('../targets/wam_rust_lowered_emitter', [
     wam_rust_lowerable/3,
     lower_predicate_to_rust/4,
@@ -112,8 +113,7 @@ compile_step_arm(ArmCode) :-
 % --- Head Unification Instructions ---
 
 wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
-    Body = '                let raw_val = self.get_reg_raw(ai);
-                let val = raw_val.map(|v| self.deref_var(&v));
+    Body = '                let val = self.reg_raw_ref_r(*ai).map(|v| self.deref_var(v));
                 match val {
                     Some(v) if v == *c => { self.pc += 1; true }
                     // Empty-list aliasing: the [] atom and an empty Value::List
@@ -125,8 +125,8 @@ wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
                         self.pc += 1; true
                     }
                     Some(Value::Unbound(ref var_name)) => {
-                        self.trail_binding(ai);
-                        self.set_reg_str(ai, c.clone());
+                        self.trail_reg(*ai);
+                        self.set_reg_r(*ai, c.clone());
                         self.bind_var(var_name, c.clone());
                         self.pc += 1;
                         true
@@ -135,10 +135,10 @@ wam_instruction_arm('Instruction::GetConstant(c, ai)', Body) :-
                 }'.
 
 wam_instruction_arm('Instruction::GetVariable(xn, ai)', Body) :-
-    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
-                    let val = self.deref_var(&raw);
-                    self.trail_binding(xn);
-                    self.put_reg(xn, val);
+    Body = '                if let Some(raw) = self.reg_raw_ref_r(*ai).map(|__r| self.deref_var(__r)) {
+                    let val = raw;
+                    self.trail_reg(*xn);
+                    self.put_reg_r(*xn, val);
                     self.pc += 1;
                     true
                 } else { false }'.
@@ -151,8 +151,8 @@ wam_instruction_arm('Instruction::GetValue(xn, ai)', Body) :-
                 // accumulated result list against a tail cell. Route through
                 // unify(), which derefs (incl. Ref->heap), binds vars, and
                 // structurally unifies with cons-cell aliasing.
-                let val_a = self.get_reg_raw(ai);
-                let val_x = self.get_reg(xn);
+                let val_a = self.get_reg_raw_r(*ai);
+                let val_x = self.get_reg_r(*xn);
                 match (val_a, val_x) {
                     (Some(a), Some(x)) => {
                         if self.unify(&a, &x) { self.pc += 1; true } else { false }
@@ -161,7 +161,7 @@ wam_instruction_arm('Instruction::GetValue(xn, ai)', Body) :-
                 }'.
 
 wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
-    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
+    Body = '                if let Some(raw) = self.reg_raw_ref_r(*ai).map(|__r| self.deref_var(__r)) {
                     // Deref BEFORE the unbound test, for the same reason
                     // GetList does (see below): a variable that is already
                     // bound is still *typed* Unbound, so testing the raw
@@ -175,7 +175,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                     // broke multi-clause discrimination on a nested functor
                     // (`[cnum(V)|_]` / `[csym(V)|_]` / ...), because the
                     // first clause always "matched" by construction.
-                    let val = self.deref_var(&raw);
+                    let val = raw;
                     if val.is_unbound() {
                         // Write mode
                         let addr = self.heap.len();
@@ -185,11 +185,11 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         for _ in 0..arity {
                             self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
                         }
-                        self.trail_binding(ai);
+                        self.trail_reg(*ai);
                         if let Value::Unbound(ref name) = val {
                             self.bind_var(name, Value::Ref(addr));
                         }
-                        self.set_reg_str(ai, Value::Ref(addr));
+                        self.set_reg_r(*ai, Value::Ref(addr));
                         self.smut().push(StackEntry::WriteCtx(addr));
                         self.pc += 1; true
                     } else if let Value::Ref(addr) = &val {
@@ -226,21 +226,21 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::GetList(ai)', Body) :-
-    Body = '                if let Some(raw) = self.get_reg_raw(ai) {
+    Body = '                if let Some(raw) = self.reg_raw_ref_r(*ai).map(|__r| self.deref_var(__r)) {
                     // Deref BEFORE the unbound test: a bound variable is still
                     // typed Unbound, and treating a bound list tail as unbound
                     // would wrongly take the write-mode branch.
-                    let val = self.deref_var(&raw);
+                    let val = raw;
                     if val.is_unbound() {
                         let addr = self.heap.len();
                         self.heap.push(Value::strv("./2".to_string(), vec![]));
                         self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
                         self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
-                        self.trail_binding(ai);
+                        self.trail_reg(*ai);
                         if let Value::Unbound(ref name) = val {
                             self.bind_var(name, Value::Ref(addr));
                         }
-                        self.set_reg_str(ai, Value::Ref(addr));
+                        self.set_reg_r(*ai, Value::Ref(addr));
                         self.smut().push(StackEntry::WriteCtx(addr));
                         self.pc += 1; true
                     } else if let Value::List(items) = &val {
@@ -278,15 +278,15 @@ wam_instruction_arm('Instruction::UnifyVariable(xn)', Body) :-
                         if !rest.is_empty() {
                             self.smut().push(StackEntry::UnifyCtx(rest));
                         }
-                        self.trail_binding(xn);
-                        self.put_reg(xn, arg);
+                        self.trail_reg(*xn);
+                        self.put_reg_r(*xn, arg);
                         self.pc += 1; true
                     } else { false }
                 } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
                     let var = Value::Unbound(Self::fresh_var_sym(b''H'', self.var_counter));
                     self.var_counter += 1;
                     self.set_heap_or_list(var.clone());
-                    self.put_reg(xn, var);
+                    self.put_reg_r(*xn, var);
                     self.pc += 1; true
                 } else { false }'.
 
@@ -302,7 +302,7 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
                         // but left the second slot unbound: the caller''s
                         // term never became p(a,a). unify() binds both
                         // directions and knows the list/cons aliasings.
-                        let ok = match self.get_reg(xn) {
+                        let ok = match self.get_reg_r(*xn) {
                             Some(v) => self.unify(&arg, &v),
                             None => false,
                         };
@@ -316,7 +316,7 @@ wam_instruction_arm('Instruction::UnifyValue(xn)', Body) :-
                         } else { false }
                     } else { false }
                 } else if let Some(StackEntry::WriteCtx(_marker)) = self.stack.last().cloned() {
-                    if let Some(val) = self.get_reg(xn) {
+                    if let Some(val) = self.get_reg_r(*xn) {
                         self.set_heap_or_list(val);
                         self.pc += 1; true
                     } else { false }
@@ -357,23 +357,23 @@ wam_instruction_arm('Instruction::UnifyConstant(c)', Body) :-
 % --- Body Construction Instructions ---
 
 wam_instruction_arm('Instruction::PutConstant(c, ai)', Body) :-
-    Body = '                self.trail_binding(ai);
-                self.set_reg_str(ai, c.clone());
+    Body = '                self.trail_reg(*ai);
+                self.set_reg_r(*ai, c.clone());
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutVariable(xn, ai)', Body) :-
     Body = '                let var = Value::Unbound(Self::fresh_var_sym(b''V'', self.var_counter));
                 self.var_counter += 1;
-                self.trail_binding(xn);
-                self.trail_binding(ai);
-                self.put_reg(xn, var.clone());
-                self.set_reg_str(ai, var);
+                self.trail_reg(*xn);
+                self.trail_reg(*ai);
+                self.put_reg_r(*xn, var.clone());
+                self.set_reg_r(*ai, var);
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutValue(xn, ai)', Body) :-
-    Body = '                if let Some(val) = self.get_reg(xn) {
-                    self.trail_binding(ai);
-                    self.set_reg_str(ai, val);
+    Body = '                if let Some(val) = self.get_reg_r(*xn) {
+                    self.trail_reg(*ai);
+                    self.set_reg_r(*ai, val);
                     self.pc += 1; true
                 } else { false }'.
 
@@ -404,14 +404,14 @@ wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
                 // (set_variable Xn), so the bind-through is conditioned on
                 // the register class — the same design the LLVM target
                 // adopted in M140 after the identical bug.
-                if ai.as_bytes().first() != Some(&b''A'') {
-                    if let Some(cur) = self.get_reg_raw(ai) {
+                if !ai.is_a() {
+                    if let Some(cur) = self.get_reg_raw_r(*ai) {
                         if let Value::Unbound(name) = self.deref_var(&cur) {
                             self.bind_var(&name, Value::Ref(addr));
                         }
                     }
                 }
-                self.set_reg_str(ai, Value::Ref(addr));
+                self.set_reg_r(*ai, Value::Ref(addr));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::PutList(ai)', Body) :-
@@ -423,14 +423,14 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
                 let marker = self.heap.len();
                 self.heap.push(Value::Atom("__list_head__".to_string().into()));
                 self.heap.push(Value::Atom("__list_tail__".to_string().into()));
-                self.set_reg_str(ai, Value::Integer(marker as i64));
+                self.set_reg_r(*ai, Value::Integer(marker as i64));
                 self.smut().push(StackEntry::WriteCtx(marker));
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
     Body = '                let var = Value::Unbound(Self::fresh_var_sym(b''H'', self.var_counter));
                 self.var_counter += 1;
-                self.put_reg(xn, var.clone());
+                self.put_reg_r(*xn, var.clone());
                 // Write the fresh variable into the current structure/list arg
                 // slot, exactly as set_value/set_constant do. Without this the
                 // placeholder never lands in the term being built, so any
@@ -440,7 +440,7 @@ wam_instruction_arm('Instruction::SetVariable(xn)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SetValue(xn)', Body) :-
-    Body = '                if let Some(val) = self.get_reg(xn) {
+    Body = '                if let Some(val) = self.get_reg_r(*xn) {
                     self.set_heap_or_list(val);
                     self.pc += 1; true
                 } else { false }'.
@@ -450,24 +450,24 @@ wam_instruction_arm('Instruction::SetConstant(c)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::LoadRegisterConstant(c, reg, skip)', Body) :-
-    Body = '                self.trail_binding(reg);
-                self.put_reg(reg, c.clone());
+    Body = '                self.trail_reg(*reg);
+                self.put_reg_r(*reg, c.clone());
                 self.pc += *skip; true'.
 
 wam_instruction_arm('Instruction::Cons(head_reg, tail_reg, out_reg, skip)', Body) :-
-    Body = '                if let (Some(head), Some(tail)) = (self.get_reg(head_reg), self.get_reg(tail_reg)) {
+    Body = '                if let (Some(head), Some(tail)) = (self.get_reg_r(*head_reg), self.get_reg_r(*tail_reg)) {
                     self.heap.push(head.clone());
                     self.heap.push(tail.clone());
                     let list = match tail {
                         Value::List(items) => Value::List(items.cons(head)),
                         tail_val => Value::list(vec![head, tail_val]),
                     };
-                    self.set_reg_str(&out_reg, list);
+                    self.set_reg_r(*out_reg, list);
                     self.pc += *skip; true
                 } else { false }'.
 
 wam_instruction_arm('Instruction::NotMember(elem_reg, list_reg, skip)', Body) :-
-    Body = '                if let (Some(elem), Some(list_val)) = (self.get_reg(elem_reg), self.get_reg(list_reg)) {
+    Body = '                if let (Some(elem), Some(list_val)) = (self.get_reg_r(*elem_reg), self.get_reg_r(*list_reg)) {
                     let needle = self.deref_var(&elem);
                     let haystack = self.deref_var(&list_val);
                     let found = match &haystack {
@@ -478,7 +478,7 @@ wam_instruction_arm('Instruction::NotMember(elem_reg, list_reg, skip)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::ListLengthLt(list_reg, limit_reg, skip)', Body) :-
-    Body = '                if let (Some(list_val), Some(limit_val)) = (self.get_reg(list_reg), self.get_reg(limit_reg)) {
+    Body = '                if let (Some(list_val), Some(limit_val)) = (self.get_reg_r(*list_reg), self.get_reg_r(*limit_reg)) {
                     let len = match self.deref_var(&list_val) {
                         Value::List(items) => items.len() as i64,
                         direct => match self.deref_heap(&direct) {
@@ -499,7 +499,7 @@ wam_instruction_arm('Instruction::ListLengthLt(list_reg, limit_reg, skip)', Body
                 } else { false }'.
 
 wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visited_reg)', Body) :-
-    Body = '                let cat = match self.get_reg(cat_reg) {
+    Body = '                let cat = match self.get_reg_r(*cat_reg) {
                     Some(Value::Atom(s)) => s,
                     Some(val) => match self.deref_var(&val) {
                         Value::Atom(s) => s,
@@ -507,7 +507,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                     },
                     None => return false,
                 };
-                let target = match self.get_reg(target_reg) {
+                let target = match self.get_reg_r(*target_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -515,7 +515,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                     Value::Atom(s) => s.clone(),
                     _ => return false,
                 };
-                let visited = match self.get_reg(visited_reg) {
+                let visited = match self.get_reg_r(*visited_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -546,7 +546,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestor(cat_reg, target_reg, visi
                 }'.
 
 wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, hops_reg, visited_reg)', Body) :-
-    Body = '                let cat = match self.get_reg(cat_reg) {
+    Body = '                let cat = match self.get_reg_r(*cat_reg) {
                     Some(Value::Atom(s)) => s,
                     Some(val) => match self.deref_var(&val) {
                         Value::Atom(s) => s,
@@ -554,7 +554,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, 
                     },
                     None => return false,
                 };
-                let target = match self.get_reg(target_reg) {
+                let target = match self.get_reg_r(*target_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -562,7 +562,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, 
                     Value::Atom(s) => s.clone(),
                     _ => return false,
                 };
-                let visited = match self.get_reg(visited_reg) {
+                let visited = match self.get_reg_r(*visited_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -581,7 +581,7 @@ wam_instruction_arm('Instruction::BaseCategoryAncestorBind(cat_reg, target_reg, 
                 if !parent_matches {
                     return false;
                 }
-                let hops_val = match self.get_reg(hops_reg) {
+                let hops_val = match self.get_reg_r(*hops_reg) {
                     Some(val) => val,
                     None => return false,
                 };
@@ -615,15 +615,15 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestor(mid_reg, root_reg, chi
                 self.step(&instr)'.
 
 wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, child_hops_reg, visited_reg, target_pc, skip)', Body) :-
-    Body = '                let mid = match self.get_reg(mid_reg) {
+    Body = '                let mid = match self.get_reg_r(*mid_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
-                let root = match self.get_reg(root_reg) {
+                let root = match self.get_reg_r(*root_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
-                let visited = match self.get_reg(visited_reg) {
+                let visited = match self.get_reg_r(*visited_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -635,18 +635,18 @@ wam_instruction_arm('Instruction::RecurseCategoryAncestorPc(mid_reg, root_reg, c
                 };
                 // R0b: only the child-hops register can be a Y register;
                 // A1-A4 are argument staging and are not trailed.
-                self.trail_binding(child_hops_reg);
-                self.put_reg(child_hops_reg, child_hops.clone());
-                self.set_reg_str("A1", mid);
-                self.set_reg_str("A2", root);
-                self.set_reg_str("A3", child_hops);
-                self.set_reg_str("A4", next_visited);
+                self.trail_reg(*child_hops_reg);
+                self.put_reg_r(*child_hops_reg, child_hops.clone());
+                self.set_reg_r(Reg::a(1), mid);
+                self.set_reg_r(Reg::a(2), root);
+                self.set_reg_r(Reg::a(3), child_hops);
+                self.set_reg_r(Reg::a(4), next_visited);
                 self.cp = self.pc + *skip;
                 self.pc = *target_pc;
                 true'.
 
 wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
-    Body = '                let in_val = match self.get_reg(in_reg) {
+    Body = '                let in_val = match self.get_reg_r(*in_reg) {
                     Some(val) => self.deref_var(&val),
                     None => return false,
                 };
@@ -673,7 +673,7 @@ wam_instruction_arm('Instruction::ReturnAdd1(out_reg, in_reg)', Body) :-
                     },
                     _ => return false,
                 };
-                let out_val = match self.get_reg(out_reg) {
+                let out_val = match self.get_reg_r(*out_reg) {
                     Some(val) => val,
                     None => return false,
                 };
@@ -758,7 +758,7 @@ wam_instruction_arm('Instruction::Call(p, _arity)', Body) :-
                 } else if p == "assert/1" {
                     self.execute_assert_builtin("assert/1")
                 } else if p == "read_term/2" {
-                    let options = self.get_reg_raw("A2");
+                    let options = self.get_reg_raw_r(Reg::a(2));
                     self.execute_read_term_builtin(options.as_ref())
                 } else if self.foreign_predicates.contains(p) {
                     self.cp = self.pc + 1;
@@ -802,11 +802,11 @@ wam_instruction_arm('Instruction::CallForeign(pred, arity)', Body) :-
                 } else { false }'.
 
 wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
-    Body = '                let key = match self.get_reg_raw("A1").map(|v| self.deref_var(&v)) {
+    Body = '                let key = match self.get_reg_raw_r(Reg::a(1)).map(|v| self.deref_var(&v)) {
                     Some(Value::Atom(s)) => s,
                     _ => return false,
                 };
-                let a2 = match self.get_reg_raw("A2") {
+                let a2 = match self.get_reg_raw_r(Reg::a(2)) {
                     Some(val) => val,
                     None => return false,
                 };
@@ -855,7 +855,7 @@ wam_instruction_arm('Instruction::Execute(p)', Body) :-
                         true
                     } else { false }
                 } else if p == "read_term/2" {
-                    let options = self.get_reg_raw("A2");
+                    let options = self.get_reg_raw_r(Reg::a(2));
                     if self.execute_read_term_builtin(options.as_ref()) {
                         self.pc = self.cp;
                         true
@@ -1057,7 +1057,7 @@ wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::EndAggregate(value_reg)', Body) :-
-    Body = '                if let Some(val) = self.get_reg(value_reg) {
+    Body = '                if let Some(val) = self.get_reg_r(*value_reg) {
                     self.aggregate_acc.push(self.deref_var(&self.deref_heap(&val)));
                     self.aggregate_return_pc = self.pc + 1;
                     self.backtrack()
@@ -1309,7 +1309,7 @@ wam_instruction_arm('Instruction::Trust(label)', Body) :-
 % Value::List as the atom [] (the aliasing GetConstant applies).
 
 wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
-    Body = '                let raw = self.get_reg_raw("A1").map(|v| Self::index_key(self.deref_var(&v)));
+    Body = '                let raw = self.get_reg_raw_r(Reg::a(1)).map(|v| Self::index_key(self.deref_var(&v)));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         // Linear scan by value equality. (A binary search would
@@ -1339,7 +1339,7 @@ wam_instruction_arm('Instruction::SwitchOnConstant(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantFallthrough(table)', Body) :-
-    Body = '                let raw = self.get_reg_raw("A1").map(|v| Self::index_key(self.deref_var(&v)));
+    Body = '                let raw = self.get_reg_raw_r(Reg::a(1)).map(|v| Self::index_key(self.deref_var(&v)));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         for (key, label) in table {
@@ -1360,7 +1360,7 @@ wam_instruction_arm('Instruction::SwitchOnConstantFallthrough(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
-    Body = '                let raw = self.get_reg_raw("A1").map(|v| Self::index_key(self.deref_var(&v)));
+    Body = '                let raw = self.get_reg_raw_r(Reg::a(1)).map(|v| Self::index_key(self.deref_var(&v)));
                 if let Some(val) = raw {
                     if !val.is_unbound() {
                         // Linear scan by value equality (see SwitchOnConstant:
@@ -1377,7 +1377,7 @@ wam_instruction_arm('Instruction::SwitchOnConstantPc(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw("A1") {
+    Body = '                if let Some(val) = self.get_reg_raw_r(Reg::a(1)) {
                     if let Some((f, args)) = val.univ() {
                         // D126: compare each key with `f/N` in place instead
                         // of building `format!("{}/{}", f, args.len())`.
@@ -1394,7 +1394,7 @@ wam_instruction_arm('Instruction::SwitchOnStructure(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw("A1") {
+    Body = '                if let Some(val) = self.get_reg_raw_r(Reg::a(1)) {
                     if let Some((f, args)) = val.univ() {
                         // D126: compare each key with `f/N` in place (see
                         // SwitchOnStructure).
@@ -1409,7 +1409,7 @@ wam_instruction_arm('Instruction::SwitchOnStructurePc(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw("A2").map(Self::index_key) {
+    Body = '                if let Some(val) = self.get_reg_raw_r(Reg::a(2)).map(Self::index_key) {
                     if !val.is_unbound() {
                         for (key, label) in table {
                             if *key == val {
@@ -1423,7 +1423,7 @@ wam_instruction_arm('Instruction::SwitchOnConstantA2(table)', Body) :-
                 self.pc += 1; true'.
 
 wam_instruction_arm('Instruction::SwitchOnConstantA2Pc(table)', Body) :-
-    Body = '                if let Some(val) = self.get_reg_raw("A2").map(Self::index_key) {
+    Body = '                if let Some(val) = self.get_reg_raw_r(Reg::a(2)).map(Self::index_key) {
                     if !val.is_unbound() {
                         for (key, target_pc) in table {
                             if *key == val {
@@ -8591,71 +8591,87 @@ wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
 
 %% wam_line_to_rust_instr(+Parts, +PredIndicator, +Options, -RustExpr)
 %  Converts parsed WAM instruction parts to a Rust Instruction enum literal.
+% R1: register operands are emitted as decoded `Reg` values
+% (wam_rust_reg:rust_reg_literal/2), not as `"A1".to_string()` names.
 wam_line_to_rust_instr(["get_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     rust_const_value(CC, VExpr),
+    rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetConstant(~w, "~w".to_string())',
-        [VExpr, CAi]).
+        'Instruction::GetConstant(~w, ~w)',
+        [VExpr, RAi]).
 wam_line_to_rust_instr(["get_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    rust_reg_literal(CXn, RXn), rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetVariable("~w".to_string(), "~w".to_string())',
-        [CXn, CAi]).
+        'Instruction::GetVariable(~w, ~w)',
+        [RXn, RAi]).
 wam_line_to_rust_instr(["get_value", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    rust_reg_literal(CXn, RXn), rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetValue("~w".to_string(), "~w".to_string())',
-        [CXn, CAi]).
+        'Instruction::GetValue(~w, ~w)',
+        [RXn, RAi]).
 wam_line_to_rust_instr(["get_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetStructure("~w".to_string(), "~w".to_string())',
-        [CFN, CAi]).
+        'Instruction::GetStructure("~w".to_string(), ~w)',
+        [CFN, RAi]).
 wam_line_to_rust_instr(["get_list", Ai], _, _, Rust) :-
     clean_comma(Ai, CAi),
+    rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetList("~w".to_string())', [CAi]).
+        'Instruction::GetList(~w)', [RAi]).
 wam_line_to_rust_instr(["unify_variable", Xn], _, _, Rust) :-
+    rust_reg_literal(Xn, RXn),
     format(string(Rust),
-        'Instruction::UnifyVariable("~w".to_string())', [Xn]).
+        'Instruction::UnifyVariable(~w)', [RXn]).
 wam_line_to_rust_instr(["unify_value", Xn], _, _, Rust) :-
+    rust_reg_literal(Xn, RXn),
     format(string(Rust),
-        'Instruction::UnifyValue("~w".to_string())', [Xn]).
+        'Instruction::UnifyValue(~w)', [RXn]).
 wam_line_to_rust_instr(["unify_constant", C], _, _, Rust) :-
     rust_const_value(C, VExpr),
     format(string(Rust), 'Instruction::UnifyConstant(~w)', [VExpr]).
 wam_line_to_rust_instr(["put_constant", C, Ai], _, _, Rust) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
     rust_const_value(CC, VExpr),
+    rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::PutConstant(~w, "~w".to_string())',
-        [VExpr, CAi]).
+        'Instruction::PutConstant(~w, ~w)',
+        [VExpr, RAi]).
 
 wam_line_to_rust_instr(["put_variable", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    rust_reg_literal(CXn, RXn), rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::PutVariable("~w".to_string(), "~w".to_string())',
-        [CXn, CAi]).
+        'Instruction::PutVariable(~w, ~w)',
+        [RXn, RAi]).
 wam_line_to_rust_instr(["put_value", Xn, Ai], _, _, Rust) :-
     clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    rust_reg_literal(CXn, RXn), rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::PutValue("~w".to_string(), "~w".to_string())',
-        [CXn, CAi]).
+        'Instruction::PutValue(~w, ~w)',
+        [RXn, RAi]).
 wam_line_to_rust_instr(["put_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::PutStructure("~w".to_string(), "~w".to_string())',
-        [CFN, CAi]).
+        'Instruction::PutStructure("~w".to_string(), ~w)',
+        [CFN, RAi]).
 wam_line_to_rust_instr(["put_list", Ai], _, _, Rust) :-
+    rust_reg_literal(Ai, RAi),
     format(string(Rust),
-        'Instruction::PutList("~w".to_string())', [Ai]).
+        'Instruction::PutList(~w)', [RAi]).
 wam_line_to_rust_instr(["set_variable", Xn], _, _, Rust) :-
+    rust_reg_literal(Xn, RXn),
     format(string(Rust),
-        'Instruction::SetVariable("~w".to_string())', [Xn]).
+        'Instruction::SetVariable(~w)', [RXn]).
 wam_line_to_rust_instr(["set_value", Xn], _, _, Rust) :-
+    rust_reg_literal(Xn, RXn),
     format(string(Rust),
-        'Instruction::SetValue("~w".to_string())', [Xn]).
+        'Instruction::SetValue(~w)', [RXn]).
 wam_line_to_rust_instr(["set_constant", C], _, _, Rust) :-
     rust_const_value(C, VExpr),
     format(string(Rust), 'Instruction::SetConstant(~w)', [VExpr]).
@@ -8730,8 +8746,9 @@ wam_line_to_rust_instr(["begin_aggregate", Type, ValueReg, ResultReg, Witness],
     ).
 wam_line_to_rust_instr(["end_aggregate", ValueReg], _, _, Rust) :-
     clean_comma(ValueReg, CValueReg),
+    rust_reg_literal(CValueReg, RValueReg),
     format(string(Rust),
-        'Instruction::EndAggregate("~w".to_string())', [CValueReg]).
+        'Instruction::EndAggregate(~w)', [RValueReg]).
 % T7 route 2: par_aggregate AggType, EnumLabel, BodyLabel, ResultReg [, InReg...]
 % (EnumLabel/BodyLabel are predicate-indicator entry labels, e.g.
 % __par_enum_foo/2). Any trailing tokens are the container registers holding the

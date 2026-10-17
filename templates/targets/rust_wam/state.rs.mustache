@@ -158,7 +158,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
 use crate::value::{Args, Value};
-use crate::instructions::Instruction;
+use crate::instructions::{Instruction, Reg};
 
 /// Lazy edge-lookup interface used by the `lazy_lmdb_lookup` foreign
 /// native-kind handler. Backends (LMDB, CSR, etc.) live in their own
@@ -630,6 +630,20 @@ impl TrailEntry {
         TrailEntry { key: reg_name.to_string(), old_value }
     }
 
+    /// R1: a register entry for a decoded operand. `r.name()` is the text
+    /// `register(name)` would have stored (a `REG_NAMES` borrow for Y1..Y99,
+    /// which `reg_name_of` returns for those names too).
+    #[cfg(feature = "trail_enum")]
+    #[inline]
+    pub fn register_reg(r: Reg, old_value: Option<Value>) -> Self {
+        TrailEntry { key: TrailKey::Register(r.name()), old_value }
+    }
+    #[cfg(not(feature = "trail_enum"))]
+    #[inline]
+    pub fn register_reg(r: Reg, old_value: Option<Value>) -> Self {
+        TrailEntry { key: r.name().into_owned(), old_value }
+    }
+
     /// The variable name if this is a binding entry, else `None`. Byte-identical
     /// to the OFF `strip_prefix("__binding__")` discrimination.
     #[cfg(feature = "trail_enum")]
@@ -884,6 +898,33 @@ impl YRegs {
         match Self::slot(name) {
             Some(i) => ys.slots.get(i).and_then(|v| v.as_ref()),
             None => ys.other.as_ref().and_then(|m| m.get(name)),
+        }
+    }
+
+    /// R1: `get("Y<n>")` for a decoded `Y<n>` operand (n >= 1). A slot index
+    /// past `MAX_SLOTS` lives in the side map under its name, as `get` keys it.
+    #[inline(always)]
+    pub fn get_n(&self, n: usize) -> Option<&Value> {
+        let ys = self.0.as_deref()?;
+        if n >= 1 && n <= Self::MAX_SLOTS {
+            ys.slots.get(n - 1).and_then(|v| v.as_ref())
+        } else {
+            ys.other.as_ref().and_then(|m| m.get(format!("Y{}", n).as_str()))
+        }
+    }
+
+    /// R1: `insert("Y<n>", val)` for a decoded `Y<n>` operand (n >= 1).
+    #[inline]
+    pub fn insert_n(&mut self, n: usize, val: Value) {
+        if n >= 1 && n <= Self::MAX_SLOTS {
+            let ys = Arc::make_mut(self.0.get_or_insert_with(|| Arc::new(YSlots::default())));
+            let i = n - 1;
+            if i >= ys.slots.len() {
+                ys.slots.resize(i + 1, None);
+            }
+            ys.slots[i] = Some(val);
+        } else {
+            self.insert(&format!("Y{}", n), val);
         }
     }
 
@@ -1258,8 +1299,8 @@ mod d135_clause_cp_arg_save_tests {
     fn two_clause_program(entry: Instruction) -> (Vec<Instruction>, HashMap<String, usize>) {
         let code = vec![
             entry,                                                           // 1 p/2
-            Instruction::PutConstant(Value::Integer(55), "X5".to_string()),  // 2
-            Instruction::PutConstant(Value::Integer(33), "A3".to_string()),  // 3
+            Instruction::PutConstant(Value::Integer(55), Reg::x(5)),  // 2
+            Instruction::PutConstant(Value::Integer(33), Reg::a(3)),  // 3
             Instruction::BuiltinCall("fail/0".to_string(), 0),               // 4
             Instruction::TrustMe,                                            // 5 L_p_2_2
             Instruction::Proceed,                                            // 6
@@ -1384,20 +1425,20 @@ mod d135_clause_cp_arg_save_tests {
         };
         let code = vec![
             entry,                                                  // 1 color/1
-            Instruction::GetConstant(a("red"), "A1".to_string()),   // 2
+            Instruction::GetConstant(a("red"), Reg::a(1)),   // 2
             Instruction::Proceed,                                   // 3
             Instruction::RetryMeElse("L_c3".to_string()),           // 4 L_c2
-            Instruction::GetConstant(a("green"), "A1".to_string()), // 5
+            Instruction::GetConstant(a("green"), Reg::a(1)), // 5
             Instruction::Proceed,                                   // 6
             Instruction::TrustMe,                                   // 7 L_c3
-            Instruction::GetConstant(a("blue"), "A1".to_string()),  // 8
+            Instruction::GetConstant(a("blue"), Reg::a(1)),  // 8
             Instruction::Proceed,                                   // 9
-            Instruction::GetConstant(a("blue"), "A1".to_string()),  // 10 pick/1
+            Instruction::GetConstant(a("blue"), Reg::a(1)),  // 10 pick/1
             Instruction::Proceed,                                   // 11
             Instruction::Allocate,                                  // 12 query/1
-            Instruction::GetVariable("Y1".to_string(), "A1".to_string()),
+            Instruction::GetVariable(Reg::y(1), Reg::a(1)),
             Instruction::Call("color/1".to_string(), 1),
-            Instruction::PutValue("Y1".to_string(), "A1".to_string()),
+            Instruction::PutValue(Reg::y(1), Reg::a(1)),
             Instruction::Call("pick/1".to_string(), 1),
             Instruction::Deallocate,
             Instruction::Proceed,                                   // 18
@@ -1469,20 +1510,20 @@ mod d122_code_snapshot_tests {
         let a = |s: &str| Value::atom(s);
         let code = vec![
             Instruction::TryMeElse("L_c2".to_string()),             // 1 color/1
-            Instruction::GetConstant(a("red"), "A1".to_string()),   // 2
+            Instruction::GetConstant(a("red"), Reg::a(1)),   // 2
             Instruction::Proceed,                                   // 3
             Instruction::RetryMeElse("L_c3".to_string()),           // 4 L_c2
-            Instruction::GetConstant(a("green"), "A1".to_string()), // 5
+            Instruction::GetConstant(a("green"), Reg::a(1)), // 5
             Instruction::Proceed,                                   // 6
             Instruction::TrustMe,                                   // 7 L_c3
-            Instruction::GetConstant(a("blue"), "A1".to_string()),  // 8
+            Instruction::GetConstant(a("blue"), Reg::a(1)),  // 8
             Instruction::Proceed,                                   // 9
-            Instruction::GetConstant(a("blue"), "A1".to_string()),  // 10 pick/1
+            Instruction::GetConstant(a("blue"), Reg::a(1)),  // 10 pick/1
             Instruction::Proceed,                                   // 11
             Instruction::Allocate,                                  // 12 query/1
-            Instruction::GetVariable("Y1".to_string(), "A1".to_string()),
+            Instruction::GetVariable(Reg::y(1), Reg::a(1)),
             Instruction::Call("color/1".to_string(), 1),
-            Instruction::PutValue("Y1".to_string(), "A1".to_string()),
+            Instruction::PutValue(Reg::y(1), Reg::a(1)),
             Instruction::Call("pick/1".to_string(), 1),
             Instruction::Deallocate,
             Instruction::Proceed,                                   // 18
@@ -1600,7 +1641,7 @@ mod d122_code_snapshot_tests {
         assert_eq!(vm.deref_heap(&x()), Value::atom("blue"));
         // Change pick/1's fact to green: the same query now stops at green.
         let mut code = (*vm.code).clone();
-        code[9] = Instruction::GetConstant(Value::atom("green"), "A1".to_string());
+        code[9] = Instruction::GetConstant(Value::atom("green"), Reg::a(1));
         vm.code = Arc::new(code);
         vm.reset_query();
         vm.set_reg("A1", x());
@@ -2261,6 +2302,121 @@ mod d126_format_free_step_tests {
                 let old = table.iter().find(|(k, _)| *k == key).map(|(_, pc)| *pc);
                 let new = table.iter().find(|(k, _)| WamState::functor_key_eq(f, n, k)).map(|(_, pc)| *pc);
                 assert_eq!(new, old, "f={} n={}", f, n);
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod r1_reg_operand_tests {
+    // R1: an access through a decoded `Reg` must behave exactly like the same
+    // access through the register's name.
+    use super::*;
+
+    fn names() -> Vec<String> {
+        let mut v = Vec::new();
+        for p in ["A", "X", "Y", "B", "_XT", "Z", ""] {
+            for n in 0..=620usize {
+                v.push(format!("{}{}", p, n));
+            }
+        }
+        for s in ["A01", "X007", "A001", "Y01", "Y0", "Y", "A", "X", "A+1", "X+3", "Y1x",
+                  "A99999999999999999999999", "X1x", "_XT0", "_XT12", "Y4096", "Y4097",
+                  "Y32767", "Y32768", "Y99999", "A600", "A601", "X500", "X501"] {
+            v.push(s.to_string());
+        }
+        v
+    }
+
+    #[test]
+    fn from_name_is_total_except_text_keyed_y_names() {
+        for name in names() {
+            let r = Reg::from_name(&name);
+            let expect_none = WamState::is_y_reg_name(&name) && {
+                let d = &name[1..];
+                d.len() > 5 || d.starts_with('0') || !d.bytes().all(|b| b.is_ascii_digit())
+                    || d.parse::<usize>().map_or(true, |n| n == 0 || n > 0x7FFF)
+            };
+            assert_eq!(r.is_none(), expect_none, "{}", name);
+            if let Some(r) = r {
+                if r.is_y() {
+                    match YRegs::slot(&name) {
+                        Some(i) => assert_eq!(r.y_num(), i + 1, "slot {}", name),
+                        None => assert!(r.y_num() > YRegs::MAX_SLOTS, "side map {}", name),
+                    }
+                }
+                assert_eq!(r.flat().min(MAX_REGS), WamState::reg_index(&name).min(MAX_REGS), "flat {}", name);
+                assert_eq!(r.is_y(), WamState::is_y_reg_name(&name), "y {}", name);
+                assert_eq!(r.is_a(), name.as_bytes().first() == Some(&b'A'), "a {}", name);
+                if r.is_y() {
+                    assert_eq!(r.name(), name, "name {}", name);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn constructors_match_the_decoder() {
+        for n in 0..=700u16 {
+            assert_eq!(Some(Reg::a(n)), Reg::from_name(&format!("A{}", n)), "A{}", n);
+            assert_eq!(Some(Reg::x(n)), Reg::from_name(&format!("X{}", n)), "X{}", n);
+            if n >= 1 {
+                assert_eq!(Some(Reg::y(n)), Reg::from_name(&format!("Y{}", n)), "Y{}", n);
+            }
+        }
+        // The raw encodings wam_rust_reg.pl emits for non-canonical names.
+        assert_eq!(Reg::from_name("_XT0"), Some(Reg(0)));
+        assert_eq!(Reg::from_name("A01"), Some(Reg(16384)));
+        assert_eq!(Reg::from_name("X0"), Some(Reg(99)));
+        assert_eq!(Reg::from_name("A0"), Some(Reg(32767)));
+        assert_eq!(Reg::from_name("Y"), Some(Reg(199)));
+        assert_eq!(Reg::from_name("B7"), Some(Reg(0)));
+        assert_eq!(Reg::from_name("A+3"), Some(Reg(16386)));
+        assert_eq!(Reg::from_name("Y01"), None);
+    }
+
+    /// Random register operations through names on one machine and through
+    /// decoded registers on another; every register and the trail must stay
+    /// equal.
+    #[test]
+    fn reg_access_matches_name_access() {
+        let pool: Vec<String> = ["A1", "A2", "A3", "A99", "X1", "X5", "X99", "X100", "X150",
+            "Y1", "Y2", "Y7", "Y99", "Y100", "Y4097", "A01", "X007", "_XT0", "_XT3", "A0", "X0",
+            "A600", "X501", "B2"].iter().map(|s| s.to_string()).collect();
+        let mut seed: u64 = 0x9E3779B97F4A7C15;
+        let mut next = || { seed ^= seed << 13; seed ^= seed >> 7; seed ^= seed << 17; seed };
+        let mut a = WamState::new(vec![], HashMap::new());
+        let mut b = WamState::new(vec![], HashMap::new());
+        for m in [&mut a, &mut b] {
+            m.smut().push(StackEntry::Env(0, YRegs::new(), 0));
+        }
+        for step in 0..20000 {
+            let name = &pool[(next() % pool.len() as u64) as usize];
+            let r = Reg::from_name(name).unwrap();
+            let v = Value::Integer((next() % 1000) as i64);
+            match next() % 7 {
+                0 => { a.put_reg(name, v.clone()); b.put_reg_r(r, v); }
+                1 => { a.set_reg_str(name, v.clone()); b.set_reg_r(r, v); }
+                2 => { a.trail_binding(name); b.trail_reg(r); }
+                3 => { assert_eq!(a.get_reg(name), b.get_reg_r(r), "get {} {}", name, step); }
+                4 => { assert_eq!(a.get_reg_raw(name), b.get_reg_raw_r(r), "raw {} {}", name, step); }
+                5 => { assert_eq!(a.get_reg_ref(name), b.get_reg_ref_r(r), "ref {} {}", name, step); }
+                _ => {
+                    if next() % 4 == 0 {
+                        for m in [&mut a, &mut b] { m.smut().push(StackEntry::Env(0, YRegs::new(), 0)); }
+                    } else if a.stack.len() > 1 {
+                        for m in [&mut a, &mut b] { m.smut().pop(); }
+                    }
+                }
+            }
+            assert_eq!(a.regs(), b.regs(), "regs at step {}", step);
+            assert_eq!(a.trail.len(), b.trail.len());
+            for (x, y) in a.trail.iter().zip(b.trail.iter()) {
+                assert_eq!(x.register_name(), y.register_name());
+                assert_eq!(x.old_value, y.old_value);
+            }
+            for name in &pool {
+                assert_eq!(a.get_reg(name), b.get_reg(name), "{} at {}", name, step);
             }
         }
     }
@@ -4609,6 +4765,127 @@ impl WamState {
                 Some(v) => Some(self.deref_var(v)),
             }
         }
+    }
+
+    // ------------------------------------------------------------------
+    // R1: register access by decoded operand (`Reg`).
+    //
+    // Each method is the `&str` method named in its comment with the name
+    // decode taken out: `reg_index(name)` is `r.flat()`, `is_y_reg_name(name)`
+    // is `r.is_y()`, and `YRegs::slot(name)` is `r.y_num() - 1`. The routing
+    // (flat file vs topmost environment frame) and the `Uninit`/out-of-range
+    // rules are the same, so a step arm that used to call
+    // `get_reg(xn)` with `xn == "Y2"` and now calls `get_reg_r(Reg::y(2))`
+    // reads the same slot and returns the same value. The `&str` methods stay
+    // for builtins, lowered code, fact sources and the shims.
+    // ------------------------------------------------------------------
+
+    /// `get_reg_raw(name)`: the flat slot, `None` for `Uninit` or out of range.
+    #[inline(always)]
+    pub fn get_reg_raw_r(&self, r: Reg) -> Option<Value> {
+        match self.regs.get(r.flat()) {
+            Some(Value::Uninit) | None => None,
+            Some(v) => Some(v.clone()),
+        }
+    }
+
+    /// `get_reg_raw` by reference (no clone).
+    #[inline(always)]
+    pub fn reg_raw_ref_r(&self, r: Reg) -> Option<&Value> {
+        match self.regs.get(r.flat()) {
+            Some(Value::Uninit) | None => None,
+            Some(v) => Some(v),
+        }
+    }
+
+    /// `set_reg_str(name, val)` / `set_reg(name, val)`: the flat slot.
+    #[inline(always)]
+    pub fn set_reg_r(&mut self, r: Reg, val: Value) {
+        let idx = r.flat();
+        if idx < self.regs.len() {
+            self.regs[idx] = val;
+            self.ax_dirty.mark(idx);
+        }
+    }
+
+    /// The topmost environment frame's Y slots, if any.
+    #[inline(always)]
+    fn top_yregs(&self) -> Option<&YRegs> {
+        for entry in self.stack.iter().rev() {
+            if let StackEntry::Env(_, y_regs, _) = entry {
+                return Some(y_regs);
+            }
+        }
+        None
+    }
+
+    /// `get_reg(name)`. The A/X path is inline; a Y register goes through
+    /// `get_y` (topmost frame walk).
+    #[inline(always)]
+    pub fn get_reg_r(&self, r: Reg) -> Option<Value> {
+        if r.is_y() {
+            self.get_y(r.y_num())
+        } else {
+            match self.regs.get(r.flat()) {
+                Some(Value::Uninit) | None => None,
+                Some(v) => Some(self.deref_var(v)),
+            }
+        }
+    }
+
+    #[inline(never)]
+    fn get_y(&self, n: usize) -> Option<Value> {
+        self.top_yregs()?.get_n(n).map(|v| self.deref_var(v))
+    }
+
+    /// `get_reg_ref(name)`.
+    #[inline]
+    pub fn get_reg_ref_r(&self, r: Reg) -> Option<&Value> {
+        if r.is_y() {
+            match self.top_yregs()?.get_n(r.y_num()) {
+                Some(Value::Uninit) | None => None,
+                Some(v) => Some(v),
+            }
+        } else {
+            self.reg_raw_ref_r(r)
+        }
+    }
+
+    /// `put_reg(name, val)`. The A/X path is inline; a Y register goes
+    /// through `put_y`.
+    #[inline(always)]
+    pub fn put_reg_r(&mut self, r: Reg, val: Value) {
+        if r.is_y() {
+            self.put_y(r.y_num(), val);
+        } else {
+            self.set_reg_r(r, val);
+        }
+    }
+
+    #[inline(never)]
+    fn put_y(&mut self, n: usize, val: Value) {
+        for entry in self.smut().iter_mut().rev() {
+            if let StackEntry::Env(_, y_regs, _) = entry {
+                y_regs.insert_n(n, val);
+                return;
+            }
+        }
+    }
+
+    /// `trail_binding(name)`: since R0b only a Y register is trailed. The
+    /// entry records the same text `trail_binding(name)` recorded (a static
+    /// `REG_NAMES` entry for Y1..Y99).
+    #[inline(always)]
+    pub fn trail_reg(&mut self, r: Reg) {
+        if r.is_y() {
+            self.trail_y(r);
+        }
+    }
+
+    #[inline(never)]
+    fn trail_y(&mut self, r: Reg) {
+        let old = self.get_y(r.y_num());
+        self.trail.push(TrailEntry::register_reg(r, old));
     }
 
     /// Set a register value. Yi registers are written to the topmost environment frame.
@@ -7318,85 +7595,85 @@ impl WamState {
         match opcode {
             // Head unification
             "get_constant" if args.len() == 2 =>
-                Some(Instruction::GetConstant(Self::parse_value(&args[0]), args[1].clone())),
+                Some(Instruction::GetConstant(Self::parse_value(&args[0]), Reg::from_name(&args[1])?)),
             "get_variable" if args.len() == 2 =>
-                Some(Instruction::GetVariable(args[0].clone(), args[1].clone())),
+                Some(Instruction::GetVariable(Reg::from_name(&args[0])?, Reg::from_name(&args[1])?)),
             "get_value" if args.len() == 2 =>
-                Some(Instruction::GetValue(args[0].clone(), args[1].clone())),
+                Some(Instruction::GetValue(Reg::from_name(&args[0])?, Reg::from_name(&args[1])?)),
             "get_structure" if args.len() == 2 =>
-                Some(Instruction::GetStructure(args[0].clone(), args[1].clone())),
+                Some(Instruction::GetStructure(args[0].clone(), Reg::from_name(&args[1])?)),
             "get_list" if args.len() == 1 =>
-                Some(Instruction::GetList(args[0].clone())),
+                Some(Instruction::GetList(Reg::from_name(&args[0])?)),
             "unify_variable" if args.len() == 1 =>
-                Some(Instruction::UnifyVariable(args[0].clone())),
+                Some(Instruction::UnifyVariable(Reg::from_name(&args[0])?)),
             "unify_value" if args.len() == 1 =>
-                Some(Instruction::UnifyValue(args[0].clone())),
+                Some(Instruction::UnifyValue(Reg::from_name(&args[0])?)),
             "unify_constant" if args.len() == 1 =>
                 Some(Instruction::UnifyConstant(Self::parse_value(&args[0]))),
 
             // Body construction
             "put_constant" if args.len() == 2 =>
-                Some(Instruction::PutConstant(Self::parse_value(&args[0]), args[1].clone())),
+                Some(Instruction::PutConstant(Self::parse_value(&args[0]), Reg::from_name(&args[1])?)),
             "put_variable" if args.len() == 2 =>
-                Some(Instruction::PutVariable(args[0].clone(), args[1].clone())),
+                Some(Instruction::PutVariable(Reg::from_name(&args[0])?, Reg::from_name(&args[1])?)),
             "put_value" if args.len() == 2 =>
-                Some(Instruction::PutValue(args[0].clone(), args[1].clone())),
+                Some(Instruction::PutValue(Reg::from_name(&args[0])?, Reg::from_name(&args[1])?)),
             "put_structure" if args.len() == 2 =>
-                Some(Instruction::PutStructure(args[0].clone(), args[1].clone())),
+                Some(Instruction::PutStructure(args[0].clone(), Reg::from_name(&args[1])?)),
             "put_list" if args.len() == 1 =>
-                Some(Instruction::PutList(args[0].clone())),
+                Some(Instruction::PutList(Reg::from_name(&args[0])?)),
             "set_variable" if args.len() == 1 =>
-                Some(Instruction::SetVariable(args[0].clone())),
+                Some(Instruction::SetVariable(Reg::from_name(&args[0])?)),
             "set_value" if args.len() == 1 =>
-                Some(Instruction::SetValue(args[0].clone())),
+                Some(Instruction::SetValue(Reg::from_name(&args[0])?)),
             "set_constant" if args.len() == 1 =>
                 Some(Instruction::SetConstant(Self::parse_value(&args[0]))),
             "load_register_constant" if args.len() == 3 => {
                 let skip = args[2].parse::<usize>().ok()?;
                 Some(Instruction::LoadRegisterConstant(
                     Self::parse_value(&args[0]),
-                    args[1].clone(),
+                    Reg::from_name(&args[1])?,
                     skip,
                 ))
             }
             "cons" if args.len() == 4 => {
                 let skip = args[3].parse::<usize>().ok()?;
-                Some(Instruction::Cons(args[0].clone(), args[1].clone(), args[2].clone(), skip))
+                Some(Instruction::Cons(Reg::from_name(&args[0])?, Reg::from_name(&args[1])?, Reg::from_name(&args[2])?, skip))
             }
             "not_member" if args.len() == 3 => {
                 let skip = args[2].parse::<usize>().ok()?;
-                Some(Instruction::NotMember(args[0].clone(), args[1].clone(), skip))
+                Some(Instruction::NotMember(Reg::from_name(&args[0])?, Reg::from_name(&args[1])?, skip))
             }
             "list_length_lt" if args.len() == 3 => {
                 let skip = args[2].parse::<usize>().ok()?;
-                Some(Instruction::ListLengthLt(args[0].clone(), args[1].clone(), skip))
+                Some(Instruction::ListLengthLt(Reg::from_name(&args[0])?, Reg::from_name(&args[1])?, skip))
             }
             "base_category_ancestor" if args.len() == 3 =>
                 Some(Instruction::BaseCategoryAncestor(
-                    args[0].clone(),
-                    args[1].clone(),
-                    args[2].clone(),
+                    Reg::from_name(&args[0])?,
+                    Reg::from_name(&args[1])?,
+                    Reg::from_name(&args[2])?,
                 )),
             "base_category_ancestor_bind" if args.len() == 4 =>
                 Some(Instruction::BaseCategoryAncestorBind(
-                    args[0].clone(),
-                    args[1].clone(),
-                    args[2].clone(),
-                    args[3].clone(),
+                    Reg::from_name(&args[0])?,
+                    Reg::from_name(&args[1])?,
+                    Reg::from_name(&args[2])?,
+                    Reg::from_name(&args[3])?,
                 )),
             "recurse_category_ancestor" if args.len() == 6 => {
                 let skip = args[5].parse::<usize>().ok()?;
                 Some(Instruction::RecurseCategoryAncestor(
-                    args[0].clone(),
-                    args[1].clone(),
-                    args[2].clone(),
-                    args[3].clone(),
+                    Reg::from_name(&args[0])?,
+                    Reg::from_name(&args[1])?,
+                    Reg::from_name(&args[2])?,
+                    Reg::from_name(&args[3])?,
                     args[4].clone(),
                     skip,
                 ))
             }
             "return_add1" if args.len() == 2 =>
-                Some(Instruction::ReturnAdd1(args[0].clone(), args[1].clone())),
+                Some(Instruction::ReturnAdd1(Reg::from_name(&args[0])?, Reg::from_name(&args[1])?)),
 
             // Control
             "allocate" => Some(Instruction::Allocate),
@@ -7423,7 +7700,7 @@ impl WamState {
             "begin_aggregate" if args.len() == 3 =>
                 Some(Instruction::BeginAggregate(args[0].clone(), args[1].clone(), args[2].clone())),
             "end_aggregate" if args.len() == 1 =>
-                Some(Instruction::EndAggregate(args[0].clone())),
+                Some(Instruction::EndAggregate(Reg::from_name(&args[0])?)),
             // T7 route 2: par_aggregate AggType, EnumLabel, BodyLabel, ResultReg [, InReg...]
             "par_aggregate" if args.len() >= 4 =>
                 Some(Instruction::ParAggregate(
@@ -7562,16 +7839,16 @@ mod d138_first_arg_dispatch_tests {
         let code = vec![
             switch,                                                  // 1 d/2
             Instruction::TryMeElse("L_d_2".to_string()),             // 2
-            Instruction::GetConstant(a("a"), "A1".to_string()),      // 3
-            Instruction::GetConstant(Value::Integer(1), "A2".to_string()),
+            Instruction::GetConstant(a("a"), Reg::a(1)),      // 3
+            Instruction::GetConstant(Value::Integer(1), Reg::a(2)),
             Instruction::Proceed,                                    // 5
             Instruction::RetryMeElse("L_d_3".to_string()),           // 6 L_d_2
-            Instruction::GetConstant(a("b"), "A1".to_string()),      // 7 L_d_2_body
-            Instruction::GetConstant(Value::Integer(2), "A2".to_string()),
+            Instruction::GetConstant(a("b"), Reg::a(1)),      // 7 L_d_2_body
+            Instruction::GetConstant(Value::Integer(2), Reg::a(2)),
             Instruction::Proceed,                                    // 9
             Instruction::TrustMe,                                    // 10 L_d_3
-            Instruction::GetConstant(a("b"), "A1".to_string()),      // 11 L_d_3_body
-            Instruction::GetConstant(Value::Integer(3), "A2".to_string()),
+            Instruction::GetConstant(a("b"), Reg::a(1)),      // 11 L_d_3_body
+            Instruction::GetConstant(Value::Integer(3), Reg::a(2)),
             Instruction::Proceed,                                    // 13
             Instruction::Try("L_d_2_body".to_string()),              // 14 L_d_b_dispatch
             Instruction::Trust("L_d_3_body".to_string()),            // 15

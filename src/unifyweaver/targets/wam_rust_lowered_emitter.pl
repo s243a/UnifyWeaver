@@ -27,6 +27,7 @@
 :- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
 :- use_module(wam_clause_chain, [clause_chain/2]).
 :- use_module(wam_rust_target, [escape_rust_string/2]).
+:- use_module(wam_rust_reg, [rust_reg_literal/2]).
 :- use_module(wam_text_parser, [wam_classify_constant_token/2]).
 
 % =====================================================================
@@ -1090,12 +1091,14 @@ emit_one(get_value(XnStr, AiStr), I) :-
 emit_one(get_structure(FStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     format("~w// get_structure ~w, ~w (delegate to step)~n", [I, FStr, AiStr]),
-    format("~wif !vm.step(&Instruction::GetStructure(\"~w\".to_string(), \"~w\".to_string())) { return false; }~n", [I, FStr, Ai]).
+    rust_reg_literal(Ai, RAi),
+    format("~wif !vm.step(&Instruction::GetStructure(\"~w\".to_string(), ~w)) { return false; }~n", [I, FStr, RAi]).
 
 emit_one(get_list(AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     format("~w// get_list ~w (delegate to step)~n", [I, AiStr]),
-    format("~wif !vm.step(&Instruction::GetList(\"~w\".to_string())) { return false; }~n", [I, Ai]).
+    rust_reg_literal(Ai, RAi),
+    format("~wif !vm.step(&Instruction::GetList(~w)) { return false; }~n", [I, RAi]).
 
 % --- Body construction (put_*) ---
 
@@ -1123,24 +1126,28 @@ emit_one(put_value(XnStr, AiStr), I) :-
 emit_one(put_structure(FStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     format("~w// put_structure ~w, ~w (delegate to step)~n", [I, FStr, AiStr]),
-    format("~wif !vm.step(&Instruction::PutStructure(\"~w\".to_string(), \"~w\".to_string())) { return false; }~n", [I, FStr, Ai]).
+    rust_reg_literal(Ai, RAi),
+    format("~wif !vm.step(&Instruction::PutStructure(\"~w\".to_string(), ~w)) { return false; }~n", [I, FStr, RAi]).
 
 emit_one(put_list(AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     format("~w// put_list ~w (delegate to step)~n", [I, AiStr]),
-    format("~wif !vm.step(&Instruction::PutList(\"~w\".to_string())) { return false; }~n", [I, Ai]).
+    rust_reg_literal(Ai, RAi),
+    format("~wif !vm.step(&Instruction::PutList(~w)) { return false; }~n", [I, RAi]).
 
 % --- Unify instructions (delegate to step) ---
 
 emit_one(unify_variable(XnStr), I) :-
     rust_reg_name(XnStr, Xn),
     format("~w// unify_variable ~w (delegate to step)~n", [I, XnStr]),
-    format("~wif !vm.step(&Instruction::UnifyVariable(\"~w\".to_string())) { return false; }~n", [I, Xn]).
+    rust_reg_literal(Xn, RXn),
+    format("~wif !vm.step(&Instruction::UnifyVariable(~w)) { return false; }~n", [I, RXn]).
 
 emit_one(unify_value(XnStr), I) :-
     rust_reg_name(XnStr, Xn),
     format("~w// unify_value ~w (delegate to step)~n", [I, XnStr]),
-    format("~wif !vm.step(&Instruction::UnifyValue(\"~w\".to_string())) { return false; }~n", [I, Xn]).
+    rust_reg_literal(Xn, RXn),
+    format("~wif !vm.step(&Instruction::UnifyValue(~w)) { return false; }~n", [I, RXn]).
 
 emit_one(unify_constant(CStr), I) :-
     rust_val_literal(CStr, RustVal),
@@ -1152,12 +1159,14 @@ emit_one(unify_constant(CStr), I) :-
 emit_one(set_variable(XnStr), I) :-
     rust_reg_name(XnStr, Xn),
     format("~w// set_variable ~w (delegate to step)~n", [I, XnStr]),
-    format("~wif !vm.step(&Instruction::SetVariable(\"~w\".to_string())) { return false; }~n", [I, Xn]).
+    rust_reg_literal(Xn, RXn),
+    format("~wif !vm.step(&Instruction::SetVariable(~w)) { return false; }~n", [I, RXn]).
 
 emit_one(set_value(XnStr), I) :-
     rust_reg_name(XnStr, Xn),
     format("~w// set_value ~w (delegate to step)~n", [I, XnStr]),
-    format("~wif !vm.step(&Instruction::SetValue(\"~w\".to_string())) { return false; }~n", [I, Xn]).
+    rust_reg_literal(Xn, RXn),
+    format("~wif !vm.step(&Instruction::SetValue(~w)) { return false; }~n", [I, RXn]).
 
 emit_one(set_constant(CStr), I) :-
     rust_val_literal(CStr, RustVal),
