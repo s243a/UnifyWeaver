@@ -68,6 +68,25 @@ fd_clause(dp, dp(1, p)).
 fd_clause(dp, dp(2, q)).
 fd_clause(dp, dp(2, r)).
 
+% Distinct shared keys must not alias after dispatch-label sanitization.
+fd_program(label_collision_dash, dlabel('a-b', R), R).
+fd_program(label_collision_under, dlabel(a_b, R), R).
+fd_clause(dlabel, dlabel(a, 0)).
+fd_clause(dlabel, dlabel('a-b', 1)).
+fd_clause(dlabel, dlabel(a_b, 2)).
+fd_clause(dlabel, dlabel('a-b', 3)).
+fd_clause(dlabel, dlabel(a_b, 4)).
+
+fd_program(struct_label_dash, dslabel(R), R).
+fd_program(struct_label_under, dslabelu(R), R).
+fd_clause(dslabel, dsl(a(x), 0)).
+fd_clause(dslabel, dsl('a-b'(x), 1)).
+fd_clause(dslabel, dsl(a_b(x), 2)).
+fd_clause(dslabel, dsl('a-b'(y), 3)).
+fd_clause(dslabel, dsl(a_b(y), 4)).
+fd_clause(dslabel, (dslabel(R) :- member(T, ['a-b'(x),'a-b'(y)]), dsl(T,R))).
+fd_clause(dslabel, (dslabelu(R) :- member(T, [a_b(x),a_b(y)]), dsl(T,R))).
+
 fd_program(dup_last,       da(b, R),  R).
 fd_program(dup_last_c,     da(c, R),  R).
 fd_clause(da, da(a, 1)).
