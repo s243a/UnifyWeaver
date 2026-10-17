@@ -179,11 +179,10 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                     if val.is_unbound() {
                         // Write mode
                         let addr = self.heap.len();
-                        let arity = fn_str.split(\'/\').nth(1)
-                            .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
-                        self.heap.push(Value::strv(fn_str.clone(), vec![]));
+                        let arity = fn_str.get_arity;
+                        self.heap.push(Value::strv(fn_str.sym(), vec![]));
                         for _ in 0..arity {
-                            self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
+                            self.heap.push(Self::struct_arg_atom());
                         }
                         self.trail_reg(*ai);
                         if let Value::Unbound(ref name) = val {
@@ -195,9 +194,8 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                     } else if let Value::Ref(addr) = &val {
                         // Read mode on heap ref
                         if let Some(Value::Str(s, _)) = self.heap.get(*addr) {
-                            if s == fn_str || s == &format!("str({})", fn_str) {
-                                let arity = fn_str.split(\'/\').nth(1)
-                                    .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+                            if s.as_str() == fn_str.as_str() || s.as_str() == fn_str.str_text.as_str() {
+                                let arity = fn_str.get_arity;
                                 let args = self.heap_subargs(addr + 1, arity);
                                 self.smut().push(StackEntry::UnifyCtx(args));
                                 self.pc += 1; true
@@ -217,7 +215,7 @@ wam_instruction_arm('Instruction::GetStructure(fn_str, ai)', Body) :-
                         // the built form for any bare-name Str.
                         let matches_functor =
                             f == fn_str.as_str()
-                            || Self::functor_key_eq(f, args.len(), fn_str);
+                            || Self::functor_key_eq(f, args.len(), fn_str.as_str());
                         if matches_functor {
                             self.smut().push(StackEntry::UnifyCtx(args.to_vec()));
                             self.pc += 1; true
@@ -234,8 +232,8 @@ wam_instruction_arm('Instruction::GetList(ai)', Body) :-
                     if val.is_unbound() {
                         let addr = self.heap.len();
                         self.heap.push(Value::strv("./2".to_string(), vec![]));
-                        self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
-                        self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
+                        self.heap.push(Self::struct_arg_atom());
+                        self.heap.push(Self::struct_arg_atom());
                         self.trail_reg(*ai);
                         if let Value::Unbound(ref name) = val {
                             self.bind_var(name, Value::Ref(addr));
@@ -379,13 +377,12 @@ wam_instruction_arm('Instruction::PutValue(xn, ai)', Body) :-
 
 wam_instruction_arm('Instruction::PutStructure(fn_str, ai)', Body) :-
     Body = '                // Parse arity from functor string (e.g. "member/2" -> arity=2)
-                let arity: usize = fn_str.split(''/'').last()
-                    .and_then(|s| s.parse().ok()).unwrap_or(0);
+                let arity: usize = fn_str.put_arity;
                 // Reserve heap slots for the structure header + args
                 let addr = self.heap.len();
-                self.heap.push(Value::strv(fn_str.clone(), vec![])); // placeholder
+                self.heap.push(Value::strv(fn_str.sym(), vec![])); // placeholder
                 for _ in 0..arity {
-                    self.heap.push(Value::Atom("__struct_arg__".to_string().into()));
+                    self.heap.push(Self::struct_arg_atom());
                 }
                 // Enter structure-write mode: next N SetValue/SetConstant calls fill args
                 self.smut().push(StackEntry::WriteCtx(addr));
@@ -421,8 +418,8 @@ wam_instruction_arm('Instruction::PutList(ai)', Body) :-
                 // use the heap as a scratch area: push a sentinel, then
                 // collect two values; after the second, build the list.
                 let marker = self.heap.len();
-                self.heap.push(Value::Atom("__list_head__".to_string().into()));
-                self.heap.push(Value::Atom("__list_tail__".to_string().into()));
+                self.heap.push(Self::list_head_atom());
+                self.heap.push(Self::list_tail_atom());
                 self.set_reg_r(*ai, Value::Integer(marker as i64));
                 self.smut().push(StackEntry::WriteCtx(marker));
                 self.pc += 1; true'.
@@ -8734,7 +8731,7 @@ wam_line_to_rust_instr(["get_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::GetStructure("~w".to_string(), ~w)',
+        'Instruction::GetStructure(Functor::new("~w"), ~w)',
         [CFN, RAi]).
 wam_line_to_rust_instr(["get_list", Ai], _, _, Rust) :-
     clean_comma(Ai, CAi),
@@ -8776,7 +8773,7 @@ wam_line_to_rust_instr(["put_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
     rust_reg_literal(CAi, RAi),
     format(string(Rust),
-        'Instruction::PutStructure("~w".to_string(), ~w)',
+        'Instruction::PutStructure(Functor::new("~w"), ~w)',
         [CFN, RAi]).
 wam_line_to_rust_instr(["put_list", Ai], _, _, Rust) :-
     rust_reg_literal(Ai, RAi),

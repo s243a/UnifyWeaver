@@ -1092,7 +1092,7 @@ emit_one(get_structure(FStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     format("~w// get_structure ~w, ~w (delegate to step)~n", [I, FStr, AiStr]),
     rust_reg_literal(Ai, RAi),
-    format("~wif !vm.step(&Instruction::GetStructure(\"~w\".to_string(), ~w)) { return false; }~n", [I, FStr, RAi]).
+    format("~wif !vm.step(&Instruction::GetStructure(Functor::new(\"~w\"), ~w)) { return false; }~n", [I, FStr, RAi]).
 
 emit_one(get_list(AiStr), I) :-
     rust_reg_name(AiStr, Ai),
@@ -1127,7 +1127,7 @@ emit_one(put_structure(FStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     format("~w// put_structure ~w, ~w (delegate to step)~n", [I, FStr, AiStr]),
     rust_reg_literal(Ai, RAi),
-    format("~wif !vm.step(&Instruction::PutStructure(\"~w\".to_string(), ~w)) { return false; }~n", [I, FStr, RAi]).
+    format("~wif !vm.step(&Instruction::PutStructure(Functor::new(\"~w\"), ~w)) { return false; }~n", [I, FStr, RAi]).
 
 emit_one(put_list(AiStr), I) :-
     rust_reg_name(AiStr, Ai),

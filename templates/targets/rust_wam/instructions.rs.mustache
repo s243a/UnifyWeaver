@@ -170,6 +170,78 @@ impl PartialEq<str> for Reg {
     }
 }
 
+
+/// R1: a `get_structure`/`put_structure` functor operand (`"name/arity"`),
+/// with what the step arms used to recompute from the text on every
+/// execution worked out once when the instruction is built:
+///
+/// * `get_arity`: `text.split('/').nth(1)` parsed (GetStructure's rule);
+/// * `put_arity`: `text.split('/').last()` parsed (PutStructure's rule);
+/// * `str_text`: `format!("str({})", text)`, GetStructure's second spelling;
+/// * the interned `Sym` of the text, filled on first use. A step arm that
+///   builds the structure header used to intern the text on every
+///   execution; the first execution of this instruction interns it at the
+///   same moment as before, so interner ids are assigned in the same order.
+///
+/// The two arity rules differ (`"//2"`: nth(1) is `""`, last is `"2"`), so
+/// both are kept.
+#[derive(Clone, Debug)]
+pub struct Functor {
+    text: String,
+    pub get_arity: usize,
+    pub put_arity: usize,
+    pub str_text: String,
+    sym: std::sync::OnceLock<crate::value::Sym>,
+}
+
+impl Functor {
+    pub fn new(text: impl Into<String>) -> Functor {
+        let text: String = text.into();
+        let get_arity = text.split('/').nth(1)
+            .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+        let put_arity = text.split('/').last()
+            .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+        let str_text = format!("str({})", text);
+        Functor { text, get_arity, put_arity, str_text, sym: std::sync::OnceLock::new() }
+    }
+
+    #[inline(always)]
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// The functor text as a `Sym` (what `fn_str.clone().into()` gave).
+    #[cfg(feature = "intern")]
+    #[inline]
+    pub fn sym(&self) -> crate::value::Sym {
+        *self.sym.get_or_init(|| self.text.as_str().into())
+    }
+    #[cfg(not(feature = "intern"))]
+    #[inline]
+    pub fn sym(&self) -> crate::value::Sym {
+        self.text.clone()
+    }
+}
+
+impl std::ops::Deref for Functor {
+    type Target = str;
+    #[inline(always)]
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl PartialEq<str> for Functor {
+    fn eq(&self, other: &str) -> bool {
+        self.text == other
+    }
+}
+impl PartialEq<&str> for Functor {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
 /// R1: a builtin call's dispatch route, resolved when the program is
 /// generated. The four core builtins run inline in the step arm; every other
 /// name enters the family cascade at the first family whose code names it.
@@ -203,7 +275,7 @@ pub enum Instruction {
     /// Unify Ai with the current value of Xn/Yn.
     GetValue(Reg, Reg),
     /// Match compound term F/N in Ai (read mode) or construct on heap (write mode).
-    GetStructure(String, Reg),
+    GetStructure(Functor, Reg),
     /// Match list [H|T] in Ai (read mode) or construct on heap (write mode).
     GetList(Reg),
     /// In read mode: bind next sub-arg to Xn. In write mode: create heap var.
@@ -221,7 +293,7 @@ pub enum Instruction {
     /// Load value of Xn/Yn into Ai.
     PutValue(Reg, Reg),
     /// Begin constructing compound F/N on heap, store ref in Ai.
-    PutStructure(String, Reg),
+    PutStructure(Functor, Reg),
     /// Begin constructing list on heap, store ref in Ai.
     PutList(Reg),
     /// Push new heap variable, bind to Xn.
