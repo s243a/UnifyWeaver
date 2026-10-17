@@ -70,7 +70,8 @@ plawk_parse_source(Source, Program, PrologClauses) :-
     plawk_normalise_getline_loops(Program1, Program2),
     plawk_fold_literal_builtins(Program2, Program3),
     plawk_desugar_assoc_postinc_patterns(Program3, Program4),
-    plawk_resolve_split_fs(Program4, Program),
+    plawk_resolve_split_fs(Program4, Program5),
+    plawk_fold_unset_truth(Program5, FunctionClauses-DynEntries, Program),
     append(BlockClauses, FunctionClauses, PrologClauses),
     plawk_dynentry_reserved_check(DynEntries, PrologClauses).
 
@@ -1463,6 +1464,18 @@ base_pattern(Pattern) -->
 % guard call named blob.
 base_pattern(Pattern) -->
     blob_eq_pattern(Pattern),
+    !.
+% A bare VARIABLE pattern is a truth test too (`f { print }` after `f = 1`,
+% `!seen { … }`). Tried just before the Prolog guard, so every comparison and call
+% production has had its turn, and only when the name is followed by what may
+% follow a whole pattern -- an action, `&&` / `||`, a range comma, a closing paren
+% or the end of the line.
+base_pattern(truth_pat(var(V))) -->
+    identifier(V),
+    identifier_boundary,
+    { \+ scalar_cmp_reserved_name(V),
+      \+ truth_pat_keyword(V) },
+    \+ \+ ( ws, truth_pat_var_follow ),
     !.
 base_pattern(Pattern) -->
     prolog_guard_pattern(Pattern).
@@ -3342,6 +3355,54 @@ split_regex_separator(Codes, Sep) :-
     Codes = [_, _ | _],
     string_codes(Sep, Codes).
 
+%% plawk_fold_unset_truth(+Program0, +Others, -Program) is det.
+%
+%  A truth test of a variable the program never mentions anywhere else (`END { if
+%  (zz) … }`) reads awk's uninitialised value, which is false: the test folds to
+%  the constant `int(0)`. "Never mentioned" is checked on the whole program and the
+%  function clauses, so any write -- an assignment, a getline or split target, a
+%  loop variable -- leaves the test alone. Built-in variables (FS, ARGV, ...) have
+%  values of their own and are never folded.
+plawk_fold_unset_truth(Program0, Others, Program) :-
+    findall(V, ( sub_term(T, Program0), compound(T),
+                 ( T = truth(var(V)) ; T = truth_pat(var(V)) ), atom(V) ), Vs0),
+    sort(Vs0, Vs),
+    include(plawk_only_truth_read(Program0, Others), Vs, Unset),
+    (   Unset == []
+    ->  Program = Program0
+    ;   plawk_replace_unset_truth(Program0, Unset, Program)
+    ).
+
+plawk_only_truth_read(Program, Others, V) :-
+    \+ plawk_awk_builtin_var(V),
+    \+ ( sub_term(O, Others), O == V ),
+    aggregate_all(count, ( sub_term(A, Program), A == V ), NAll),
+    aggregate_all(count, ( sub_term(T, Program), compound(T),
+                           ( T = truth(var(V1)) ; T = truth_pat(var(V1)) ), V1 == V ),
+        NTruth),
+    NAll =:= NTruth.
+
+plawk_awk_builtin_var(V) :-
+    memberchk(V, ['FS', 'OFS', 'ORS', 'RS', 'NR', 'NF', 'FNR', 'FILENAME', 'SUBSEP',
+        'RSTART', 'RLENGTH', 'CONVFMT', 'OFMT', 'ENVIRON', 'ARGC', 'ARGV']).
+
+plawk_replace_unset_truth(T, _Unset, T) :-
+    var(T),
+    !.
+plawk_replace_unset_truth(truth(var(V)), Unset, truth(int(0))) :-
+    memberchk(V, Unset),
+    !.
+plawk_replace_unset_truth(truth_pat(var(V)), Unset, truth_pat(int(0))) :-
+    memberchk(V, Unset),
+    !.
+plawk_replace_unset_truth(T0, Unset, T) :-
+    compound(T0),
+    !,
+    T0 =.. [F | As0],
+    maplist([A0, A]>>plawk_replace_unset_truth(A0, Unset, A), As0, As),
+    T =.. [F | As].
+plawk_replace_unset_truth(T, _Unset, T).
+
 %% plawk_resolve_split_fs(+Program0, -Program) is det.
 %
 %  The two-argument `split($N, arr)` separates on FS. Resolved here when FS is
@@ -3387,6 +3448,21 @@ truth_pat_operand(field(N)) -->
     { NCodes \== [], number_codes(N, NCodes), N >= 1 }.
 truth_pat_operand(special('NF')) -->
     "NF", identifier_boundary.
+
+% Words that start some other construct, never a variable pattern.
+truth_pat_keyword(V) :-
+    memberchk(V, ['BEGIN', 'END', 'BEGINFILE', 'ENDFILE', func, while, do, delete,
+        getline, exit, return, nextfile, pass, split, sub, gsub, match, sprintf,
+        close, system, rand, srand, sqrt, sin, cos, exp, log, atan2]).
+
+truth_pat_var_follow --> "{".
+truth_pat_var_follow --> "&&".
+truth_pat_var_follow --> "||".
+truth_pat_var_follow --> ",".
+truth_pat_var_follow --> ")".
+truth_pat_var_follow --> "\n".
+truth_pat_var_follow --> ";".
+truth_pat_var_follow, [] --> \+ [_].
 
 % What may follow a pattern operand that makes it more than a bare truth test: a
 % comparison, a match, or arithmetic.
@@ -3594,6 +3670,13 @@ while_cmp(cmp(Elem, Op, FC)) -->
 while_cmp(cmp(Elem, Op, Rhs)) -->
     cond_elem_read(Elem),
     ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+% A variable against a FLOAT literal (`if (x > 5.5)`, `while (t >= 0.5)`), before
+% the int RHS for the same reason as the element clause above.
+while_cmp(cmp(var(V), Op, FC)) -->
+    identifier(V),
+    { \+ scalar_cmp_reserved_name(V) },
+    ws, numeric_cmp_op(Op), ws, signed_float_lit(FC),
+    !.
 while_cmp(cmp(var(V), Op, Rhs)) -->
     identifier(V),
     { \+ scalar_cmp_reserved_name(V) },
