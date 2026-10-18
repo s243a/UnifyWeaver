@@ -3,63 +3,323 @@
 
 use crate::value::Value;
 
+/// R1: a register operand, decoded once when the program is generated (or
+/// parsed) instead of on every access.
+///
+/// Before R1 every operand was the register's name (`"A1"`, `"X3"`, `"Y2"`)
+/// and each access decoded it again (`reg_index`, `is_y_reg_name`,
+/// `YRegs::slot`). A `Reg` carries the decoded result, so the step arms index
+/// the register file directly. The encoding keeps every property the runtime
+/// derived from the name, so an access through a `Reg` behaves exactly like
+/// the same access through the name it was decoded from:
+///
+/// * bit 15 set: a permanent register `Y<n>`, `n` in 1..=32767 in the low
+///   bits. It lives in the topmost environment frame (`YRegs`, slot `n - 1`),
+///   and its flat index (used only by the raw `set_reg_str`/`get_reg_raw`
+///   paths, as before) is `n + 199`.
+/// * bit 15 clear: an `A`/`X` register. The low 14 bits are the flat index
+///   `WamState::reg_index(name)` gave (A1 -> 0, X1 -> 100, ...); an index at
+///   or past `MAX_REGS`, which every access treats as out of range, is stored
+///   as `FLAT_OUT_OF_RANGE`. Bit 14 records whether the name started with `A`
+///   (`PutStructure` skips its bind-through for argument registers).
+///
+/// `Reg::from_name` is the exact decoder. The only names it rejects are the
+/// `Y` spellings the slot frames keep in a side map by text (`Y0`, `Y01`,
+/// `Y1x`, ...): the compiler never emits them.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Reg(pub u16);
+
+impl Reg {
+    pub const Y_FLAG: u16 = 0x8000;
+    pub const A_FLAG: u16 = 0x4000;
+    pub const FLAT_MASK: u16 = 0x3FFF;
+    pub const FLAT_OUT_OF_RANGE: u16 = 0x3FFF;
+
+    /// `A<n>` (`A0` decodes to an out-of-range slot, as `reg_index` does).
+    #[inline]
+    pub const fn a(n: u16) -> Reg {
+        if n == 0 || n as usize > crate::state::MAX_REGS {
+            Reg(Self::A_FLAG | Self::FLAT_OUT_OF_RANGE)
+        } else {
+            Reg(Self::A_FLAG | (n - 1))
+        }
+    }
+
+    /// `X<n>`: flat index `n + 99`.
+    #[inline]
+    pub const fn x(n: u16) -> Reg {
+        if (n as usize) + 99 >= crate::state::MAX_REGS {
+            Reg(Self::FLAT_OUT_OF_RANGE)
+        } else {
+            Reg(n + 99)
+        }
+    }
+
+    /// `Y<n>`, n in 1..=32767.
+    #[inline]
+    pub const fn y(n: u16) -> Reg {
+        Reg(Self::Y_FLAG | n)
+    }
+
+    #[inline(always)]
+    pub const fn is_y(self) -> bool {
+        self.0 & Self::Y_FLAG != 0
+    }
+
+    /// True when the register's name starts with `A`.
+    #[inline(always)]
+    pub const fn is_a(self) -> bool {
+        self.0 & (Self::Y_FLAG | Self::A_FLAG) == Self::A_FLAG
+    }
+
+    /// The `n` of a `Y<n>` register.
+    #[inline(always)]
+    pub const fn y_num(self) -> usize {
+        (self.0 & !Self::Y_FLAG) as usize
+    }
+
+    /// The flat register-file index `WamState::reg_index` gives the name.
+    #[inline(always)]
+    pub const fn flat(self) -> usize {
+        if self.is_y() {
+            self.y_num() + 199
+        } else {
+            (self.0 & Self::FLAT_MASK) as usize
+        }
+    }
+
+    /// Exact decoder: the `Reg` that behaves like `name` in every register
+    /// access, or `None` for a `Y` name the slot frames would key by text.
+    pub fn from_name(name: &str) -> Option<Reg> {
+        if crate::state::WamState::is_y_reg_name(name) {
+            let digits = &name.as_bytes()[1..];
+            if digits.is_empty() || digits.len() > 5 || digits[0] == b'0'
+                || !digits.iter().all(|b| b.is_ascii_digit()) {
+                return None;
+            }
+            let n: usize = name[1..].parse().ok()?;
+            if n == 0 || n > 0x7FFF {
+                return None;
+            }
+            return Some(Reg::y(n as u16));
+        }
+        let idx = crate::state::WamState::reg_index(name);
+        let flat = if idx >= crate::state::MAX_REGS {
+            Self::FLAT_OUT_OF_RANGE
+        } else {
+            idx as u16
+        };
+        let a = if name.as_bytes().first() == Some(&b'A') { Self::A_FLAG } else { 0 };
+        Some(Reg(a | flat))
+    }
+
+    /// The register's name. Exact for every `Y` register and for the canonical
+    /// `A<n>`/`X<n>` spellings the compiler emits.
+    pub fn name(self) -> std::borrow::Cow<'static, str> {
+        use std::borrow::Cow;
+        if self.is_y() {
+            let n = self.y_num();
+            if n <= 99 {
+                Cow::Borrowed(crate::state::REG_NAMES[200 + n])
+            } else {
+                Cow::Owned(format!("Y{}", n))
+            }
+        } else {
+            let flat = (self.0 & Self::FLAT_MASK) as usize;
+            if self.is_a() {
+                if flat < 99 {
+                    Cow::Borrowed(crate::state::REG_NAMES[flat + 1])
+                } else if flat == Self::FLAT_OUT_OF_RANGE as usize {
+                    Cow::Borrowed("A0")
+                } else {
+                    Cow::Owned(format!("A{}", flat + 1))
+                }
+            } else if (99..=198).contains(&flat) {
+                Cow::Borrowed(crate::state::REG_NAMES[flat + 1])
+            } else if flat >= 99 {
+                Cow::Owned(format!("X{}", flat - 99))
+            } else {
+                Cow::Owned(format!("?{}", flat))
+            }
+        }
+    }
+}
+
+impl std::fmt::Debug for Reg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name())
+    }
+}
+
+impl std::fmt::Display for Reg {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.name())
+    }
+}
+
+/// Compare a register with a name (`reg == "A1"`): equal when the name
+/// decodes to the same register.
+impl PartialEq<&str> for Reg {
+    fn eq(&self, other: &&str) -> bool {
+        Reg::from_name(other) == Some(*self)
+    }
+}
+impl PartialEq<str> for Reg {
+    fn eq(&self, other: &str) -> bool {
+        Reg::from_name(other) == Some(*self)
+    }
+}
+
+
+/// R1: a `get_structure`/`put_structure` functor operand (`"name/arity"`),
+/// with what the step arms used to recompute from the text on every
+/// execution worked out once when the instruction is built:
+///
+/// * `get_arity`: `text.split('/').nth(1)` parsed (GetStructure's rule);
+/// * `put_arity`: `text.split('/').last()` parsed (PutStructure's rule);
+/// * `str_text`: `format!("str({})", text)`, GetStructure's second spelling;
+/// * the interned `Sym` of the text, filled on first use. A step arm that
+///   builds the structure header used to intern the text on every
+///   execution; the first execution of this instruction interns it at the
+///   same moment as before, so interner ids are assigned in the same order.
+///
+/// The two arity rules differ (`"//2"`: nth(1) is `""`, last is `"2"`), so
+/// both are kept.
+#[derive(Clone, Debug)]
+pub struct Functor {
+    text: String,
+    pub get_arity: usize,
+    pub put_arity: usize,
+    pub str_text: String,
+    sym: std::sync::OnceLock<crate::value::Sym>,
+}
+
+impl Functor {
+    pub fn new(text: impl Into<String>) -> Functor {
+        let text: String = text.into();
+        let get_arity = text.split('/').nth(1)
+            .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+        let put_arity = text.split('/').last()
+            .and_then(|s| s.parse::<usize>().ok()).unwrap_or(0);
+        let str_text = format!("str({})", text);
+        Functor { text, get_arity, put_arity, str_text, sym: std::sync::OnceLock::new() }
+    }
+
+    #[inline(always)]
+    pub fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    /// The functor text as a `Sym` (what `fn_str.clone().into()` gave).
+    #[cfg(feature = "intern")]
+    #[inline]
+    pub fn sym(&self) -> crate::value::Sym {
+        *self.sym.get_or_init(|| self.text.as_str().into())
+    }
+    #[cfg(not(feature = "intern"))]
+    #[inline]
+    pub fn sym(&self) -> crate::value::Sym {
+        self.text.clone()
+    }
+}
+
+impl std::ops::Deref for Functor {
+    type Target = str;
+    #[inline(always)]
+    fn deref(&self) -> &str {
+        &self.text
+    }
+}
+
+impl PartialEq<str> for Functor {
+    fn eq(&self, other: &str) -> bool {
+        self.text == other
+    }
+}
+impl PartialEq<&str> for Functor {
+    fn eq(&self, other: &&str) -> bool {
+        self.text == *other
+    }
+}
+
+/// R1: a builtin call's dispatch route, resolved when the program is
+/// generated. The four core builtins run inline in the step arm; every other
+/// name enters the family cascade at the first family whose code names it.
+/// The families before it do not claim the name, and a family that does not
+/// claim a name returns `false` without side effects (D124), so the result is
+/// the full cascade's.
+pub mod builtin_route {
+    pub const TRUE: u8 = 0;
+    pub const FAIL: u8 = 1;
+    pub const CUT: u8 = 2;
+    pub const UNIFY: u8 = 3;
+    pub const ARITH: u8 = 4;
+    pub const IO: u8 = 5;
+    pub const TYPE: u8 = 6;
+    pub const TERM: u8 = 7;
+    pub const EXT: u8 = 8;
+    pub const META: u8 = 9;
+    /// No family names it: the full `execute_builtin` path.
+    pub const FULL: u8 = 10;
+}
+
 /// WAM instruction set.
 /// Each variant corresponds to a symbolic WAM instruction from wam_target.pl.
 #[derive(Clone, Debug)]
 pub enum Instruction {
     // === Head Unification ===
     /// Verify that Ai holds constant C, or unify if Ai is unbound.
-    GetConstant(Value, String),
+    GetConstant(Value, Reg),
     /// Bind Ai's value to register Xn/Yn.
-    GetVariable(String, String),
+    GetVariable(Reg, Reg),
     /// Unify Ai with the current value of Xn/Yn.
-    GetValue(String, String),
+    GetValue(Reg, Reg),
     /// Match compound term F/N in Ai (read mode) or construct on heap (write mode).
-    GetStructure(String, String),
+    GetStructure(Functor, Reg),
     /// Match list [H|T] in Ai (read mode) or construct on heap (write mode).
-    GetList(String),
+    GetList(Reg),
     /// In read mode: bind next sub-arg to Xn. In write mode: create heap var.
-    UnifyVariable(String),
+    UnifyVariable(Reg),
     /// In read mode: unify next sub-arg with Xn. In write mode: push Xn to heap.
-    UnifyValue(String),
+    UnifyValue(Reg),
     /// In read mode: check next sub-arg equals C. In write mode: push C to heap.
     UnifyConstant(Value),
 
     // === Body Construction ===
     /// Load constant C into argument register Ai.
-    PutConstant(Value, String),
+    PutConstant(Value, Reg),
     /// Create new variable in Xn/Yn and Ai.
-    PutVariable(String, String),
+    PutVariable(Reg, Reg),
     /// Load value of Xn/Yn into Ai.
-    PutValue(String, String),
+    PutValue(Reg, Reg),
     /// Begin constructing compound F/N on heap, store ref in Ai.
-    PutStructure(String, String),
+    PutStructure(Functor, Reg),
     /// Begin constructing list on heap, store ref in Ai.
-    PutList(String),
+    PutList(Reg),
     /// Push new heap variable, bind to Xn.
-    SetVariable(String),
+    SetVariable(Reg),
     /// Push value of Xn onto heap.
-    SetValue(String),
+    SetValue(Reg),
     /// Push constant C onto heap.
     SetConstant(Value),
     /// Write constant C into any register and skip a replaced source sequence.
-    LoadRegisterConstant(Value, String, usize),
+    LoadRegisterConstant(Value, Reg, usize),
     /// Fused [H|T] construction into an output register; skips a source sequence on success.
-    Cons(String, String, String, usize),
+    Cons(Reg, Reg, Reg, usize),
     /// Fused \\+ member(Element, List); skips a source sequence on success.
-    NotMember(String, String, usize),
+    NotMember(Reg, Reg, usize),
     /// Fused length(List, Depth), Depth < Limit; skips a source sequence on success.
-    ListLengthLt(String, String, usize),
+    ListLengthLt(Reg, Reg, usize),
     /// Fused base clause for category_ancestor/4 using indexed parent existence.
-    BaseCategoryAncestor(String, String, String),
+    BaseCategoryAncestor(Reg, Reg, Reg),
     /// Fused category_ancestor/4 base clause that also binds the hop register.
-    BaseCategoryAncestorBind(String, String, String, String),
+    BaseCategoryAncestorBind(Reg, Reg, Reg, Reg),
     /// Fused benchmark recursive self-call setup for category_ancestor/4.
-    RecurseCategoryAncestor(String, String, String, String, String, usize),
+    RecurseCategoryAncestor(Reg, Reg, Reg, Reg, String, usize),
     /// Fused benchmark recursive self-call setup with a resolved target PC.
-    RecurseCategoryAncestorPc(String, String, String, String, usize, usize),
+    RecurseCategoryAncestorPc(Reg, Reg, Reg, Reg, usize, usize),
     /// Fused benchmark recursive return: Hops is ChildHops + 1, then return.
-    ReturnAdd1(String, String),
+    ReturnAdd1(Reg, Reg),
 
     // === Control ===
     /// Create environment frame (saves CP, provides Yi storage).
@@ -103,10 +363,14 @@ pub enum Instruction {
     CutIte,
     /// Evaluate a built-in predicate.
     BuiltinCall(String, usize),
+    /// R1: a builtin call with its dispatch route resolved by the generator
+    /// (`builtin_route`): (route, name, arity). Same result as
+    /// `BuiltinCall(name, arity)`.
+    BuiltinCallR(u8, String, usize),
     /// Start collecting solutions for an aggregate.
     BeginAggregate(String, String, String),
     /// Record one aggregate solution and force backtracking.
-    EndAggregate(String),
+    EndAggregate(Reg),
     /// T7 route 2: parallel aggregate embedded in a larger clause body.
     /// (agg_type, enum_entry_label, body_entry_label, result_reg, input_regs).
     /// Drives the `__par_enum`/`__par_body` helper predicates by label and
@@ -151,6 +415,19 @@ pub enum Instruction {
     /// D138: last entry of a dispatch chain (`trust L`): remove the chain's
     /// choice point, then jump to the body at Label.
     Trust(String),
+    /// R1: TryMeElse for an if-then-else / disjunction guard
+    /// (`try_me_else L_ite_else_N`) with a pre-resolved alternative PC. Unlike
+    /// TryMeElsePc (a clause choice point) it parks no clause barrier, as
+    /// TryMeElse does for an `L_ite_else_` label.
+    TryMeElseItePc(usize),
+    /// R1: Try with a pre-resolved body PC.
+    TryPc(usize),
+    /// R1: Retry with a pre-resolved body PC.
+    RetryPc(usize),
+    /// R1: Trust with a pre-resolved body PC.
+    TrustPc(usize),
+    /// R1: Jump to a pre-resolved PC.
+    JumpPc(usize),
 
     // === Indexing ===
     /// First-argument constant dispatch.
@@ -159,8 +436,12 @@ pub enum Instruction {
     /// instruction (the try_me_else chain) when the argument is unbound or
     /// matches no table key — as opposed to SwitchOnConstant, which fails.
     SwitchOnConstantFallthrough(Vec<(Value, String)>),
-    /// First-argument constant dispatch with pre-resolved PCs.
+    /// First-argument constant dispatch with pre-resolved PCs. A target PC of
+    /// 0 is SwitchOnConstant's "default" entry: fall through to the next
+    /// instruction (PCs are 1-based, so no label resolves to 0).
     SwitchOnConstantPc(Vec<(Value, usize)>),
+    /// R1: SwitchOnConstantFallthrough with pre-resolved PCs.
+    SwitchOnConstantFallthroughPc(Vec<(Value, usize)>),
     /// First-argument structure dispatch.
     SwitchOnStructure(Vec<(String, String)>),
     /// First-argument structure dispatch with pre-resolved PCs.

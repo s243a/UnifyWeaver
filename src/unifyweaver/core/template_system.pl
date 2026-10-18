@@ -717,6 +717,8 @@ pub mod boundary_cache;
 use std::collections::{HashMap, HashSet};
 use value::Value;
 use instructions::Instruction;
+#[allow(unused_imports)]
+use instructions::{Functor, Reg};
 use state::WamState;
 
 {{predicates_code}}

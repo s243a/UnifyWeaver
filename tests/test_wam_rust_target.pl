@@ -1832,7 +1832,8 @@ test_aggregate_instruction_parser :-
     (   compile_wam_predicate_to_rust(agg/1, WamCode, [], RustCode),
         atom_string(RustCode, S),
         sub_string(S, _, _, _, 'Instruction::BeginAggregate("sum".to_string(), "Y1".to_string(), "A1".to_string())'),
-        sub_string(S, _, _, _, 'Instruction::EndAggregate("Y1".to_string())')
+        % R1: register operands are decoded `Reg`s.
+        sub_string(S, _, _, _, 'Instruction::EndAggregate(Reg::y(1))')
     ->  pass(Test)
     ;   fail_test(Test, 'Aggregate instructions were not lowered')
     ).
