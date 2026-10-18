@@ -333,7 +333,7 @@ test(stream_driver_emitter_compact_blocks) :-
     assertion(sub_atom(DriverIR, _, _, _, '@.wam_stream_input_path = private constant [10 x i8]')),
     assertion(sub_atom(DriverIR, _, _, _, '@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"')),
     assertion(sub_atom(DriverIR, _, _, _, '@.fmt = private constant [2 x i8] c"\\0A\\00"')),
-    assertion(sub_atom(DriverIR, _, _, _, '%line = call %Value @wam_stream_read_line_value(%Value %handle)')),
+    assertion(sub_atom(DriverIR, _, _, _, '%line = call %Value @wam_stream_read_line_transient_value(%Value %handle)')),
     assertion(sub_atom(DriverIR, _, _, _, 'br i1 %is_eof, label %close_stream, label %lowered_test')),
     assertion(sub_atom(DriverIR, _, _, _, 'success:\n  ret i32 0')),
     assertion(\+ sub_atom(DriverIR, _, _, _, 'plawk_surface_path')),
@@ -555,13 +555,43 @@ test(write_ctx_pushed_by_structures) :-
     compile_step_wam_to_llvm([], StepCode),
     assertion(sub_atom(StepCode, _, _, _, 'wam_push_write_ctx')).
 
-test(lookup_label_warns_on_unknown, [true]) :-
-    % Should succeed with Index=0 (and print a warning to stderr)
-    wam_llvm_target:lookup_label_index('nonexistent_label', [], Index),
+test(lookup_label_throws_by_default,
+        [throws(error(existence_error(procedure, _), _))]) :-
+    % An unknown label means a call to a predicate that was never
+    % compiled into the module -- jumping to index 0 instead produced
+    % silent runtime failures (the plawk code_type incident), so the
+    % default is now a loud compile-time error.
+    wam_llvm_target:lookup_label_index('nonexistent_label', [], _).
+
+test(lookup_label_lenient_optout_defaults_to_zero, [true]) :-
+    % The legacy behaviour stays available behind an explicit opt-out.
+    wam_llvm_target:lookup_label_index(
+        'nonexistent_label', [], [wam_strict_labels(false)], Index),
     assertion(Index == 0).
 
-test(lookup_label_strict_throws, [throws(error(unknown_label(_), _))]) :-
-    wam_llvm_target:lookup_label_index(
-        'nonexistent_label', [], [wam_strict_labels(true)], _).
+:- dynamic user:uw_failedreq_ok/2.
+user:uw_failedreq_ok(X, R) :- R is X + 1.
+
+test(requested_predicate_that_fails_to_compile_throws,
+        [throws(error(existence_error(procedures, [user:uw_no_such_pred/3]), _)),
+         setup(tmp_failedreq_path(Path)), cleanup(catch(delete_file(Path), _, true))]) :-
+    % A predicate in the request list with no clauses used to become an
+    % IR comment inside a "successful" module. It is now a compile-time
+    % error (the message also flags the DCG +2-arity gotcha, which is
+    % how this trap was originally sprung).
+    tmp_failedreq_path(Path),
+    write_wam_llvm_project([user:uw_failedreq_ok/2, user:uw_no_such_pred/3],
+        [module_name(uw_failedreq)], Path).
+
+test(wam_allow_failed_keeps_comment_and_continue,
+        [setup(tmp_failedreq_path(Path)), cleanup(catch(delete_file(Path), _, true))]) :-
+    tmp_failedreq_path(Path),
+    write_wam_llvm_project([user:uw_failedreq_ok/2, user:uw_no_such_pred/3],
+        [module_name(uw_failedreq2), wam_allow_failed(true)], Path),
+    exists_file(Path).
+
+tmp_failedreq_path(Path) :-
+    current_prolog_flag(tmp_dir, Tmp),
+    directory_file_path(Tmp, 'uw_failedreq_probe.ll', Path).
 
 :- end_tests(wam_llvm_target).

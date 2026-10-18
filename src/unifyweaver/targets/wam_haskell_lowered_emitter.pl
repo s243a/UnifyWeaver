@@ -237,6 +237,9 @@ emit_func(FN, PCInstrs, LabelMap, ForeignPreds, Opts) :-
         format("        , cpCP = wsCP s_init, cpTrailLen = wsTrailLen s_init~n"),
         format("        , cpHeapLen = wsHeapLen s_init, cpBindings = wsBindings s_init~n"),
         format("        , cpCutBar = wsCutBar s_init, cpAggFrame = Nothing, cpBuiltin = Nothing~n"),
+        % ITE barrier levels live on the choice point (see ChoicePoint.cpLevels
+        % in wam_haskell_target.pl); a clause-alternative CP carries none.
+        format("        , cpLevels = IM.empty~n"),
         format("        } : wsCPs s_init~n"),
         format("        , wsCPsLen = wsCPsLen s_init + 1 }~n"),
         format("  in case clause1 s_cp of~n"),
@@ -326,6 +329,7 @@ emit_func_t5(FN, PCInstrs1, LabelMap, FP, Opts) :-
     format("            , cpCP = wsCP s_init, cpTrailLen = wsTrailLen s_init~n"),
     format("            , cpHeapLen = wsHeapLen s_init, cpBindings = wsBindings s_init~n"),
     format("            , cpCutBar = wsCutBar s_init, cpAggFrame = Nothing, cpBuiltin = Nothing~n"),
+    format("            , cpLevels = IM.empty~n"),
     format("            } : wsCPs s_init~n"),
     format("            , wsCPsLen = wsCPsLen s_init + 1 }~n"),
     format("      in case t5clause_1 s_cp of~n"),

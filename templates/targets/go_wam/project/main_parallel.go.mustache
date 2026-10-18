@@ -1,0 +1,19 @@
+package main
+
+import (
+	"fmt"
+	"{{module_name}}"
+)
+
+func main() {
+	ctx := {{package_name}}.NewWamContext({{package_name}}.SharedWamCode, {{package_name}}.SharedWamLabels)
+	seeds := [][]{{package_name}}.Value{
+		{&{{package_name}}.Atom{Name: "query"}},
+	}
+	results := {{package_name}}.RunParallel(ctx, seeds, 0)
+	for i, res := range results {
+		if res != nil {
+			fmt.Printf("Seed %%d: %%v\n", i, res)
+		}
+	}
+}

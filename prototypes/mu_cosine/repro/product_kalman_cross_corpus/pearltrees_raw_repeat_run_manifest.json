@@ -1,0 +1,55 @@
+{
+  "batch_count": 6,
+  "batch_size": 10,
+  "batches": [
+    {
+      "batch_index": 0,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_raw_repeat_batches/batch_0000.json",
+      "checkpoint_sha256": "03feae78b2c321c19c7986ab4912a496fb9dbcb64d10113bbf3c4af1405d906f",
+      "row_count": 10
+    },
+    {
+      "batch_index": 1,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_raw_repeat_batches/batch_0001.json",
+      "checkpoint_sha256": "db3875409db9899acefbdb89fe4a59985b8f4f9abd0b517955cb0148015bedd8",
+      "row_count": 10
+    },
+    {
+      "batch_index": 2,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_raw_repeat_batches/batch_0002.json",
+      "checkpoint_sha256": "dfea0ef7f362ab920943d98b2123a02fe6db14bf74187ae1dc8bed4a7cce2b71",
+      "row_count": 10
+    },
+    {
+      "batch_index": 3,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_raw_repeat_batches/batch_0003.json",
+      "checkpoint_sha256": "e1a5739fd57959e3339d187e97a2e2f2a484351247bf6651dedd24c04d8ae48d",
+      "row_count": 10
+    },
+    {
+      "batch_index": 4,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_raw_repeat_batches/batch_0004.json",
+      "checkpoint_sha256": "167a73d9d1acb2d331495fdde65f42d448dfc1b32c772bc4085cc7801d26cf69",
+      "row_count": 10
+    },
+    {
+      "batch_index": 5,
+      "checkpoint": "/tmp/mu_data/product_kalman_scoring/pearltrees_raw_repeat_batches/batch_0005.json",
+      "checkpoint_sha256": "8c5ee57dca3882e36a63facd301a4158ab2333e6a7ec35f23c103f34b0659fd0",
+      "row_count": 3
+    }
+  ],
+  "checkpoint_dir": "/tmp/mu_data/product_kalman_scoring/pearltrees_raw_repeat_batches",
+  "effort": "low",
+  "judge": "gpt-5.5-low",
+  "model": "gpt-5.5",
+  "responses": "/tmp/mu_data/product_kalman_scoring/pearltrees_raw_repeat_responses.txt",
+  "responses_sha256": "5272569ab877bd71f6a5026dcd02061f8950f237abbb78e7795d4ddc7bc85413",
+  "row_count": 53,
+  "sandbox": "read-only",
+  "schema_version": 1,
+  "scored": "/tmp/mu_data/product_kalman_scoring/pearltrees_raw_repeat_scored.tsv",
+  "scored_sha256": "e43b8a754a8860c5f3b45e9e556fdf8fda8d8185906d3d4023f5ea3bc1788583",
+  "source_pairs": "/tmp/mu_data/product_kalman_scoring/pearltrees_raw_repeat_in.tsv",
+  "source_pairs_sha256": "41ae3d916e8e3e2e4010b25f692faa75c13057421abceb5e7a95d70e686ee5d0"
+}

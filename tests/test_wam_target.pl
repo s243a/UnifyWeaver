@@ -7,7 +7,9 @@
 
 %% Test data (facts) - MUST BE DYNAMIC for clause/2 to work across modules
 :- dynamic test_parent/2, test_grandparent/2, test_ancestor/2, test_wrap/2,
-           test_alias/2, test_len/2, test_list_check/1, test_list_wrap/1.
+           test_alias/2, test_len/2, test_list_check/1, test_list_wrap/1,
+           test_linear_fact/1, test_linear_three/1, test_linear_a/1,
+           test_linear_b/1, test_linear_c/1.
 
 test_parent(alice, bob).
 test_parent(bob, charlie).
@@ -20,6 +22,18 @@ test_alias(X, Y) :- test_parent(X, Y).
 
 %% Simple builtin rule — exercises native items for generic builtin_call.
 test_len(L, N) :- length(L, N).
+
+%% Non-indexed multi-clause shapes — exercises native items for linear
+%  try/retry/trust chains without going through the WAM text parser.
+test_linear_fact(_).
+test_linear_fact(_).
+
+test_linear_a(_).
+test_linear_b(_).
+test_linear_c(_).
+test_linear_three(X) :- test_linear_a(X).
+test_linear_three(X) :- test_linear_b(X).
+test_linear_three(X) :- test_linear_c(X).
 
 %% Recursive ancestor rule
 test_ancestor(X, Y) :- test_parent(X, Y).
@@ -54,6 +68,26 @@ test_multi_findall('a') :- findall(_, test_multi_inner(_), _).
 test_multi_findall('b') :- findall(_, test_multi_inner(_), _).
 test_multi_findall('c') :- findall(_, test_multi_inner(_), _).
 
+%% Negation whose clause has NO permanent variables — regression for
+%  R-NEG-BACKTRACK. `\+ G` lowers to ((G, !, fail) ; true) on legacy
+%  targets, and that rewrite's `builtin_call !/0` cuts back to the
+%  ENVIRONMENT FRAME's barrier. Nothing was ensuring the clause had a
+%  frame: a single `\+` goal is one goal, `\+` is in is_builtin_goal/1
+%  so goals_contain_call_or_aggregate/1 skips it, and the `!` does not
+%  exist yet when the allocate test runs. The clause came out
+%  frameless, and a runtime that keeps the barrier only on the frame
+%  (WAM-R) fell back to dropping the topmost choice point — the wrong
+%  one whenever the negated goal left one of its own.
+:- dynamic test_neg_fact/1.
+test_neg_fact(a).
+test_neg_fact(b).
+test_neg_fact(c).
+:- dynamic test_neg_bare/0.
+test_neg_bare :- \+ test_neg_fact(a).
+%% Same, nested inside a conjunction, to pin the goal walker.
+:- dynamic test_neg_nested/0.
+test_neg_nested :- ( true, \+ test_neg_fact(a) ).
+
 %% Nested compound body arg — exercises recursive put_structure
 :- dynamic test_nested_check/1.
 test_nested_check(box(inner(_, _))).
@@ -61,6 +95,9 @@ test_nested_check(box(inner(_, _))).
 test_nested_wrap(X) :- test_nested_check(box(inner(X, done))).
 
 :- dynamic test_failed/0.
+
+:- dynamic test_sole_negation/0.
+test_sole_negation :- \+ fail.
 
 pass(Test) :-
     format('[PASS] ~w~n', [Test]).
@@ -192,6 +229,50 @@ test_wam_multi_clause_findall_emits_allocate :-
     ;   wam_target:compile_predicate_to_wam(user:test_multi_findall/1, [], Code2),
         format(user_error, 'DEBUG: multi-clause findall output:~n~w~n', [Code2]),
         fail_test(Test, 'Multi-clause findall body missing allocate/deallocate per clause')
+    ).
+
+test_wam_sole_negation_frame_gate :-
+    Test = 'WAM: sole negation allocates for both inline rewrites, not for the runtime builtin',
+    (   wam_target:compile_predicate_to_wam(
+            user:test_sole_negation/0,
+            [ite_use_y_level(true)],
+            InlineCode),
+        atom_string(InlineCode, Inline),
+        sub_string(Inline, _, _, _, 'allocate'),
+        sub_string(Inline, _, _, _, 'get_level Y1'),
+        sub_string(Inline, _, _, _, 'cut Y1'),
+        sub_string(Inline, _, _, _, 'deallocate'),
+        wam_target:compile_predicate_to_wam_items(
+            user:test_sole_negation/0,
+            [ite_use_y_level(true)],
+            InlineItems),
+        member(allocate, InlineItems),
+        member(get_level("Y1"), InlineItems),
+        member(cut("Y1"), InlineItems),
+        member(deallocate, InlineItems),
+        wam_target:compile_predicate_to_wam(
+            user:test_sole_negation/0,
+            [ite_use_y_level(false)],
+            LegacyCode),
+        atom_string(LegacyCode, Legacy),
+        % Legacy hard-cut rewrite ((G,!,fail);true): its `builtin_call !/0`
+        % cuts to the env frame barrier, so the clause MUST get a frame
+        % (goals_contain_hard_cut_negation/1) -- but no Y-level barrier.
+        sub_string(Legacy, _, _, _, 'builtin_call !/0'),
+        sub_string(Legacy, _, _, _, 'allocate'),
+        \+ sub_string(Legacy, _, _, _, 'get_level'),
+        sub_string(Legacy, _, _, _, 'deallocate'),
+        wam_target:compile_predicate_to_wam(
+            user:test_sole_negation/0,
+            [ite_use_y_level(true), inline_not_as_failure(false)],
+            RuntimeCode),
+        atom_string(RuntimeCode, Runtime),
+        sub_string(Runtime, _, _, _, 'builtin_call \\+/1, 1'),
+        \+ sub_string(Runtime, _, _, _, 'allocate'),
+        \+ sub_string(Runtime, _, _, _, 'get_level'),
+        \+ sub_string(Runtime, _, _, _, 'deallocate')
+    ->  pass(Test)
+    ;   fail_test(Test, 'Sole-negation allocation gate did not match the inline Y-level rewrite')
     ).
 
 %% Count non-overlapping occurrences of Sub in S.
@@ -499,6 +580,262 @@ test_wam_items_compound_arg_legacy_order_fallback :-
     ;   fail_test(Test, 'Compound body arg legacy-order fallback does not match canonical WAM text shape')
     ).
 
+test_wam_items_native_linear_fact_clauses :-
+    Test = 'WAM: native items API for linear multi-clause facts',
+    ExpectedItems = [
+        label("test_linear_fact/1"),
+        try_me_else("L_test_linear_fact_1_2"),
+        get_variable("X1", "A1"),
+        proceed,
+        label("L_test_linear_fact_1_2"),
+        trust_me,
+        label("L_test_linear_fact_1_2_body"),
+        get_variable("X1", "A1"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_linear_fact/1, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_linear_fact/1, [], Items),
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        \+ member(switch_on_constant(_), Items),
+        member(try_me_else("L_test_linear_fact_1_2"), Items),
+        member(trust_me, Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native linear fact items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_native_linear_rule_clauses :-
+    Test = 'WAM: native items API for linear multi-clause rules',
+    ExpectedItems = [
+        label("test_linear_three/1"),
+        try_me_else("L_test_linear_three_1_2"),
+        allocate,
+        get_variable("X1", "A1"),
+        put_value("X1", "A1"),
+        deallocate,
+        execute("test_linear_a/1"),
+        label("L_test_linear_three_1_2"),
+        retry_me_else("L_test_linear_three_1_3"),
+        label("L_test_linear_three_1_2_body"),
+        allocate,
+        get_variable("X1", "A1"),
+        put_value("X1", "A1"),
+        deallocate,
+        execute("test_linear_b/1"),
+        label("L_test_linear_three_1_3"),
+        trust_me,
+        label("L_test_linear_three_1_3_body"),
+        allocate,
+        deallocate,
+        execute("test_linear_c/1")
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_linear_three/1, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_linear_three/1, [], Items),
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        \+ member(switch_on_constant(_), Items),
+        member(retry_me_else("L_test_linear_three_1_3"), Items),
+        member(execute("test_linear_c/1"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native linear rule items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_native_switch_on_constant_index :-
+    Test = 'WAM: native items API for switch_on_constant indexed clauses',
+    ExpectedItems = [
+        label("test_parent/2"),
+        switch_on_constant(["alice:default", "bob:L_test_parent_2_2_body"]),
+        try_me_else("L_test_parent_2_2"),
+        get_constant("alice", "A1"),
+        get_constant("bob", "A2"),
+        proceed,
+        label("L_test_parent_2_2"),
+        trust_me,
+        label("L_test_parent_2_2_body"),
+        get_constant("bob", "A1"),
+        get_constant("charlie", "A2"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_parent/2, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_parent/2, [], Items),
+        wam_target:wam_predicate_clauses(user:test_parent/2, [], Pred, Arity, Clauses),
+        wam_target:compile_clauses_to_wam_items_native(Pred, Arity, Clauses, [], NativeItems),
+        NativeItems == ExpectedItems,
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        member(switch_on_constant(["alice:default", "bob:L_test_parent_2_2_body"]), Items),
+        member(label("test_parent/2"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native switch_on_constant items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_native_switch_on_constant_fallthrough_index :-
+    Test = 'WAM: native items API for switch_on_constant_fallthrough indexed clauses',
+    ExpectedItems = [
+        label("test_mma_middle/2"),
+        switch_on_constant_fallthrough(["a:default"]),
+        try_me_else("L_test_mma_middle_2_2"),
+        get_constant("a", "A1"),
+        get_constant("1", "A2"),
+        proceed,
+        label("L_test_mma_middle_2_2"),
+        retry_me_else("L_test_mma_middle_2_3"),
+        label("L_test_mma_middle_2_2_body"),
+        get_variable("X1", "A1"),
+        get_constant("99", "A2"),
+        proceed,
+        label("L_test_mma_middle_2_3"),
+        trust_me,
+        label("L_test_mma_middle_2_3_body"),
+        get_constant("b", "A1"),
+        get_constant("2", "A2"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_mma_middle/2, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_mma_middle/2, [], Items),
+        wam_target:wam_predicate_clauses(user:test_mma_middle/2, [], Pred, Arity, Clauses),
+        wam_target:compile_clauses_to_wam_items_native(Pred, Arity, Clauses, [], NativeItems),
+        NativeItems == ExpectedItems,
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        member(switch_on_constant_fallthrough(["a:default"]), Items),
+        member(label("test_mma_middle/2"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native switch_on_constant_fallthrough items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_native_switch_on_constant_a2_index :-
+    Test = 'WAM: native items API for switch_on_constant_a2 indexed clauses',
+    ExpectedItems = [
+        label("test_a2_const/2"),
+        switch_on_constant_a2(["alpha:default", "beta:L_test_a2_const_2_2", "gamma:L_test_a2_const_2_3"]),
+        try_me_else("L_test_a2_const_2_2"),
+        get_variable("X1", "A1"),
+        get_constant("alpha", "A2"),
+        proceed,
+        label("L_test_a2_const_2_2"),
+        retry_me_else("L_test_a2_const_2_3"),
+        label("L_test_a2_const_2_2_body"),
+        get_variable("X1", "A1"),
+        get_constant("beta", "A2"),
+        proceed,
+        label("L_test_a2_const_2_3"),
+        trust_me,
+        label("L_test_a2_const_2_3_body"),
+        get_variable("X1", "A1"),
+        get_constant("gamma", "A2"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_a2_const/2, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_a2_const/2, [], Items),
+        wam_target:wam_predicate_clauses(user:test_a2_const/2, [], Pred, Arity, Clauses),
+        wam_target:compile_clauses_to_wam_items_native(Pred, Arity, Clauses, [], NativeItems),
+        NativeItems == ExpectedItems,
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        member(switch_on_constant_a2(_), Items),
+        member(label("test_a2_const/2"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native switch_on_constant_a2 items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_native_switch_on_constant_a2_fallthrough_index :-
+    Test = 'WAM: native items API for switch_on_constant_a2_fallthrough indexed clauses',
+    ExpectedItems = [
+        label("test_mma2_trailing/3"),
+        switch_on_constant_a2_fallthrough(["error:default", "warn:L_test_mma2_trailing_3_2", "ok:L_test_mma2_trailing_3_3"]),
+        try_me_else("L_test_mma2_trailing_3_2"),
+        get_variable("X1", "A1"),
+        get_constant("error", "A2"),
+        get_constant("red", "A3"),
+        proceed,
+        label("L_test_mma2_trailing_3_2"),
+        retry_me_else("L_test_mma2_trailing_3_3"),
+        label("L_test_mma2_trailing_3_2_body"),
+        get_variable("X1", "A1"),
+        get_constant("warn", "A2"),
+        get_constant("yellow", "A3"),
+        proceed,
+        label("L_test_mma2_trailing_3_3"),
+        retry_me_else("L_test_mma2_trailing_3_4"),
+        label("L_test_mma2_trailing_3_3_body"),
+        get_variable("X1", "A1"),
+        get_constant("ok", "A2"),
+        get_constant("green", "A3"),
+        proceed,
+        label("L_test_mma2_trailing_3_4"),
+        trust_me,
+        label("L_test_mma2_trailing_3_4_body"),
+        get_variable("X1", "A1"),
+        get_variable("X2", "A2"),
+        get_constant("gray", "A3"),
+        proceed
+    ],
+    (   wam_target:compile_predicate_to_wam_text(user:test_mma2_trailing/3, [], TextCode),
+        wam_text_to_items(TextCode, BridgeItems),
+        wam_target:compile_predicate_to_wam_items(user:test_mma2_trailing/3, [], Items),
+        wam_target:wam_predicate_clauses(user:test_mma2_trailing/3, [], Pred, Arity, Clauses),
+        wam_target:compile_clauses_to_wam_items_native(Pred, Arity, Clauses, [], NativeItems),
+        NativeItems == ExpectedItems,
+        Items == ExpectedItems,
+        Items == BridgeItems,
+        member(switch_on_constant_a2_fallthrough(_), Items),
+        member(label("test_mma2_trailing/3"), Items)
+    ->  pass(Test)
+    ;   fail_test(Test, 'Native switch_on_constant_a2_fallthrough items do not match canonical WAM text shape')
+    ).
+
+test_wam_items_a2_structure_term_indexes_still_bridge :-
+    Test = 'WAM: A2 structure/term indexed multi-clause items still use bridge',
+    (   wam_target:wam_predicate_clauses(user:test_a2_struct/2, [], Pred1, Arity1, Clauses1),
+        \+ wam_target:compile_clauses_to_wam_items_native(Pred1, Arity1, Clauses1, [], _NativeItems1),
+        wam_target:compile_predicate_to_wam_text(user:test_a2_struct/2, [], TextCode1),
+        wam_text_to_items(TextCode1, BridgeItems1),
+        wam_target:compile_predicate_to_wam_items(user:test_a2_struct/2, [], Items1),
+        Items1 == BridgeItems1,
+        member(switch_on_structure_a2(_), Items1),
+        wam_target:wam_predicate_clauses(user:test_a2_term/2, [], Pred2, Arity2, Clauses2),
+        \+ wam_target:compile_clauses_to_wam_items_native(Pred2, Arity2, Clauses2, [], _NativeItems2),
+        wam_target:compile_predicate_to_wam_text(user:test_a2_term/2, [], TextCode2),
+        wam_text_to_items(TextCode2, BridgeItems2),
+        wam_target:compile_predicate_to_wam_items(user:test_a2_term/2, [], Items2),
+        Items2 == BridgeItems2,
+        member(switch_on_term_a2(_), Items2)
+    ->  pass(Test)
+    ;   fail_test(Test, 'A2 structure/term indexed predicates did not remain on bridge')
+    ).
+
+test_wam_bare_negation_emits_allocate :-
+    Test = 'WAM: clause whose only goal is \\+ still gets an env frame',
+    (   wam_target:compile_predicate_to_wam(user:test_neg_bare/0, [], Code),
+        atom_string(Code, S),
+        % The hard-cut rewrite must be there...
+        sub_string(S, _, _, _, 'builtin_call !/0'),
+        % ...and so must the frame its cut barrier lives on.
+        sub_string(S, _, _, _, 'allocate'),
+        sub_string(S, _, _, _, 'deallocate')
+    ->  pass(Test)
+    ;   wam_target:compile_predicate_to_wam(user:test_neg_bare/0, [], Code2),
+        format(user_error, 'DEBUG: bare negation output:~n~w~n', [Code2]),
+        fail_test(Test, 'negation clause emitted without an environment frame')
+    ).
+
+test_wam_nested_negation_emits_allocate :-
+    Test = 'WAM: \\+ nested in a conjunction still gets an env frame',
+    (   wam_target:compile_predicate_to_wam(user:test_neg_nested/0, [], Code),
+        atom_string(Code, S),
+        sub_string(S, _, _, _, 'builtin_call !/0'),
+        sub_string(S, _, _, _, 'allocate'),
+        sub_string(S, _, _, _, 'deallocate')
+    ->  pass(Test)
+    ;   fail_test(Test, 'nested negation clause emitted without an environment frame')
+    ).
+
 %% Run all tests
 run_tests :-
     format('~n========================================~n'),
@@ -520,7 +857,17 @@ run_tests :-
     test_wam_items_native_nested_compound_body_arg,
     test_wam_items_native_list_body_arg,
     test_wam_items_compound_arg_legacy_order_fallback,
+    test_wam_items_native_linear_fact_clauses,
+    test_wam_items_native_linear_rule_clauses,
+    test_wam_items_native_switch_on_constant_index,
+    test_wam_items_native_switch_on_constant_fallthrough_index,
+    test_wam_items_native_switch_on_constant_a2_index,
+    test_wam_items_native_switch_on_constant_a2_fallthrough_index,
+    test_wam_items_a2_structure_term_indexes_still_bridge,
     test_wam_multi_clause_findall_emits_allocate,
+    test_wam_bare_negation_emits_allocate,
+    test_wam_nested_negation_emits_allocate,
+    test_wam_sole_negation_frame_gate,
     test_wam_a2_indexing,
     test_wam_mixed_mode_a1_indexing,
     test_wam_mixed_mode_a2_indexing,

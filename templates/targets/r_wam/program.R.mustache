@@ -12,6 +12,10 @@ local({
   src  <- file.path(here, "wam_runtime.R")
   if (!file.exists(src)) src <- "wam_runtime.R"
   source(src, local = FALSE)
+  # Optional native CA hop kernel (.so built next to ../src at generate time).
+  so <- normalizePath(file.path(here, "..", "src", "uw_ca_hops.so"),
+                      mustWork = FALSE)
+  WamRuntime$configure_native_ca_hops(so)
 })
 
 # ----------------------------------------------------------
@@ -101,7 +105,14 @@ shared_program <- list(
   # codegen time over the integer-valued positions. Consumed by
   # the fact_in_range/5 builtin via binary-search + the existing
   # fact_table_iter_subset enumeration path.
-  fact_range_indexes = new.env(parent = emptyenv())
+  fact_range_indexes = new.env(parent = emptyenv()),
+  # Bound-arg1 parent-lookup capability registry (PERF-R-CA-DIRECT /
+  # PERF-R-CA-IDDFS). Keyed by "pred/arity"; value is
+  # list(lookup, lookup_ids) registered at FactSource / fact-table
+  # emit time — kernels never guess generated R names.
+  # lookup_ids enables integer-ID DFS; lookup alone keeps TermValue
+  # DFS; neither falls back to iterate_goal.
+  arg1_lookups = new.env(parent = emptyenv())
 )
 
 # ----------------------------------------------------------
@@ -127,6 +138,27 @@ shared_program <- list(
 # ----------------------------------------------------------
 if (!interactive() && sys.nframe() == 0L) {
   argv <- commandArgs(trailingOnly = TRUE)
+{{#conformance_main}}
+  # Conformance driver (CONF-R): argv[0] = pred/arity key; print true/false
+  # only. Additive — default CLI (usage/batch/bench/arg parsing) is below
+  # when conformance_main is off. 0-arity wrappers need no CLI args.
+  if (length(argv) == 0L) {
+    cat("false\n")
+    quit(status = 1L)
+  }
+  pred_arity <- argv[1L]
+  start_pc   <- shared_labels[[pred_arity]]
+  if (is.null(start_pc)) {
+    cat("false\n")
+    quit(status = 1L)
+  }
+  ok <- tryCatch(
+    WamRuntime$run_predicate(shared_program, start_pc, list()),
+    error = function(e) FALSE)
+  cat(if (isTRUE(ok)) "true" else "false", "\n", sep = "")
+  quit(status = if (isTRUE(ok)) 0L else 1L)
+{{/conformance_main}}
+{{^conformance_main}}
   if (length(argv) == 0L) {
     cat("usage: Rscript generated_program.R [--bench N] <pred>/<arity> <arg> ...\n")
     cat("       Rscript generated_program.R --batch <pred>/0 ...\n")
@@ -225,4 +257,5 @@ if (!interactive() && sys.nframe() == 0L) {
   ok <- WamRuntime$run_predicate(shared_program, start_pc, parsed)
   cat(if (isTRUE(ok)) "true" else "false", "\n", sep = "")
   quit(status = if (isTRUE(ok)) 0L else 1L)
+{{/conformance_main}}
 }

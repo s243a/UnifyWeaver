@@ -22,23 +22,57 @@
     intern_atom_go/2,                  % +AtomStr, -GoVarName
     emit_atom_table_go/1,              % -GoCode (var (...) declaration block)
     resolve_dimension_n_go/2,          % +Options, -DimN
-    escape_go_string/2                 % +Str, -EscStr (re-exported helper)
+    escape_go_string/2,                % +Str, -EscStr (re-exported helper)
+    iso_errors_rewrite_text/4,         % +Config, +PI, +WamText0, -WamText
+    wam_go_iso_audit/3,                % +Predicates, +Options, -Audit
+    wam_go_iso_audit_report/1          % +Audit
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(yall)).
 :- use_module(library(option)).
 :- use_module(library(pairs), [pairs_values/2, map_list_to_pairs/3]).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
 :- use_module('../core/recursive_kernel_detection',
              [detect_recursive_kernel/4, kernel_metadata/4]).
+:- use_module('../core/cost_model', [resolve_auto_lmdb_materialisation/2]).
+:- use_module('../core/iso_errors',
+              [ iso_errors_resolve_options/2,
+                iso_errors_load_config/2,
+                iso_errors_mode_for/3,
+                iso_errors_warn_multi_module/2,
+                iso_errors_rewrite/4,
+                iso_errors_rewrite_item/3,
+                iso_errors_audit_normalise_pi/2,
+                iso_errors_audit_walk/5
+              ]).
+% wam_text_parser's tokenizer is called module-qualified below: this
+% target already defines its own wam_tokenize_line/2 for the Go literal
+% emitter, and the two must not collide.
+:- use_module('../targets/wam_text_parser',
+              [ wam_recognise_instruction/2 ]).
 :- use_module('../core/template_system').
 :- use_module('../bindings/go_wam_bindings').
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../targets/go_target', [compile_predicate_to_go/3]).
 :- use_module('../targets/wam_go_lowered_emitter',
              [wam_go_lowerable/3, lower_predicate_to_go/4, go_func_name/2]).
+:- use_module('../targets/wam_go_templates',
+             [go_render_template/3, go_render_helper_methods/1,
+              go_render_step_method/1, go_preflight/0,
+              go_render_file/3,
+              go_render_project_lib_header/4,
+              go_render_project_atoms_with_table/3,
+              go_render_project_atoms_runtime_only/2,
+              go_render_project_lowered_header/3,
+              go_render_project_main_parallel/3]).
+:- use_module('../core/prolog_term_parser', []).
+:- use_module('../core/cpp_runtime_parser_wrappers', []).
+:- use_module(wam_runtime_parser_capability, [
+    parser_dependent_body_goal/2,
+    wam_target_runtime_parser/3
+]).
 
-:- discontiguous wam_go_case/2.
 :- discontiguous wam_line_to_go_literal/4.
 
 % ============================================================================
@@ -47,48 +81,55 @@
 
 %% write_wam_go_project(+Predicates, +Options, +ProjectDir)
 %  Generates a full Go project for the given predicates.
-write_wam_go_project(Predicates, Options, ProjectDir) :-
+write_wam_go_project(Predicates0, Options, ProjectDir) :-
+    % Runtime-parser mode. compiled(prolog_term_parser) appends the
+    % portable parser + target-agnostic wrappers to the predicate list
+    % so a generated project can call read_term_from_atom/2 directly;
+    % `none` rejects a predicate whose body visibly needs a parser
+    % rather than emitting a runtime that cannot honour the call.
+    wam_target_runtime_parser(wam_go, Options, RuntimeParserMode),
+    validate_go_runtime_parser_mode(Predicates0, RuntimeParserMode),
+    go_project_predicates(Predicates0, RuntimeParserMode, Predicates),
     option(module_name(ModuleName), Options, 'wam_generated'),
     option(package_name(PackageName), Options, 'wam'),
     get_time(TimeStamp),
     format_time(string(Date), "%Y-%m-%d %H:%M:%S", TimeStamp),
 
+    % Preflight the runtime templates before any output exists. A missing,
+    % empty, or malformed template throws here (fail-closed), so a broken
+    % asset never leaves a half-written project directory behind.
+    go_preflight,
+
     % Create directory structure
     make_directory_path(ProjectDir),
 
-    % Generate go.mod
-    read_template_file('templates/targets/go_wam/go.mod.mustache', GoModTemplate),
-    render_template(GoModTemplate, [module_name=ModuleName], GoModContent),
+    % Generate go.mod (fail-closed read + render through the adapter).
+    go_render_file(go_mod, [module_name=ModuleName], GoModContent),
     directory_file_path(ProjectDir, 'go.mod', GoModPath),
     write_file(GoModPath, GoModContent),
 
     % Write value.go from template
-    read_template_file('templates/targets/go_wam/value.go.mustache', ValueTemplate),
-    render_template(ValueTemplate, [package_name=PackageName, date=Date], ValueCode),
+    go_render_file(value, [package_name=PackageName, date=Date], ValueCode),
     directory_file_path(ProjectDir, 'value.go', ValuePath),
     write_file(ValuePath, ValueCode),
 
     % Write instructions.go from template
-    read_template_file('templates/targets/go_wam/instructions.go.mustache', InstrTemplate),
-    render_template(InstrTemplate, [package_name=PackageName, date=Date], InstrCode),
+    go_render_file(instructions, [package_name=PackageName, date=Date], InstrCode),
     directory_file_path(ProjectDir, 'instructions.go', InstrPath),
     write_file(InstrPath, InstrCode),
 
     % Write state.go from template
-    read_template_file('templates/targets/go_wam/state.go.mustache', StateTemplate),
-    render_template(StateTemplate, [package_name=PackageName, date=Date], StateCode),
+    go_render_file(state, [package_name=PackageName, date=Date], StateCode),
     directory_file_path(ProjectDir, 'state.go', StatePath),
     write_file(StatePath, StateCode),
 
-    % Generate runtime.go: template + transpiled runtime methods
+    % Generate runtime.go: shell spliced through the template adapter. The
+    % adapter renders the helper section itself; the Prolog-assembled Step()
+    % method is passed as a variable slot. Inserted Go is never rescanned, so
+    % composite literals such as []qd{{source, 0}} stay literal.
     compile_step_wam_to_go(Options, StepMethod),
-    compile_wam_helpers_to_go(Options, HelperMethods),
-    read_template_file('templates/targets/go_wam/runtime.go.mustache', RuntimeTemplate),
-    render_template(RuntimeTemplate, [
-        package_name=PackageName,
-        step_method=StepMethod,
-        helper_methods=HelperMethods
-    ], RuntimeCode),
+    go_render_template(runtime_shell,
+        [package_name=PackageName, step_method=StepMethod], RuntimeCode),
     directory_file_path(ProjectDir, 'runtime.go', RuntimePath),
     write_file(RuntimePath, RuntimeCode),
 
@@ -107,11 +148,8 @@ write_wam_go_project(Predicates, Options, ProjectDir) :-
     % Emit exactly the imports the generated code actually uses — Go errors
     % on both missing and unused imports.
     go_lib_import_block(PredicatesCode, ImportBlock),
-    format(atom(LibContent),
-'package ~w
-
-~w~w
-', [PackageName, ImportBlock, PredicatesCode]),
+    go_render_project_lib_header(PackageName, ImportBlock, PredicatesCode,
+                                LibContent),
     directory_file_path(ProjectDir, 'lib.go', LibPath),
     write_file(LibPath, LibContent),
 
@@ -125,53 +163,15 @@ write_wam_go_project(Predicates, Options, ProjectDir) :-
     % their package-level vars. When there are none, runtime helpers still need
     % the internAtom function for dynamically sourced facts.
     (   AtomTableCode \== ""
-    ->  format(atom(AtomsContent),
-'package ~w
-
-// Auto-generated atom intern table.
-// Shared by lib.go (WAM bytecode literals) and lowered.go (lowered
-// predicate functions). Pointer-identity equality on these vars is
-// O(1); duplicate inline `&Atom{Name:"..."}` literals fall back to
-// string compare in Atom.Equals.
-
-~w
-', [PackageName, AtomTableCode]),
-        directory_file_path(ProjectDir, 'atoms.go', AtomsPath),
-        write_file(AtomsPath, AtomsContent)
-    ;   format(atom(AtomsContent),
-'package ~w
-
-// Runtime-only atom intern table. This project has no compile-time atom
-// literals, but fact-source helpers may still construct atoms dynamically.
-var atomInternMap = make(map[string]*Atom)
-
-func internAtom(name string) *Atom {
-    if a, ok := atomInternMap[name]; ok {
-        return a
-    }
-    a := &Atom{Name: name}
-    atomInternMap[name] = a
-    return a
-}
-', [PackageName]),
-        directory_file_path(ProjectDir, 'atoms.go', AtomsPath),
-        write_file(AtomsPath, AtomsContent)
+    ->  go_render_project_atoms_with_table(PackageName, AtomTableCode,
+                                          AtomsContent)
+    ;   go_render_project_atoms_runtime_only(PackageName, AtomsContent)
     ),
+    directory_file_path(ProjectDir, 'atoms.go', AtomsPath),
+    write_file(AtomsPath, AtomsContent),
 
     (   LoweredCode \== ""
-    ->  format(atom(LoweredContent),
-'package ~w
-
-import "fmt"
-
-var _ = fmt.Sprintf
-
-// Lowered predicates: direct Go methods on *WamState
-// Generated by wam_go_lowered_emitter.pl
-// (Atom intern table lives in atoms.go.)
-
-~w
-', [PackageName, LoweredCode]),
+    ->  go_render_project_lowered_header(PackageName, LoweredCode, LoweredContent),
         directory_file_path(ProjectDir, 'lowered.go', LoweredPath),
         write_file(LoweredPath, LoweredContent)
     ;   true
@@ -179,38 +179,86 @@ var _ = fmt.Sprintf
 
     % Generate main.go benchmark harness from template (when package is main)
     (   PackageName == main
-    ->  read_template_file('templates/targets/go_wam/main_bench.go.mustache', MainTemplate),
-        render_template(MainTemplate, [package_name=PackageName], MainContent),
+    ->  go_render_file(main_bench, [package_name=PackageName], MainContent),
         directory_file_path(ProjectDir, 'main.go', MainPath),
         write_file(MainPath, MainContent)
     ;   option(parallel(true), Options)
-    ->  format(atom(MainContent),
-'package main
-
-import (
-	"fmt"
-	"~w"
-)
-
-func main() {
-	ctx := ~w.NewWamContext(~w.SharedWamCode, ~w.SharedWamLabels)
-	seeds := [][]~w.Value{
-		{&~w.Atom{Name: "query"}},
-	}
-	results := ~w.RunParallel(ctx, seeds, 0)
-	for i, res := range results {
-		if res != nil {
-			fmt.Printf("Seed %%d: %%v\\n", i, res)
-		}
-	}
-}
-', [ModuleName, PackageName, PackageName, PackageName, PackageName, PackageName, PackageName]),
+    ->  go_render_project_main_parallel(ModuleName, PackageName, MainContent),
         directory_file_path(ProjectDir, 'main.go', MainPath),
         write_file(MainPath, MainContent)
     ;   true
     ),
 
     format('WAM Go project created at: ~w~n', [ProjectDir]).
+
+%% go_project_predicates(+UserPreds, +Mode, -ProjectPreds)
+%  In compiled mode, append the portable parser and the wrapper
+%  predicates. Matches python_project_predicates/3 and
+%  fsharp_project_predicates/3.
+go_project_predicates(Predicates, compiled(prolog_term_parser), ProjectPredicates) :-
+    !,
+    go_runtime_parser_predicates(ParserPreds),
+    go_runtime_parser_wrapper_predicates(WrapperPreds),
+    append([Predicates, ParserPreds, WrapperPreds], Combined),
+    sort(Combined, ProjectPredicates).
+go_project_predicates(Predicates, _RuntimeParserMode, Predicates).
+
+%% go_runtime_parser_predicates(-Predicates)
+%  Non-imported predicates of `prolog_term_parser`, as
+%  `prolog_term_parser:Name/Arity` indicators.
+go_runtime_parser_predicates(Predicates) :-
+    findall(prolog_term_parser:Name/Arity,
+            ( current_predicate(prolog_term_parser:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(prolog_term_parser:Head, _)),
+              \+ predicate_property(prolog_term_parser:Head, imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% go_runtime_parser_wrapper_predicates(-Predicates)
+%  Non-imported predicates of `cpp_runtime_parser_wrappers` (the module
+%  name is C++-historical; the wrappers themselves are target-agnostic).
+%  These are what give the generated project read_term_from_atom/2,3.
+go_runtime_parser_wrapper_predicates(Predicates) :-
+    findall(cpp_runtime_parser_wrappers:Name/Arity,
+            ( current_predicate(cpp_runtime_parser_wrappers:Name/Arity),
+              functor(Head, Name, Arity),
+              once(clause(cpp_runtime_parser_wrappers:Head, _)),
+              \+ predicate_property(cpp_runtime_parser_wrappers:Head,
+                                    imported_from(_))
+            ),
+            Raw),
+    sort(Raw, Predicates).
+
+%% validate_go_runtime_parser_mode(+Predicates, +Mode)
+%  With the parser disabled, reject a predicate whose body has a
+%  statically visible parser-dependent call rather than emitting a
+%  runtime that silently cannot serve it. Mirrors
+%  validate_python_runtime_parser_mode/2.
+validate_go_runtime_parser_mode(Predicates, none) :-
+    !,
+    (   go_predicates_parser_dependency(Predicates, Pred, Builtin)
+    ->  throw(error(permission_error(use, runtime_parser, Builtin),
+                    context(write_wam_go_project/3,
+                            parser_disabled_for_predicate(Pred))))
+    ;   true
+    ).
+validate_go_runtime_parser_mode(_Predicates, _Mode).
+
+go_predicates_parser_dependency(Predicates, Pred, Builtin) :-
+    member(Pred, Predicates),
+    go_predicate_clause(Pred, _Head, Body),
+    parser_dependent_body_goal(Body, Builtin),
+    !.
+
+go_predicate_clause(Module:Name/Arity, Head, Body) :-
+    !,
+    functor(Head, Name, Arity),
+    catch(clause(Module:Head, Body), _, fail).
+go_predicate_clause(Name/Arity, Head, Body) :-
+    functor(Head, Name, Arity),
+    catch(clause(user:Head, Body), _, fail).
 
 %% go_lib_import_block(+Code, -ImportBlock)
 %  Emit a Go `import (...)` block listing exactly the std packages the
@@ -289,7 +337,7 @@ compile_lowered_predicates(Predicates, Options, Code) :-
           predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
           \+ is_ffi_owned_fact(Module, Pred, Arity, Options),
           catch(
-              once(( wam_target:compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
+              once(( go_compile_predicate_to_wam(Module:Pred/Arity, Options, WamCode),
                      wam_go_lowerable(Pred/Arity, WamCode, _Reason),
                      lower_predicate_to_go(Pred/Arity, WamCode, Options, GoLines),
                      atomic_list_concat(GoLines, '\n', GoCode)
@@ -302,30 +350,18 @@ compile_lowered_predicates(Predicates, Options, Code) :-
     ;   atomic_list_concat(LoweredCodes, '\n\n', Code)
     ).
 
-%% read_template_file(+Path, -Content)
-read_template_file(Path, Content) :-
-    (   exists_file(Path)
-    ->  read_file_to_string(Path, Content, [])
-    ;   resolve_template_path(Path, AbsPath), exists_file(AbsPath)
-    ->  read_file_to_string(AbsPath, Content, [])
-    ;   format(atom(Content), "// Template not found: ~w", [Path])
-    ).
-
-%% resolve_template_path(+RelativePath, -AbsPath)
-%  Resolve a repo-root-relative template path against this module's source
-%  location, so generation works from any working directory (e.g. the
-%  conformance harness runs from tests/, where the cwd-relative
-%  'templates/...' path does not exist). Mirrors the python target's
-%  source_file/2-based resolution.
-resolve_template_path(RelativePath, AbsPath) :-
-    source_file(wam_go_target:write_wam_go_project(_,_,_), ThisFile),
-    file_directory_name(ThisFile, TargetsDir),   % src/unifyweaver/targets
-    atomic_list_concat([TargetsDir, '/../../../', RelativePath], Raw),
-    absolute_file_name(Raw, AbsPath).
+% (read_template_file/2 and resolve_template_path/2 were removed in Phase 4
+% slice 3: every project template now loads through the fail-closed adapter
+% wam_go_templates:go_render_file/3 / go_render_project_*/N, replacing the old
+% cwd-then-module lookup and its silent "// Template not found" fallback.)
 
 %% compile_predicates_for_project(+Predicates, +Options, -Code)
 compile_predicates_for_project([], _, "").
-compile_predicates_for_project(Predicates, Options, Code) :-
+compile_predicates_for_project(Predicates, Options0, Code) :-
+    % Go has no overloading: resolve name/arity collisions once, up front,
+    % and thread the result through every emitter that mints an identifier.
+    go_overloaded_predicate_names(Predicates, Overloaded),
+    Options = [go_overloaded_names(Overloaded)|Options0],
     classify_predicates(Predicates, Options, Classified),
     collect_wam_entries(Classified, Options, 0, WamEntries, AllInstrParts, AllLabelEntries),
     compile_shared_foreign_setup(Classified, Options, SharedForeignSetup),
@@ -351,7 +387,7 @@ var SharedWamLabels = sharedWamLabels
 ', [SharedForeignSetup, AllInstrs, AllLabels])
     ;   SharedCode = ""
     ),
-    generate_predicate_codes(Classified, WamEntries, PredCodes),
+    generate_predicate_codes(Classified, WamEntries, Options, PredCodes),
     atomic_list_concat(PredCodes, '\n\n', PredicatesCode),
     (   SharedCode == ""
     ->  Code = PredicatesCode
@@ -370,30 +406,136 @@ is_ffi_owned_fact(Module, Pred, Arity, Options) :-
     Clauses \= [],
     forall(member(_-Body, Clauses), Body == true).
 
+%% go_compile_predicate_to_wam(+PI, +Options, -WamCode)
+%  compile_predicate_to_wam/3 plus the ISO three-form key rewrite.
+%
+%  The rewrite only runs when the caller actually configured ISO error
+%  handling -- iso_errors(true|false), a per-predicate iso_errors(PI,
+%  Mode) override, or iso_errors_config(File). Without any of those the
+%  WAM text passes through untouched and generated projects keep the
+%  plain builtin keys they have always used.
+%
+%  (Python rewrites unconditionally, mapping every default key to its
+%  _lax form when no config is present. That is behaviour-preserving --
+%  the _lax keys delegate to the plain ones -- but it would rewrite the
+%  keys in every existing Go project for no gain, so Go opts in
+%  instead.)
+go_compile_predicate_to_wam(PI, Options, WamCode) :-
+    % inline_bagof_setof: bagof/setof otherwise emit `call bagof/3`
+    % (not a Go builtin) and fail silently. Required for the cut-
+    % semantics probes (p14/p15) and any program that uses bagof/setof.
+    wam_target:compile_predicate_to_wam(PI,
+        [inline_bagof_setof(true)|Options], WamCode0),
+    (   go_iso_configured(Options)
+    ->  iso_errors_resolve_options(Options, Config),
+        iso_errors_audit_normalise_pi(PI, NormPI),
+        iso_errors_rewrite_text(Config, NormPI, WamCode0, WamCode)
+    ;   WamCode = WamCode0
+    ).
+
+%% go_iso_configured(+Options)
+%  True when Options carry any ISO error configuration.
+go_iso_configured(Options) :-
+    (   member(iso_errors(_), Options)
+    ->  true
+    ;   member(iso_errors(_, _), Options)
+    ->  true
+    ;   member(iso_errors_config(_), Options)
+    ).
+
+%% go_wam_fact_source_spec(+P, +Arity, +Options, -Spec)
+%  True when Options declare a store-backed source for P/Arity. Only P/2
+%  is streamed (mirrors the wamjs javascript_wam_fact_sources contract).
+%    Spec = indexed(Prefix)   % D43 UWFI/UWIX seek store: Prefix.data + .idx
+%         | lmdb(Dir)         % opt-in; loud error if no reader is built in
+go_wam_fact_source_spec(P, Arity, Options, Spec) :-
+    Arity =:= 2,
+    (   option(go_wam_fact_sources(Sources), Options)
+    ->  true
+    ;   option(js_fact_sources(Sources), Options)
+    ->  true
+    ;   Sources = []
+    ),
+    member(source(PI, Spec), Sources),
+    go_wam_fact_source_pi_match(PI, P, Arity).
+
+go_wam_fact_source_pi_match(_:Name/Ar, P, Arity) :- !,
+    Name == P, Ar =:= Arity.
+go_wam_fact_source_pi_match(Name/Ar, P, Arity) :-
+    Name == P, Ar =:= Arity.
+
+%% go_fact_stream_wam_text(+P, +Arity, -WamText)
+%  The two-instruction predicate body streamed for a fact source.
+go_fact_stream_wam_text(P, Arity, WamText) :-
+    format(atom(WamText),
+        '~w/~w:\n    call_fact_stream ~w/~w\n    proceed\n',
+        [P, Arity, P, Arity]).
+
+%% go_wam_fact_source_setup_lines(+Classified, +Options, -Lines)
+%  One registration call per store-backed source (indexed seek or lmdb gate).
+go_wam_fact_source_setup_lines(Classified, Options, Lines) :-
+    findall(Line,
+        ( member(classified(_M, Pred, Arity, _Kind, _), Classified),
+          go_wam_fact_source_spec(Pred, Arity, Options, Spec),
+          go_wam_fact_source_register_line(Pred/Arity, Spec, Line)
+        ),
+        Lines0),
+    sort(Lines0, Lines).
+
+go_wam_fact_source_register_line(Pred/Arity, indexed(Prefix), Line) :-
+    go_store_abs_path(Prefix, AbsPrefix),
+    escape_go_string(AbsPrefix, EscPrefix),
+    format(atom(Line),
+        '    vm.registerIndexedSeekFact2("~w/~w", "~w")',
+        [Pred, Arity, EscPrefix]).
+go_wam_fact_source_register_line(Pred/Arity, lmdb(Dir), Line) :-
+    go_store_abs_path(Dir, AbsDir),
+    escape_go_string(AbsDir, EscDir),
+    format(atom(Line),
+        '    vm.registerLmdbSeekFact2("~w/~w", "~w")',
+        [Pred, Arity, EscDir]).
+
+go_store_abs_path(Path, Abs) :-
+    atom_string(Path, PathStr),
+    working_directory(Cwd, Cwd),
+    (   catch(absolute_file_name(PathStr, Abs0, [relative_to(Cwd)]), _, fail),
+        Abs0 \== []
+    ->  Abs = Abs0
+    ;   Abs = PathStr
+    ).
+
 classify_predicates([], _, []).
 classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
     predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
-    (   is_ffi_owned_fact(Module, Pred, Arity, Options)
+    (   go_wam_fact_source_spec(Pred, Arity, Options, _Spec)
+        % Store-backed P/2 fact source (D43 indexed seek / lmdb gate).
+        % Compile to a two-instruction body [call_fact_stream, proceed] so
+        % callers reach it by label exactly like any other predicate. The
+        % source itself is registered in setupSharedForeignPredicates.
+    ->  go_fact_stream_wam_text(Pred, Arity, WamText),
+        format(user_error, '  ~w/~w: store-backed fact source~n', [Pred, Arity]),
+        Entry = classified(Module, Pred, Arity, wam, WamText)
+    ;   is_ffi_owned_fact(Module, Pred, Arity, Options)
     ->  format(user_error, '  ~w/~w: FFI-owned fact (skipping WAM compilation)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, ffi_fact, '')
     ;   option(prefer_wam(true), Options),
         option(wam_fallback(WamFB0), Options, true),
         WamFB0 \== false,
         go_foreign_spec(Module:Pred/Arity, Options, _SetupOps0, _RewriteCalls0, _EntryPred0/_EntryArity0),
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode0)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode0)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode0, Options, PredCode0),
         format(user_error, '  ~w/~w: WAM fallback (foreign, preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode0)
     ;   option(prefer_wam(true), Options),
         option(wam_fallback(WamFB1), Options, true),
         WamFB1 \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode1)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode1)
     ->  format(user_error, '  ~w/~w: WAM fallback (preferred)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam, WamCode1)
     ;   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
         option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
         format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
         Entry = classified(Module, Pred, Arity, wam_foreign, PredCode)
@@ -411,7 +553,7 @@ classify_predicates([PredIndicator|Rest], Options, [Entry|RestEntries]) :-
         Entry = classified(Module, Pred, Arity, native, PredCode)
     ;   option(wam_fallback(WamFB), Options, true),
         WamFB \== false,
-        wam_target:compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
+        go_compile_predicate_to_wam(Module:Pred/Arity, [ite_use_y_level(true)|Options], WamCode)
     ->  (   go_foreign_spec(Module:Pred/Arity, Options, _SetupOps, _RewriteCalls, _EntryPred/_EntryArity)
         ->  compile_wam_predicate_to_go(Module:Pred/Arity, WamCode, Options, PredCode),
             format(user_error, '  ~w/~w: WAM fallback (foreign)~n', [Pred, Arity]),
@@ -441,41 +583,43 @@ collect_wam_entries([classified(Module, Pred, Arity, wam, WamCode)|Rest], Option
 collect_wam_entries([_|Rest], Options, PC, Entries, Instrs, Labels) :-
     collect_wam_entries(Rest, Options, PC, Entries, Instrs, Labels).
 
-generate_predicate_codes([], _, []).
-generate_predicate_codes([classified(_, Pred, Arity, ffi_fact, _)|Rest], WamEntries,
+generate_predicate_codes([], _, _, []).
+generate_predicate_codes([classified(_, Pred, Arity, ffi_fact, _)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// ~w/~w: FFI-owned fact — WAM compilation skipped', [Pred, Arity]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest], WamEntries,
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, native, PredCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: native~n~w', [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest], WamEntries,
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, wam_foreign, PredCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: wam_foreign~n~w', [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest], WamEntries,
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, Pred, Arity, wam, _WamCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     member(wam_entry(Pred, Arity, StartPC), WamEntries),
-    compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Code),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
-generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest], WamEntries,
+    compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Options, Code),
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
+generate_predicate_codes([classified(_, _Pred, _Arity, failed, PredCode)|Rest], WamEntries, Options,
                          [Code|RestCodes]) :-
     format(atom(Code), '// Strategy: failed~n~w', [PredCode]),
-    generate_predicate_codes(Rest, WamEntries, RestCodes).
+    generate_predicate_codes(Rest, WamEntries, Options, RestCodes).
 
 compile_shared_foreign_setup(Classified, Options, Code) :-
     findall(Line,
         ( member(classified(Module, Pred, Arity, wam_foreign, _), Classified),
           go_foreign_spec(Module:Pred/Arity, Options, SetupOps, _RewriteCalls, _EntryPred/_EntryArity),
-          maplist(go_foreign_setup_line, SetupOps, SetupLines),
+          maplist([Op, L]>>go_foreign_setup_line(Op, Options, L), SetupOps, SetupLines),
           member(Line, SetupLines)
         ),
         RawLines),
-    sort(RawLines, Lines),
-    (   Lines == []
+    sort(RawLines, ForeignLines),
+    go_wam_fact_source_setup_lines(Classified, Options, FactLines),
+    append(ForeignLines, FactLines, AllLines),
+    (   AllLines == []
     ->  Body = ""
-    ;   atomic_list_concat(Lines, '\n', Body)
+    ;   atomic_list_concat(AllLines, '\n', Body)
     ),
     format(atom(Code),
 'func setupSharedForeignPredicates(vm *WamState) {
@@ -549,6 +693,39 @@ wam_go_direct_builtin("numlist/3", 3, 'numlist/3').
 wam_go_direct_builtin(between/3, 3, 'between/3').
 wam_go_direct_builtin('between/3', 3, 'between/3').
 wam_go_direct_builtin("between/3", 3, 'between/3').
+% call/1 is compiled as `call call/1` (not is_builtin_pred), so without
+% this rewrite the Go Call misses the label and fails. Opaque: a cut
+% inside the metacall prunes only choice points created during it.
+wam_go_direct_builtin(call, 1, 'call/1').
+wam_go_direct_builtin(call/1, 1, 'call/1').
+wam_go_direct_builtin('call/1', 1, 'call/1').
+wam_go_direct_builtin("call/1", 1, 'call/1').
+% P3 pkg_resolver: maplist/N meta-calls user preds (is_v3/1); predsort/3
+% drives cmp_ver/3 for deb/3 order. Without these, Call{"maplist/N"}
+% misses Labels and fails silently (A3). functor/3 is implemented in
+% executeBuiltin but was unclassified — D60's silent-fail class.
+wam_go_direct_builtin(maplist/2, 2, 'maplist/2').
+wam_go_direct_builtin('maplist/2', 2, 'maplist/2').
+wam_go_direct_builtin("maplist/2", 2, 'maplist/2').
+wam_go_direct_builtin(maplist/3, 3, 'maplist/3').
+wam_go_direct_builtin('maplist/3', 3, 'maplist/3').
+wam_go_direct_builtin("maplist/3", 3, 'maplist/3').
+wam_go_direct_builtin(maplist/4, 4, 'maplist/4').
+wam_go_direct_builtin('maplist/4', 4, 'maplist/4').
+wam_go_direct_builtin("maplist/4", 4, 'maplist/4').
+wam_go_direct_builtin(predsort/3, 3, 'predsort/3').
+wam_go_direct_builtin('predsort/3', 3, 'predsort/3').
+wam_go_direct_builtin("predsort/3", 3, 'predsort/3').
+wam_go_direct_builtin(functor/3, 3, 'functor/3').
+wam_go_direct_builtin('functor/3', 3, 'functor/3').
+wam_go_direct_builtin("functor/3", 3, 'functor/3').
+wam_go_direct_builtin(arg/3, 3, 'arg/3').
+wam_go_direct_builtin('arg/3', 3, 'arg/3').
+wam_go_direct_builtin("arg/3", 3, 'arg/3').
+wam_go_direct_builtin('=..', 2, '=../2').
+wam_go_direct_builtin('=..'/2, 2, '=../2').
+wam_go_direct_builtin('=../2', 2, '=../2').
+wam_go_direct_builtin("=../2", 2, '=../2').
 wam_go_direct_builtin(writeln/1, 1, 'writeln/1').
 wam_go_direct_builtin('writeln/1', 1, 'writeln/1').
 wam_go_direct_builtin("writeln/1", 1, 'writeln/1').
@@ -597,6 +774,18 @@ wam_go_direct_builtin("close/1", 1, 'close/1').
 wam_go_direct_builtin(read_line_to_string/2, 2, 'read_line_to_string/2').
 wam_go_direct_builtin('read_line_to_string/2', 2, 'read_line_to_string/2').
 wam_go_direct_builtin("read_line_to_string/2", 2, 'read_line_to_string/2').
+wam_go_direct_builtin(read_string/5, 5, 'read_string/5').
+wam_go_direct_builtin('read_string/5', 5, 'read_string/5').
+wam_go_direct_builtin("read_string/5", 5, 'read_string/5').
+wam_go_direct_builtin(at_end_of_stream/1, 1, 'at_end_of_stream/1').
+wam_go_direct_builtin('at_end_of_stream/1', 1, 'at_end_of_stream/1').
+wam_go_direct_builtin("at_end_of_stream/1", 1, 'at_end_of_stream/1').
+wam_go_direct_builtin(write_to_stream/2, 2, 'write_to_stream/2').
+wam_go_direct_builtin('write_to_stream/2', 2, 'write_to_stream/2').
+wam_go_direct_builtin("write_to_stream/2", 2, 'write_to_stream/2').
+wam_go_direct_builtin(nl_to_stream/1, 1, 'nl_to_stream/1').
+wam_go_direct_builtin('nl_to_stream/1', 1, 'nl_to_stream/1').
+wam_go_direct_builtin("nl_to_stream/1", 1, 'nl_to_stream/1').
 wam_go_direct_builtin(format/1, 1, 'format/1').
 wam_go_direct_builtin('format/1', 1, 'format/1').
 wam_go_direct_builtin("format/1", 1, 'format/1').
@@ -701,12 +890,75 @@ wam_go_direct_builtin("number_codes/2", 2, 'number_codes/2').
 wam_go_direct_builtin(number_chars/2, 2, 'number_chars/2').
 wam_go_direct_builtin('number_chars/2', 2, 'number_chars/2').
 wam_go_direct_builtin("number_chars/2", 2, 'number_chars/2').
+wam_go_direct_builtin(number_string/2, 2, 'number_string/2').
+wam_go_direct_builtin('number_string/2', 2, 'number_string/2').
+wam_go_direct_builtin("number_string/2", 2, 'number_string/2').
 wam_go_direct_builtin(atom_string/2, 2, 'atom_string/2').
 wam_go_direct_builtin('atom_string/2', 2, 'atom_string/2').
 wam_go_direct_builtin("atom_string/2", 2, 'atom_string/2').
 wam_go_direct_builtin(string_to_atom/2, 2, 'string_to_atom/2').
 wam_go_direct_builtin('string_to_atom/2', 2, 'string_to_atom/2').
 wam_go_direct_builtin("string_to_atom/2", 2, 'string_to_atom/2').
+
+% ISO three-form keys plus the catch/throw substrate. Registering
+% these makes `builtin_call <key>` and `execute <key>` route to the
+% runtime's ISO branches; without an entry the emitter falls through
+% to Execute{Pred: ...}, which looks the key up as an indexed fact
+% table and silently fails. See the ISO ERROR HANDLING section.
+wam_go_direct_builtin(catch/3, 3, 'catch/3').
+wam_go_direct_builtin('catch/3', 3, 'catch/3').
+wam_go_direct_builtin("catch/3", 3, 'catch/3').
+wam_go_direct_builtin(throw/1, 1, 'throw/1').
+wam_go_direct_builtin('throw/1', 1, 'throw/1').
+wam_go_direct_builtin("throw/1", 1, 'throw/1').
+wam_go_direct_builtin(is_iso/2, 2, 'is_iso/2').
+wam_go_direct_builtin('is_iso/2', 2, 'is_iso/2').
+wam_go_direct_builtin("is_iso/2", 2, 'is_iso/2').
+wam_go_direct_builtin(is_lax/2, 2, 'is_lax/2').
+wam_go_direct_builtin('is_lax/2', 2, 'is_lax/2').
+wam_go_direct_builtin("is_lax/2", 2, 'is_lax/2').
+wam_go_direct_builtin(succ_iso/2, 2, 'succ_iso/2').
+wam_go_direct_builtin('succ_iso/2', 2, 'succ_iso/2').
+wam_go_direct_builtin("succ_iso/2", 2, 'succ_iso/2').
+wam_go_direct_builtin(succ_lax/2, 2, 'succ_lax/2').
+wam_go_direct_builtin('succ_lax/2', 2, 'succ_lax/2').
+wam_go_direct_builtin("succ_lax/2", 2, 'succ_lax/2').
+wam_go_direct_builtin('<_iso'/2, 2, '<_iso/2').
+wam_go_direct_builtin('<_iso/2', 2, '<_iso/2').
+wam_go_direct_builtin("<_iso/2", 2, '<_iso/2').
+wam_go_direct_builtin('<_lax'/2, 2, '<_lax/2').
+wam_go_direct_builtin('<_lax/2', 2, '<_lax/2').
+wam_go_direct_builtin("<_lax/2", 2, '<_lax/2').
+wam_go_direct_builtin('>_iso'/2, 2, '>_iso/2').
+wam_go_direct_builtin('>_iso/2', 2, '>_iso/2').
+wam_go_direct_builtin(">_iso/2", 2, '>_iso/2').
+wam_go_direct_builtin('>_lax'/2, 2, '>_lax/2').
+wam_go_direct_builtin('>_lax/2', 2, '>_lax/2').
+wam_go_direct_builtin(">_lax/2", 2, '>_lax/2').
+wam_go_direct_builtin('=<_iso'/2, 2, '=<_iso/2').
+wam_go_direct_builtin('=<_iso/2', 2, '=<_iso/2').
+wam_go_direct_builtin("=<_iso/2", 2, '=<_iso/2').
+wam_go_direct_builtin('=<_lax'/2, 2, '=<_lax/2').
+wam_go_direct_builtin('=<_lax/2', 2, '=<_lax/2').
+wam_go_direct_builtin("=<_lax/2", 2, '=<_lax/2').
+wam_go_direct_builtin('>=_iso'/2, 2, '>=_iso/2').
+wam_go_direct_builtin('>=_iso/2', 2, '>=_iso/2').
+wam_go_direct_builtin(">=_iso/2", 2, '>=_iso/2').
+wam_go_direct_builtin('>=_lax'/2, 2, '>=_lax/2').
+wam_go_direct_builtin('>=_lax/2', 2, '>=_lax/2').
+wam_go_direct_builtin(">=_lax/2", 2, '>=_lax/2').
+wam_go_direct_builtin('=:=_iso'/2, 2, '=:=_iso/2').
+wam_go_direct_builtin('=:=_iso/2', 2, '=:=_iso/2').
+wam_go_direct_builtin("=:=_iso/2", 2, '=:=_iso/2').
+wam_go_direct_builtin('=:=_lax'/2, 2, '=:=_lax/2').
+wam_go_direct_builtin('=:=_lax/2', 2, '=:=_lax/2').
+wam_go_direct_builtin("=:=_lax/2", 2, '=:=_lax/2').
+wam_go_direct_builtin('=\\=_iso'/2, 2, '=\\=_iso/2').
+wam_go_direct_builtin('=\\=_iso/2', 2, '=\\=_iso/2').
+wam_go_direct_builtin("=\\=_iso/2", 2, '=\\=_iso/2').
+wam_go_direct_builtin('=\\=_lax'/2, 2, '=\\=_lax/2').
+wam_go_direct_builtin('=\\=_lax/2', 2, '=\\=_lax/2').
+wam_go_direct_builtin("=\\=_lax/2", 2, '=\\=_lax/2').
 
 wam_instruction_to_go_literal(get_constant(C, Ai), GoLiteral) :-
     go_value_literal(C, GoVal),
@@ -774,11 +1026,16 @@ wam_instruction_to_go_literal(call(P, N), GoLiteral) :-
 wam_instruction_to_go_literal(call_indexed_atom_fact2(Pred), GoLiteral) :-
     escape_go_string(Pred, EscapedPred),
     format(atom(GoLiteral), '&CallIndexedAtomFact2{Pred: "~w"}', [EscapedPred]).
+% `execute <builtin>` is a *last* call: the builtin must run and then
+% return to the caller. Emitting a plain BuiltinCall here left the
+% predicate falling off the end of its code (output arguments bound,
+% predicate reported as failed) — see the BuiltinExecute doc comment in
+% instructions.go.mustache.
 wam_instruction_to_go_literal(execute(P), GoLiteral) :-
     wam_go_direct_builtin(P, N, Op),
     !,
     escape_go_string(Op, EscapedPred),
-    format(atom(GoLiteral), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedPred, N]).
+    format(atom(GoLiteral), '&BuiltinExecute{Op: "~w", Arity: ~w}', [EscapedPred, N]).
 wam_instruction_to_go_literal(execute(P), GoLiteral) :-
     format(atom(GoLiteral), '&Execute{Pred: "~w"}', [P]).
 wam_instruction_to_go_literal(proceed, '&Proceed{}').
@@ -839,7 +1096,7 @@ go_struct_case(Functor-Label, Case) :-
 compile_wam_predicate_to_go(PredIndicator, WamCode, Options, GoCode) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
     atom_string(Pred, PredStr),
-    predicate_go_name(Pred, CapPred),
+    predicate_go_name(Pred, Arity, Options, CapPred),
     build_go_wam_arg_list(Arity, ArgList),
     build_go_wam_arg_setup(Arity, ArgSetup),
     (   foreign_wrapper_setup(PredIndicator, WamCode, Options, InstrSetup, ForeignSetup, RunExpr)
@@ -881,9 +1138,9 @@ func ~w(~w) bool {
     CapPred, CapPred, CapPred, CapPred, ArgList, CapPred, CapPred, ArgSetup])
     ).
 
-compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, GoCode) :-
+compile_wam_predicate_to_go_shared(Pred/Arity, StartPC, Options, GoCode) :-
     atom_string(Pred, PredStr),
-    predicate_go_name(Pred, CapPred),
+    predicate_go_name(Pred, Arity, Options, CapPred),
     build_go_wam_arg_list(Arity, ArgList),
     build_go_wam_arg_setup(Arity, ArgSetup),
     format(atom(GoCode),
@@ -919,7 +1176,7 @@ build_go_wam_arg_setup(Arity, Setup) :-
 foreign_wrapper_setup(PredIndicator, _WamCode, Options, InstrSetup, Setup, RunExpr) :-
     go_foreign_spec(PredIndicator, Options, SetupOps, _RewriteCalls, EntryPred/EntryArity),
     InstrSetup = '    vm.PC = 1',
-    go_foreign_setup_code(SetupOps, Setup),
+    go_foreign_setup_code(SetupOps, Options, Setup),
     format(atom(RunExpr), 'vm.executeForeignPredicate("~w", ~w)', [EntryPred, EntryArity]).
 
 go_foreign_spec(_PredArity, Options, _SetupOps, _RewriteCalls, _EntryPredArity) :-
@@ -949,9 +1206,12 @@ go_foreign_spec_term(Pred/Arity,
     is_list(SetupOps),
     is_list(RewriteCalls).
 
-go_foreign_setup_code([], "").
 go_foreign_setup_code(Ops, Setup) :-
-    maplist(go_foreign_setup_line, Ops, Lines),
+    go_foreign_setup_code(Ops, [], Setup).
+
+go_foreign_setup_code([], _Options, "").
+go_foreign_setup_code(Ops, Options, Setup) :-
+    maplist([Op, L]>>go_foreign_setup_line(Op, Options, L), Ops, Lines),
     atomic_list_concat(Lines, '\n', Setup).
 
 go_foreign_setup_line(register_foreign_native_kind(Pred/Arity, Kind), Line) :-
@@ -968,9 +1228,7 @@ go_foreign_setup_line(register_tsv_atom_fact2(Pred/Arity, Path), Line) :-
     format(atom(Line), '    if err := vm.registerTsvAtomFact2("~w/~w", "~w"); err != nil { panic(err) }',
         [Pred, Arity, EscapedPath]).
 go_foreign_setup_line(register_lmdb_atom_fact2(Pred/Arity, ArtifactDir), Line) :-
-    escape_go_string(ArtifactDir, EscapedArtifactDir),
-    format(atom(Line), '    if err := vm.registerLmdbAtomFact2("~w/~w", "~w"); err != nil { panic(err) }',
-        [Pred, Arity, EscapedArtifactDir]).
+    go_lmdb_register_line(Pred/Arity, ArtifactDir, [], Line).
 go_foreign_setup_line(register_foreign_string_config(Pred/Arity, Key, ValuePred/ValueArity), Line) :-
     format(atom(Line), '    vm.registerForeignStringConfig("~w/~w", "~w", "~w/~w")',
         [Pred, Arity, Key, ValuePred, ValueArity]).
@@ -986,6 +1244,66 @@ go_foreign_setup_line(register_indexed_weighted_edge(Pred/Arity, Triples), Line)
     go_fact_triples_literal(Triples, Literal),
     format(atom(Line), '    vm.registerIndexedWeightedEdgeTriples("~w/~w", []WeightedEdgeTriple{~w})', [Pred, Arity, Literal]).
 
+%% go_foreign_setup_line(+Op, +Options, -Line)
+%  Options-aware form. Only the LMDB registration reads Options (for the
+%  materialisation tier and cache size); every other op is
+%  option-independent and falls through to go_foreign_setup_line/2.
+go_foreign_setup_line(register_lmdb_atom_fact2(Pred/Arity, ArtifactDir), Options, Line) :-
+    !,
+    go_lmdb_register_line(Pred/Arity, ArtifactDir, Options, Line).
+go_foreign_setup_line(Op, _Options, Line) :-
+    go_foreign_setup_line(Op, Line).
+
+%% go_lmdb_register_line(+Pred/Arity, +ArtifactDir, +Options, -Line)
+%  Emit the registerLmdbAtomFact2 call with its resolved materialisation
+%  tier and L2 capacity.
+go_lmdb_register_line(Pred/Arity, ArtifactDir, Options, Line) :-
+    escape_go_string(ArtifactDir, EscapedArtifactDir),
+    go_lmdb_materialisation_mode(Options, Mode),
+    go_lmdb_l2_capacity(Options, Mode, Capacity),
+    format(atom(Line),
+        '    if err := vm.registerLmdbAtomFact2("~w/~w", "~w", "~w", ~w); err != nil { panic(err) }',
+        [Pred, Arity, EscapedArtifactDir, Mode, Capacity]).
+
+%% go_lmdb_materialisation_mode(+Options, -Mode)
+%  Resolve lmdb_materialisation(eager|lazy|cached|auto) to a concrete
+%  tier. `auto` defers to the shared cost model in core/cost_model.pl —
+%  the same rule F#, Haskell and R use — so a workload described once
+%  resolves the same way across targets.
+%
+%  The default is `cached`: it matches the F# default and is a strict
+%  improvement on the previous unconditional per-lookup helper spawn
+%  (the artifact is read-only for the process lifetime, so memoising
+%  lookups cannot change results). Pass lmdb_materialisation(lazy) to
+%  get the old behaviour back.
+go_lmdb_materialisation_mode(Options, Mode) :-
+    option(lmdb_materialisation(Requested), Options, cached),
+    (   Requested == auto
+    ->  resolve_auto_lmdb_materialisation(Options, Mode)
+    ;   memberchk(Requested, [eager, lazy, cached])
+    ->  Mode = Requested
+    ;   throw(error(domain_error(lmdb_materialisation, Requested), _))
+    ).
+
+%% go_lmdb_l2_capacity(+Options, +Mode, -Capacity)
+%  Resolve lmdb_l2_capacity(N|auto). Only the cached tier has a cache to
+%  size, so eager/lazy report 0. `auto` scales with the demand-set
+%  estimate, clamped to [256, 65536] — same shape as
+%  compute_l2_capacity_fs/2.
+go_lmdb_l2_capacity(_Options, Mode, 0) :-
+    Mode \== cached,
+    !.
+go_lmdb_l2_capacity(Options, _Mode, Capacity) :-
+    option(lmdb_l2_capacity(Requested), Options, 4096),
+    (   Requested == auto
+    ->  option(fact_count(F), Options, 0),
+        option(demand_set_estimate(D), Options, F),
+        Capacity is max(256, min(65536, integer(D * 0.1)))
+    ;   integer(Requested), Requested > 0
+    ->  Capacity = Requested
+    ;   throw(error(domain_error(lmdb_l2_capacity_positive_integer, Requested), _))
+    ).
+
 go_fact_pairs_literal(Pairs, Literal) :-
     maplist(go_fact_pair_literal, Pairs, PairLiterals),
     atomic_list_concat(PairLiterals, ', ', Literal).
@@ -999,6 +1317,154 @@ go_fact_triples_literal(Triples, Literal) :-
 
 go_fact_triple_literal(Left-Right-Weight, Literal) :-
     format(atom(Literal), '{Left: "~w", Right: "~w", Weight: ~15g}', [Left, Right, Weight]).
+
+% ============================================================================
+% ISO ERROR HANDLING (three-form dispatch)
+% ============================================================================
+%
+% Go joins C++/Elixir/Python/F#/Haskell as an ISO three-form adopter.
+% The shared config loading, mode resolution, PI matching and audit
+% walkers live in src/unifyweaver/core/iso_errors.pl; what stays here is
+% the Go key tables, the WAM-text rewrite, and the audit report.
+%
+% Contract: docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md.
+%
+% Three forms per builtin:
+%   is/2      default key; rewritten per predicate to _iso or _lax
+%   is_iso/2  throws error(instantiation_error, _),
+%             error(type_error(evaluable, F/N), _), or
+%             error(evaluation_error(zero_divisor), _)
+%   is_lax/2  the historical silent-failure behaviour
+%
+% Explicit _iso/_lax keys written in source survive a mode flip: the
+% rewrite only ever touches the *default* key.
+%
+% Only keys with a matching branch in the emitted Go runtime appear
+% here -- an entry without one would silently route calls to a dead key.
+
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_iso(">/2", ">_iso/2").
+iso_errors:iso_errors_default_to_iso("</2", "<_iso/2").
+iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
+iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
+
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
+iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
+iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
+iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
+iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
+
+%% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
+%  Rewrite the default builtin keys in one predicate's WAM text to the
+%  ISO or lax key selected for that predicate.
+%
+%  Same strategy as the Python target: tokenize each line with the
+%  shared quote-aware tokenizer, recognise it to a structured item,
+%  apply the shared item-level rewrite, then splice the new key back
+%  into the original line so whitespace is preserved byte-for-byte.
+iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    (   Mode == false,
+        \+ go_iso_has_lax_entries
+    ->  RewrittenText = WamText
+    ;   atom_string(WamText, S),
+        split_string(S, "\n", "", Lines),
+        maplist(go_iso_rewrite_line(Mode), Lines, RewrittenLines),
+        atomic_list_concat(RewrittenLines, '\n', RewrittenText)
+    ).
+
+go_iso_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
+
+go_iso_rewrite_line(Mode, Line, OutLine) :-
+    (   wam_text_parser:wam_tokenize_line(Line, Tokens),
+        wam_recognise_instruction(Tokens, Item0),
+        iso_errors_rewrite_item(Mode, Item0, Item1),
+        Item0 \== Item1,
+        arg(1, Item0, OldKey),
+        arg(1, Item1, NewKey),
+        go_iso_splice_line(Line, OldKey, NewKey, OutLine)
+    ->  true
+    ;   OutLine = Line
+    ).
+
+go_iso_splice_line(Line, Key, NewKey, OutLine) :-
+    sub_string(Line, Before, KLen, _After, Key),
+    string_length(Key, KLen),
+    sub_string(Line, 0, Before, _, Pre),
+    PostStart is Before + KLen,
+    sub_string(Line, PostStart, _, 0, Post),
+    string_concat(Pre, NewKey, T1),
+    string_concat(T1, Post, OutLine), !.
+
+go_iso_clean_key_token(Token0, Token) :-
+    (   string_concat(Token, ",", Token0)
+    ->  true
+    ;   Token = Token0
+    ).
+
+%% wam_go_iso_audit(+Predicates, +Options, -Audit)
+%  Read-only pass reporting, per predicate, which mode applies and what
+%  each builtin_call site resolves to. Mirrors wam_python_iso_audit/3.
+wam_go_iso_audit(Predicates, Options, Audit) :-
+    iso_errors_resolve_options(Options, Config),
+    findall(audit(PI, Mode, Sites), (
+        member(P, Predicates),
+        iso_errors_audit_normalise_pi(P, PI),
+        iso_errors_mode_for(Config, PI, Mode),
+        go_iso_audit_predicate(PI, Mode, Sites)
+    ), Audit).
+
+go_iso_audit_predicate(PI, Mode, Sites) :-
+    (   catch(
+            ( go_iso_audit_wam_for_pi(PI, WamText),
+              go_iso_audit_parse_lines(WamText, Items)
+            ),
+            _, fail)
+    ->  iso_errors_audit_walk(Items, 0, Mode, [], SitesRev),
+        reverse(SitesRev, Sites)
+    ;   Sites = []
+    ).
+
+go_iso_audit_wam_for_pi(Module:Pred/Arity, WamText) :- !,
+    wam_target:compile_predicate_to_wam(Module:Pred/Arity, [], WamText).
+go_iso_audit_wam_for_pi(Pred/Arity, WamText) :-
+    wam_target:compile_predicate_to_wam(Pred/Arity, [], WamText).
+
+go_iso_audit_parse_lines(WamText, Items) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    maplist(go_iso_audit_parse_one, Lines, MaybeItems),
+    exclude(==(skip), MaybeItems, Items).
+
+go_iso_audit_parse_one(Line, Item) :-
+    split_string(Line, " \t", " \t", Parts0),
+    exclude(==(""), Parts0, Parts),
+    go_iso_audit_classify_line(Parts, Item).
+
+go_iso_audit_classify_line([], skip).
+go_iso_audit_classify_line([Tok], label) :-
+    string_concat(_, ":", Tok), !.
+go_iso_audit_classify_line(["builtin_call", Key0 | _], builtin_call(Key, 0)) :- !,
+    go_iso_clean_key_token(Key0, Key).
+go_iso_audit_classify_line(_, other).
+
+%% wam_go_iso_audit_report(+Audit)
+wam_go_iso_audit_report([]).
+wam_go_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
+    format('~w [~w]~n', [PI, Mode]),
+    (   Sites == []
+    ->  format('  (no builtin_call sites)~n', [])
+    ;   forall(member(site(PC, Orig, Res, Src, Flip), Sites),
+               format('  pc=~w  ~w -> ~w  (~w)  flip-changes=~w~n',
+                      [PC, Orig, Res, Src, Flip]))
+    ),
+    wam_go_iso_audit_report(Rest).
 
 capitalize_atom(Atom, Cap) :-
     atom_codes(Atom, [First|Rest]),
@@ -1014,6 +1480,46 @@ predicate_go_name(Pred, Name) :-
     ;   SafeCodes = [0'P]
     ),
     atom_codes(Name, SafeCodes).
+
+%% predicate_go_name(+Pred, +Arity, +Options, -Name)
+%  Arity-aware wrapper name. Go has no overloading, so a project that
+%  contains the *same* predicate name at two arities (e.g. the portable
+%  parser's `read_term_from_atom/2` and `/3`) would emit two `func
+%  Read_term_from_atom` declarations and fail to compile with
+%  "redeclared in this block".
+%
+%  Names are only suffixed with the arity when the project actually
+%  carries that name at more than one arity — the overloaded set is
+%  computed once per project in compile_predicates_for_project/3 and
+%  threaded through as `go_overloaded_names(Names)`. Projects without
+%  overloads keep the historical unsuffixed names, so existing
+%  generated code and its call sites are unchanged.
+predicate_go_name(Pred, Arity, Options, Name) :-
+    predicate_go_name(Pred, Base),
+    option(go_overloaded_names(Overloaded), Options, []),
+    (   memberchk(Pred, Overloaded)
+    ->  atom_concat(Base, Arity, Name)
+    ;   Name = Base
+    ).
+
+%% go_overloaded_predicate_names(+Predicates, -Names)
+%  Sorted set of predicate names that appear at two or more distinct
+%  arities in this project. These are the names that need arity
+%  suffixes in the emitted Go identifiers.
+go_overloaded_predicate_names(Predicates, Names) :-
+    findall(Pred-Arity,
+            ( member(PredIndicator, Predicates),
+              predicate_indicator_parts(PredIndicator, _M, Pred, Arity)
+            ),
+            Pairs0),
+    sort(Pairs0, Pairs),
+    findall(Pred,
+            ( member(Pred-A1, Pairs),
+              member(Pred-A2, Pairs),
+              A1 \== A2
+            ),
+            Dups0),
+    sort(Dups0, Names).
 
 go_ident_code(Code, Safe) :-
     (   code_type(Code, alnum)
@@ -1146,15 +1652,32 @@ go_binary_edge_fact_pairs(Module, EdgePred/2, FactPairs) :-
         FactPairs).
 
 go_weighted_edge_fact_triples(Module, WeightPred/3, FactTriples) :-
-    findall(Left-Right-Weight,
+    findall(row(Left, Right, Weight),
         ( functor(WeightHead, WeightPred, 3),
           Module:clause(WeightHead, true),
-          WeightHead =.. [WeightPred, Left, Right, Weight],
-          atom(Left),
-          atom(Right),
-          number(Weight)
+          WeightHead =.. [WeightPred, Left, Right, Weight]
         ),
-        FactTriples).
+        Rows),
+    go_validate_weighted_rows(WeightPred, Rows, FactTriples).
+
+go_validate_weighted_rows(_, [], []).
+go_validate_weighted_rows(WeightPred, [row(Left, Right, Weight0)|Rows], FactTriples) :-
+    (   atom(Left)
+    ->  (   atom(Right), number(Weight0)
+        ->  Weight is float(Weight0),
+            FactTriples = [Left-Right-Weight|Rest]
+        ;   Fact =.. [WeightPred, Left, Right, Weight0],
+            format(atom(Message),
+                   'native weighted relation ~w requires atom/atom/number rows',
+                   [WeightPred]),
+            throw(error(domain_error(weighted_kernel_fact, Fact),
+                        context(wam_go_target:go_weighted_edge_fact_triples/3,
+                                Message)))
+        )
+    ;   % Non-atom sources cannot be reached from the atom-keyed native ABI.
+        FactTriples = Rest
+    ),
+    go_validate_weighted_rows(WeightPred, Rows, Rest).
 
 go_foreign_lowerable_countdown_sum(Pred, 2, Clauses) :-
     member(BaseHead-true, Clauses),
@@ -1242,6 +1765,11 @@ go_foreign_lowerable_astar_shortest_path(Module, Pred, 4, Clauses,
                     dimensionality(Dim)].
 
 go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples) :-
+    go_configured_astar_direct_pred(Module, DirectPred),
+    go_weighted_edge_fact_triples(Module, DirectPred/3, DirectTriples),
+    !.
+go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples) :-
+    % Backward compatibility for workloads that predate direct_dist_pred/1.
     go_weighted_edge_fact_triples(Module, direct_semantic_dist/3, DirectTriples),
     DirectTriples \= [],
     DirectPred = direct_semantic_dist,
@@ -1249,6 +1777,19 @@ go_foreign_astar_direct_pred(Module, _FallbackPred, DirectPred/3, DirectTriples)
 go_foreign_astar_direct_pred(_Module, FallbackPred, DirectPred, DirectTriples) :-
     FallbackPred = DirectPred,
     DirectTriples = [].
+
+go_configured_astar_direct_pred(Module, DirectPred) :-
+    (   current_predicate(Module:direct_dist_pred/1),
+        Module:direct_dist_pred(Spec)
+    ;   Module \== user,
+        current_predicate(user:direct_dist_pred/1),
+        user:direct_dist_pred(Spec)
+    ),
+    (   Spec = DirectPred/3
+    ;   atom(Spec), DirectPred = Spec
+    ),
+    atom(DirectPred),
+    !.
 
 go_foreign_astar_dimensionality(Module, Dim) :-
     (   current_predicate(Module:dimensionality/1),
@@ -1373,6 +1914,17 @@ parse_string_to_go_val(Str, GoVal) :-
         catch(term_to_atom(ParsedTerm, QuotedTok), _, fail),
         atom(ParsedTerm)
     ->  go_value_literal(ParsedTerm, GoVal)
+    ;   % A double-quoted string constant round-trips to a Prolog string.
+        % Go has no string type (D37: double-quoted literals intern as
+        % atoms), so emit the CONTENT as an atom rather than a token that
+        % keeps its surrounding quotes. Without this, resolver_store.pl's
+        % `VVS == "-"` compiled to an atom named `"-"` (quotes included),
+        % never matching the atom `-` that split_string/4 yields.
+        atom_string(QuotedTok, Str),
+        catch(term_to_atom(ParsedTerm, QuotedTok), _, fail),
+        string(ParsedTerm)
+    ->  atom_string(ContentAtom, ParsedTerm),
+        go_value_literal(ContentAtom, GoVal)
     ;   go_value_literal(Str, GoVal)
     ).
 
@@ -1389,13 +1941,17 @@ wam_line_to_go_literal(["call", P, N], PredIndicator, Options, GoLit) :-
 wam_line_to_go_literal(["call_indexed_atom_fact2", Pred], _PredIndicator, _Options, GoLit) :-
     clean_comma(Pred, CPred),
     wam_instruction_to_go_literal(call_indexed_atom_fact2(CPred), GoLit).
+wam_line_to_go_literal(["call_fact_stream", Pred], _PredIndicator, _Options, GoLit) :-
+    clean_comma(Pred, CPred),
+    escape_go_string(CPred, EscPred),
+    format(atom(GoLit), '&CallFactStream{Pred: "~w"}', [EscPred]).
 wam_line_to_go_literal(["execute", P], PredIndicator, Options, GoLit) :-
     clean_comma(P, CP),
     (   go_foreign_rewrite_execute(Options, PredIndicator, CP, ForeignPred, ForeignArity)
     ->  format(atom(GoLit), '&CallForeign{Pred: "~w", Arity: ~w}', [ForeignPred, ForeignArity])
     ;   wam_go_direct_builtin(CP, Num, Op)
     ->  escape_go_string(Op, EscapedPred),
-        format(atom(GoLit), '&BuiltinCall{Op: "~w", Arity: ~w}', [EscapedPred, Num])
+        format(atom(GoLit), '&BuiltinExecute{Op: "~w", Arity: ~w}', [EscapedPred, Num])
     ;   format(atom(GoLit), '&Execute{Pred: "~w"}', [CP])
     ).
 wam_line_to_go_literal(["jump", L], GoLit) :-
@@ -1418,6 +1974,13 @@ wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit)
     go_reg_index(CResultReg, ResultRegIdx),
     format(atom(GoLit), '&BeginAggregate{AggType: "~w", ValueReg: ~w, ResultReg: ~w}',
         [CAggType, ValueRegIdx, ResultRegIdx]).
+% bagof/setof emit a 4th witness-register argument
+% (`begin_aggregate bagof, Y1, X2, ''`). Dropping it as `// TODO`
+% skipped the instruction, so EndAggregate was a no-op and L stayed
+% unbound (`__R200`). Witness grouping is not implemented; the 3-arg
+% runtime path is correct when the witness list is empty.
+wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg, _Witnesses], GoLit) :-
+    wam_line_to_go_literal(["begin_aggregate", AggType, ValueReg, ResultReg], GoLit).
 wam_line_to_go_literal(["end_aggregate", ValueReg], GoLit) :-
     clean_comma(ValueReg, CValueReg),
     go_reg_index(CValueReg, ValueRegIdx),
@@ -1517,12 +2080,21 @@ wam_line_to_go_literal(["retry_me_else", L], GoLit) :-
     clean_comma(L, CL),
     format(atom(GoLit), '&RetryMeElse{Label: "~w", Arity: 100}', [CL]).
 wam_line_to_go_literal(["trust_me"], '&TrustMe{}').
+wam_line_to_go_literal(["try", L], GoLit) :-
+    clean_comma(L, CL),
+    format(atom(GoLit), '&Try{Label: "~w"}', [CL]).
+wam_line_to_go_literal(["retry", L], GoLit) :-
+    clean_comma(L, CL),
+    format(atom(GoLit), '&Retry{Label: "~w"}', [CL]).
+wam_line_to_go_literal(["trust", L], GoLit) :-
+    clean_comma(L, CL),
+    format(atom(GoLit), '&Trust{Label: "~w"}', [CL]).
 
 wam_line_to_go_literal(["switch_on_constant" | Table], GoLit) :-
     format_switch_table(Table, CaseStr),
     format(atom(GoLit), '&SwitchOnConstant{Cases: []ConstCase{~w}}', [CaseStr]).
 wam_line_to_go_literal(["switch_on_structure" | Table], GoLit) :-
-    format_switch_table(Table, CaseStr),
+    format_struct_switch_table(Table, CaseStr),
     format(atom(GoLit), '&SwitchOnStructure{Cases: []StructCase{~w}}', [CaseStr]).
 
 wam_line_to_go_literal(Parts, GoLit) :-
@@ -1587,6 +2159,25 @@ format_switch_case(Entry, Case) :-
         format(atom(Case), '{Val: ~w, Label: "~w"}', [GoVal, Label])
     ;   % Robustness fallback for malformed entries
         format(atom(Case), '{Val: internAtom("malformed"), Label: "~w"}', [Entry])
+    ).
+
+% switch_on_structure table entries are Functor/Arity:Label. StructCase
+% carries a functor STRING (the runtime compares fmt.Sprintf("%s/%d",
+% f, len(args))), not a Value. Reusing format_switch_case interned the
+% functor as an atom and emitted `{Val: wamAtom_...}`, which does not
+% compile (StructCase has Functor, not Val). Forced by catalog/6 vs
+% catalog/9 first-arg indexing in uw-resolve.
+format_struct_switch_table(Table, CaseStr) :-
+    maplist(format_struct_switch_case, Table, Cases),
+    atomic_list_concat(Cases, ", ", CaseStr).
+
+format_struct_switch_case(Entry, Case) :-
+    (   split_string(Entry, ":", " ", [FunStr, LabelStr])
+    ->  clean_comma(LabelStr, Label),
+        clean_comma(FunStr, Fun),
+        escape_go_string(Fun, EscFun),
+        format(atom(Case), '{Functor: "~w", Label: "~w"}', [EscFun, Label])
+    ;   format(atom(Case), '{Functor: "malformed", Label: "~w"}', [Entry])
     ).
 
 % --- Register index encoding ---
@@ -1674,1891 +2265,48 @@ escape_go_atom_for_double_quoted(In, Out) :-
 % ============================================================================
 
 %% compile_step_wam_to_go(+Options, -GoCode)
-%  Generates the Step() method body as a Go type switch.
+%  Generates the Step() method body as a Go type switch. The 50 case bodies now
+%  live in five {{match instr}} library files under
+%  templates/targets/go_wam/step/ and the header/footer in step_shell.go.mustache;
+%  wam_go_templates:go_render_step_method/1 owns the assembly (the switch order
+%  via go_step_case_order/1, the `case *Type:` line, the shell splice). See
+%  docs/proposals/wam_go_template_refactor_design.md, Phase 3.
 compile_step_wam_to_go(_Options, GoCode) :-
-    findall(Case, compile_go_step_case(Case), Cases),
-    atomic_list_concat(Cases, '\n', CasesCode),
-    format(atom(GoCode),
-'// Step executes a single WAM instruction.
-func (vm *WamState) Step(instr Instruction) bool {
-    switch i := instr.(type) {
-~w
-    default:
-        return false
-    }
-}', [CasesCode]).
-
-compile_go_step_case(CaseCode) :-
-    wam_go_case(GoType, BodyCode),
-    format(atom(CaseCode),
-        '    case *~w:\n~w', [GoType, BodyCode]).
-
-% --- Head Unification Instructions ---
-
-wam_go_case('GetConstant', '        val := vm.Regs[i.Ai]
-        if val == nil { return false }
-        // Dereference before inspecting: the register may hold a *Ref or a
-        // bound *Unbound (bound via the Bindings table), e.g. the tail of a
-        // partial list carried through a recursive call. Without the deref,
-        // isUnbound() sees the raw *Unbound as unbound and rebinds it to the
-        // constant -- silently corrupting an already-bound value (get_constant
-        // [] would overwrite a bound [H|T] tail with []). Mirrors the deref
-        // GetStructure / GetList already do.
-        val = vm.deref(val)
-        if isUnbound(val) {
-            u := val.(*Unbound)
-            vm.bindUnbound(u, i.C)
-            vm.PC++
-            return true
-        }
-        if valueEquals(val, i.C) {
-            vm.PC++
-            return true
-        }
-        return false').
-
-wam_go_case('GetVariable', '        val := vm.Regs[i.Ai]
-        if val == nil { return false }
-        vm.trailBinding(i.Xn)
-        vm.putReg(i.Xn, val)
-        vm.PC++
-        return true').
-
-wam_go_case('GetValue', '        valA := vm.Regs[i.Ai]
-        valX := vm.getReg(i.Xn)
-        if valA == nil { return false }
-        if vm.Unify(valA, valX) {
-            vm.PC++
-            return true
-        }
-        return false').
-
-wam_go_case('GetStructure', '        val := vm.Regs[i.Ai]
-        if val == nil { return false }
-        if isUnbound(val) {
-            addr := vm.heapPush(nil)
-            arity := parseFunctorArity(i.Functor)
-            s := &Structure{Functor: i.Functor, Arity: arity, Args: make([]Value, arity)}
-            vm.Heap[addr] = s
-            vm.CurrentStruct = s
-            vm.CurrentList = nil
-            vm.bindUnbound(val.(*Unbound), &Ref{Addr: addr})
-            vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
-            vm.PC++
-            return true
-        }
-        val = vm.deref(val)
-        if s, ok := val.(*Structure); ok {
-            if s.Functor == i.Functor {
-                vm.Stack = append(vm.Stack, &UnifyCtx{Args: s.Args})
-                vm.PC++
-                return true
-            }
-        }
-        return false').
-
-wam_go_case('GetList', '        val := vm.Regs[i.Ai]
-        if val == nil { return false }
-        val = vm.deref(val)
-        if isUnbound(val) {
-            addr := vm.heapPush(nil)
-            l := &List{Elements: make([]Value, 2)}
-            vm.Heap[addr] = l
-            vm.CurrentList = l
-            vm.CurrentStruct = nil
-            vm.bindUnbound(val.(*Unbound), &Ref{Addr: addr})
-            vm.Stack = append(vm.Stack, &WriteCtx{N: 2})
-            vm.PC++
-            return true
-        }
-        if list, ok := val.(*List); ok && len(list.Elements) > 0 {
-            vm.Stack = append(vm.Stack, &UnifyCtx{Args: list.Elements})
-            vm.PC++
-            return true
-        }
-        if h, t, ok := consHeadTail(val); ok {
-            vm.Stack = append(vm.Stack, &UnifyCtx{Args: []Value{h, t}})
-            vm.PC++
-            return true
-        }
-        return false').
-
-wam_go_case('UnifyVariable', '        if ctx := vm.peekUnifyCtx(); ctx != nil && len(ctx.Args) > 0 {
-            arg := ctx.Args[0]
-            ctx.Args = ctx.Args[1:]
-            if len(ctx.Args) == 0 { vm.popStack() }
-            vm.trailBinding(i.Xn)
-            vm.putReg(i.Xn, arg)
-            vm.PC++
-            return true
-        }
-        if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
-            addr := vm.HeapLen
-            v := &Unbound{Name: fmt.Sprintf("_H%d", addr), Idx: vm.allocVarId()}
-            vm.heapPush(v)
-            if vm.CurrentStruct != nil {
-                idx := vm.CurrentStruct.Arity - wctx.N
-                vm.CurrentStruct.Args[idx] = v
-            } else if vm.CurrentList != nil {
-                idx := 2 - wctx.N
-                vm.CurrentList.Elements[idx] = v
-            }
-            wctx.N--
-            if wctx.N == 0 {
-                vm.popStack()
-                vm.CurrentStruct = nil
-                vm.CurrentList = nil
-            }
-            vm.putReg(i.Xn, v)
-            vm.PC++
-            return true
-        }
-        return false').
-
-wam_go_case('UnifyValue', '        if ctx := vm.peekUnifyCtx(); ctx != nil && len(ctx.Args) > 0 {
-            expected := ctx.Args[0]
-            ctx.Args = ctx.Args[1:]
-            if len(ctx.Args) == 0 { vm.popStack() }
-            actual := vm.getReg(i.Xn)
-            if vm.Unify(expected, actual) {
-                vm.PC++
-                return true
-            }
-            return false
-        }
-        if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
-            val := vm.getReg(i.Xn)
-            vm.heapPush(val)
-            if vm.CurrentStruct != nil {
-                idx := vm.CurrentStruct.Arity - wctx.N
-                vm.CurrentStruct.Args[idx] = val
-            } else if vm.CurrentList != nil {
-                idx := 2 - wctx.N
-                vm.CurrentList.Elements[idx] = val
-            }
-            wctx.N--
-            if wctx.N == 0 {
-                vm.popStack()
-                vm.CurrentStruct = nil
-                vm.CurrentList = nil
-            }
-            vm.PC++
-            return true
-        }
-        return false').
-
-wam_go_case('UnifyConstant', '        if ctx := vm.peekUnifyCtx(); ctx != nil && len(ctx.Args) > 0 {
-            expected := ctx.Args[0]
-            ctx.Args = ctx.Args[1:]
-            if len(ctx.Args) == 0 { vm.popStack() }
-            if valueEquals(vm.deref(expected), i.C) {
-                vm.PC++
-                return true
-            }
-            return false
-        }
-        if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
-            vm.heapPush(i.C)
-            if vm.CurrentStruct != nil {
-                idx := vm.CurrentStruct.Arity - wctx.N
-                vm.CurrentStruct.Args[idx] = i.C
-            } else if vm.CurrentList != nil {
-                idx := 2 - wctx.N
-                vm.CurrentList.Elements[idx] = i.C
-            }
-            wctx.N--
-            if wctx.N == 0 {
-                vm.popStack()
-                vm.CurrentStruct = nil
-                vm.CurrentList = nil
-            }
-            vm.PC++
-            return true
-        }
-        return false').
-
-% --- Body Construction Instructions ---
-
-wam_go_case('PutConstant', '        vm.Regs[i.Ai] = i.C
-        vm.PC++
-        return true').
-
-wam_go_case('PutVariable', '        // Allocate a globally-unique Idx for the new logical variable.
-        // The earlier strategy reused i.Xn (the X-register slot index)
-        // as the Idx, which collided across activations: an outer
-        // activation''s X207 (Idx=207) and an inner activation''s X207
-        // (also Idx=207) would share Bindings[207] and clobber each
-        // other. The first attempt at a fix `delete(Bindings, i.Xn)`
-        // worked for 2-hop recursion but broke at 3+ hops because the
-        // delete could erase an outer activation''s still-live binding.
-        // Allocating a fresh Idx via allocVarId/0 sidesteps the
-        // collision entirely.
-        v := &Unbound{Name: fmt.Sprintf("_R%d", i.Xn), Idx: vm.allocVarId()}
-        vm.putReg(i.Xn, v)
-        vm.Regs[i.Ai] = v
-        vm.PC++
-        return true').
-
-wam_go_case('PutValue', '        val := vm.getReg(i.Xn)
-        vm.Regs[i.Ai] = val
-        vm.PC++
-        return true').
-
-wam_go_case('PutStructure', '        addr := vm.heapPush(nil)
-        arity := parseFunctorArity(i.Functor)
-        s := &Structure{Functor: i.Functor, Arity: arity, Args: make([]Value, arity)}
-        vm.Heap[addr] = s
-        vm.CurrentStruct = s
-        vm.CurrentList = nil
-        ref := &Ref{Addr: addr}
-        // If this register holds an unbound placeholder (one a prior
-        // set_variable embedded into an enclosing structure/list arg), bind
-        // it to the new structure so the embedded copy resolves here. The
-        // compiler builds nested terms outer-first — e.g. +(+(A,B),C) or a
-        // list tail cell [|]/2 — leaving a placeholder in the arg slot that
-        // a later put_structure into the same register must fill. Trailing
-        // via bindUnbound keeps it backtrack-safe.
-        //
-        // A-REGISTER EXCEPTION (M139/M140 bind-through class): A registers
-        // (index < 100) are argument STAGING — their old occupant is an
-        // unrelated variable (often a clause-head argument), and binding it
-        // to the new cell creates a cyclic term (X = f(X)), making a later
-        // X = 1 wrong-fail. Top-down chaining placeholders only ever live
-        // in X/Y registers (set_variable Xn), so the bind-through is
-        // conditioned on the register class — the same fix the Rust and
-        // LLVM targets carry.
-        if i.Ai >= 100 {
-            if cur := vm.Regs[i.Ai]; cur != nil {
-                if u, ok := vm.deref(cur).(*Unbound); ok {
-                    vm.bindUnbound(u, ref)
-                }
-            }
-        }
-        vm.Regs[i.Ai] = ref
-        vm.Stack = append(vm.Stack, &WriteCtx{N: arity})
-        vm.PC++
-        return true').
-
-wam_go_case('PutList', '        addr := vm.heapPush(nil)
-        l := &List{Elements: make([]Value, 2)}
-        vm.Heap[addr] = l
-        vm.CurrentList = l
-        vm.CurrentStruct = nil
-        vm.Regs[i.Ai] = &Ref{Addr: addr}
-        vm.Stack = append(vm.Stack, &WriteCtx{N: 2})
-        vm.PC++
-        return true').
-
-wam_go_case('SetVariable', '        addr := vm.HeapLen
-        v := &Unbound{Name: fmt.Sprintf("_H%d", addr), Idx: vm.allocVarId()}
-        vm.heapPush(v)
-        if vm.CurrentStruct != nil {
-            if wctx := vm.peekWriteCtx(); wctx != nil {
-                idx := vm.CurrentStruct.Arity - wctx.N
-                vm.CurrentStruct.Args[idx] = v
-                wctx.N--
-                if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentStruct = nil
-                }
-            }
-        } else if vm.CurrentList != nil {
-            if wctx := vm.peekWriteCtx(); wctx != nil {
-                idx := 2 - wctx.N
-                vm.CurrentList.Elements[idx] = v
-                wctx.N--
-                if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentList = nil
-                }
-            }
-        }
-        vm.putReg(i.Xn, v)
-        vm.PC++
-        return true').
-
-wam_go_case('SetValue', '        val := vm.getReg(i.Xn)
-        vm.heapPush(val)
-        if vm.CurrentStruct != nil {
-            if wctx := vm.peekWriteCtx(); wctx != nil {
-                idx := vm.CurrentStruct.Arity - wctx.N
-                vm.CurrentStruct.Args[idx] = val
-                wctx.N--
-                if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentStruct = nil
-                }
-            }
-        } else if vm.CurrentList != nil {
-            if wctx := vm.peekWriteCtx(); wctx != nil {
-                idx := 2 - wctx.N
-                vm.CurrentList.Elements[idx] = val
-                wctx.N--
-                if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentList = nil
-                }
-            }
-        }
-        vm.PC++
-        return true').
-
-wam_go_case('SetConstant', '        vm.heapPush(i.C)
-        if vm.CurrentStruct != nil {
-            if wctx := vm.peekWriteCtx(); wctx != nil {
-                idx := vm.CurrentStruct.Arity - wctx.N
-                vm.CurrentStruct.Args[idx] = i.C
-                wctx.N--
-                if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentStruct = nil
-                }
-            }
-        } else if vm.CurrentList != nil {
-            if wctx := vm.peekWriteCtx(); wctx != nil {
-                idx := 2 - wctx.N
-                vm.CurrentList.Elements[idx] = i.C
-                wctx.N--
-                if wctx.N == 0 {
-                    vm.popStack()
-                    vm.CurrentList = nil
-                }
-            }
-        }
-        vm.PC++
-        return true').
-
-% --- Control Instructions ---
-
-wam_go_case('Allocate', '        // Env trimming: PrevE links the new frame back to the previously
-        // active env frame. vm.E moves to the index of the just-pushed
-        // frame so peekEnvFrame is O(1) and Deallocate can walk the
-        // PrevE chain without scanning the stack.
-        env := &EnvFrame{CP: vm.CP, B0: len(vm.ChoicePoints), CutB0: vm.PendingB0, PrevE: vm.E}
-        // Snapshot the Y-reg range (200..299) into the env frame so a
-        // nested predicate that uses the same slot numbers via
-        // PutVariable doesn''t silently clobber the caller''s Y-regs.
-        // Restored at Deallocate. Bindings on caller-passed Unbounds
-        // still propagate via the global Bindings[Idx] table — deref
-        // of the restored Y-reg follows that binding, so we don''t
-        // lose genuine results, only spurious leftover state.
-        copy(env.SavedYRegs[:], vm.Regs[200:300])
-        vm.Stack = append(vm.Stack, env)
-        vm.E = len(vm.Stack) - 1
-        vm.PC++
-        return true').
-
-wam_go_case('Deallocate', '        if vm.E >= 0 && vm.E < len(vm.Stack) {
-            if env, ok := vm.Stack[vm.E].(*EnvFrame); ok {
-                vm.CP = env.CP
-                copy(vm.Regs[200:300], env.SavedYRegs[:])
-                prevE := env.PrevE
-                // Physical-pop only if it''s safe: the frame must be at
-                // the top of the stack AND no younger choicepoint
-                // references it (env.B0 == current CP count means the
-                // frame was Allocated AFTER the youngest live CP, so
-                // nothing depends on it staying around). Otherwise the
-                // frame stays on the stack — backtrack truncation will
-                // sweep it away when the referencing CPs are
-                // exhausted, and a future Allocate can push above it
-                // because vm.E now points at prevE, not at the dead
-                // frame''s slot.
-                if env.B0 >= len(vm.ChoicePoints) && vm.E == len(vm.Stack)-1 {
-                    vm.Stack = vm.Stack[:vm.E]
-                }
-                vm.E = prevE
-            }
-        }
-        vm.PC++
-        return true').
-
-wam_go_case('Call', '        vm.CP = vm.PC + 1
-        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
-            vm.PendingB0 = len(vm.ChoicePoints)
-            vm.PC = pc
-            return true
-        }
-        if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
-            if vm.executeForeignPredicate(i.Pred, i.Arity) {
-                vm.PC = vm.CP
-                return true
-            }
-            return false
-        }
-        if vm.executeIndexedAtomFact2(i.Pred) {
-            vm.PC = vm.CP
-            return true
-        }
-        return false').
-
-wam_go_case('GetArgInto', '        term := vm.deref(vm.getReg(i.Src))
-        var selected Value
-        switch t := term.(type) {
-        case *Compound:
-            if i.Index < 1 || i.Index > len(t.Args) {
-                return false
-            }
-            selected = t.Args[i.Index-1]
-        case *Structure:
-            if i.Index < 1 || i.Index > len(t.Args) {
-                return false
-            }
-            selected = t.Args[i.Index-1]
-        case *List:
-            head, tail, ok := vm.listHeadTail(t)
-            if !ok {
-                return false
-            }
-            if i.Index == 1 {
-                selected = head
-            } else if i.Index == 2 {
-                selected = tail
-            } else {
-                return false
-            }
-        default:
-            return false
-        }
-        vm.trailBinding(i.Dest)
-        vm.putReg(i.Dest, selected)
-        vm.PC++
-        return true').
-
-wam_go_case('CallForeign', '        return vm.executeForeignPredicate(i.Pred, i.Arity)').
-
-wam_go_case('CallIndexedAtomFact2', '        return vm.executeIndexedAtomFact2(i.Pred)').
-
-wam_go_case('CallPc', '        vm.CP = vm.PC + 1
-        vm.PendingB0 = len(vm.ChoicePoints)
-        vm.PC = i.TargetPC
-        return true').
-
-wam_go_case('Execute', '        if pc, ok := vm.Ctx.Labels[i.Pred]; ok {
-            vm.PendingB0 = len(vm.ChoicePoints)
-            vm.PC = pc
-            return true
-        }
-        if _, ok := vm.Ctx.ForeignNativeKinds[i.Pred]; ok {
-            return vm.executeForeignPredicate(i.Pred, 0)
-        }
-        return vm.executeIndexedAtomFact2(i.Pred)').
-
-wam_go_case('ExecutePc', '        vm.PendingB0 = len(vm.ChoicePoints)
-        vm.PC = i.TargetPC
-        return true').
-
-wam_go_case('Jump', '        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
-            vm.PC = pc
-            return true
-        }
-        return false').
-
-wam_go_case('JumpPc', '        vm.PC = i.TargetPC
-        return true').
-
-wam_go_case('CutIte', '        if len(vm.ChoicePoints) > 0 {
-            vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
-        }
-        vm.PC++
-        return true').
-
-% M17 soft cut (enabled by ite_use_y_level). GetLevel snapshots the
-% current choicepoint-stack height into a Y register; Cut truncates the
-% stack back to that snapshot. Unlike CutIte (drop one CP), this removes
-% the if-then-else / negation choicepoint AND every CP the condition
-% pushed above it -- the cut a proper negation / soft-cut condition needs.
-wam_go_case('GetLevel', '        vm.putReg(i.Reg, &Integer{Val: int64(len(vm.ChoicePoints))})
-        vm.PC++
-        return true').
-
-wam_go_case('Cut', '        if iv, ok := vm.deref(vm.getReg(i.Reg)).(*Integer); ok {
-            target := int(iv.Val)
-            if target >= 0 && target < len(vm.ChoicePoints) {
-                vm.ChoicePoints = vm.ChoicePoints[:target]
-            }
-        }
-        vm.PC++
-        return true').
-
-wam_go_case('BeginAggregate', '        return vm.executeAggregate(i.AggType, i.ValueReg, i.ResultReg)').
-
-wam_go_case('EndAggregate', '        vm.PC++
-        return true').
-
-wam_go_case('Proceed', '        if vm.CP > 0 {
-            vm.PC = vm.CP
-        } else {
-            vm.Halted = true
-        }
-        return true').
-
-wam_go_case('BuiltinCall', '        result := vm.executeBuiltin(i.Op, i.Arity)
-        if result {
-            vm.PC++
-        }
-        return result').
-
-% --- Choice Point Instructions ---
-
-wam_go_case('TryMeElse', '        nextPC := 0
-        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
-            nextPC = pc
-        }
-        vm.pushChoicePoint(nextPC, i.Arity)
-        vm.PC++
-        return true').
-
-wam_go_case('TryMeElsePc', '        vm.pushChoicePoint(i.NextPC, i.Arity)
-        vm.PC++
-        return true').
-
-wam_go_case('RetryMeElse', '        if pc, ok := vm.Ctx.Labels[i.Label]; ok {
-            if len(vm.ChoicePoints) > 0 {
-                vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = pc
-            }
-        }
-        vm.PC++
-        return true').
-
-wam_go_case('RetryMeElsePc', '        if len(vm.ChoicePoints) > 0 {
-            vm.ChoicePoints[len(vm.ChoicePoints)-1].NextPC = i.NextPC
-        }
-        vm.PC++
-        return true').
-
-wam_go_case('TrustMe', '        if len(vm.ChoicePoints) > 0 {
-            vm.ChoicePoints = vm.ChoicePoints[:len(vm.ChoicePoints)-1]
-        }
-        vm.PC++
-        return true').
-
-% --- Indexing Instructions ---
-
-wam_go_case('SwitchOnConstant', '        if val := vm.Regs[0]; val != nil && !isUnbound(val) {
-            targets := make([]int, 0)
-            for _, c := range i.Cases {
-                if !valueEquals(c.Val, val) {
-                    continue
-                }
-                if c.Label == "default" {
-                    targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
-                    continue
-                }
-                if pc, ok := vm.Ctx.Labels[c.Label]; ok {
-                    targets = append(targets, vm.indexedClauseBodyStart(pc))
-                }
-            }
-            if len(targets) > 0 {
-                return vm.enterIndexedAlternatives(targets)
-            }
-        }
-        vm.PC++
-        return true').
-
-wam_go_case('SwitchOnConstantPc', '        if val := vm.Regs[0]; val != nil && !isUnbound(val) {
-            n := len(i.Cases)
-            idx := sort.Search(n, func(j int) bool {
-                return compareValues(i.Cases[j].Val, val) >= 0
-            })
-            targets := make([]int, 0)
-            for idx < n && valueEquals(i.Cases[idx].Val, val) {
-                targets = append(targets, vm.indexedClauseBodyStart(i.Cases[idx].TargetPC))
-                idx++
-            }
-            if len(targets) > 0 {
-                return vm.enterIndexedAlternatives(targets)
-            }
-        }
-        vm.PC++
-        return true').
-
-wam_go_case('SwitchOnStructure', '        if val := vm.Regs[0]; val != nil {
-            if f, args := decompose(val); f != "" {
-                key := fmt.Sprintf("%s/%d", f, len(args))
-                targets := make([]int, 0)
-                for _, c := range i.Cases {
-                    if c.Functor != key {
-                        continue
-                    }
-                    if c.Label == "default" {
-                        targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
-                        continue
-                    }
-                    if pc, ok := vm.Ctx.Labels[c.Label]; ok {
-                        targets = append(targets, vm.indexedClauseBodyStart(pc))
-                    }
-                }
-                if len(targets) > 0 {
-                    return vm.enterIndexedAlternatives(targets)
-                }
-            }
-        }
-        vm.PC++
-        return true').
-
-wam_go_case('SwitchOnStructurePc', '        if val := vm.Regs[0]; val != nil {
-            if f, args := decompose(val); f != "" {
-                key := fmt.Sprintf("%s/%d", f, len(args))
-                targets := make([]int, 0)
-                for _, c := range i.Cases {
-                    if c.Functor == key {
-                        targets = append(targets, vm.indexedClauseBodyStart(c.TargetPC))
-                    }
-                }
-                if len(targets) > 0 {
-                    return vm.enterIndexedAlternatives(targets)
-                }
-            }
-        }
-        vm.PC++
-        return true').
-
-wam_go_case('SwitchOnConstantA2', '        if val := vm.Regs[1]; val != nil && !isUnbound(val) {
-            targets := make([]int, 0)
-            for _, c := range i.Cases {
-                if !valueEquals(c.Val, val) {
-                    continue
-                }
-                if c.Label == "default" {
-                    targets = append(targets, vm.indexedClauseBodyStart(vm.PC+1))
-                    continue
-                }
-                if pc, ok := vm.Ctx.Labels[c.Label]; ok {
-                    targets = append(targets, vm.indexedClauseBodyStart(pc))
-                }
-            }
-            if len(targets) > 0 {
-                return vm.enterIndexedAlternatives(targets)
-            }
-        }
-        vm.PC++
-        return true').
-
-wam_go_case('SwitchOnConstantA2Pc', '        if val := vm.Regs[1]; val != nil && !isUnbound(val) {
-            n := len(i.Cases)
-            idx := sort.Search(n, func(j int) bool {
-                return compareValues(i.Cases[j].Val, val) >= 0
-            })
-            targets := make([]int, 0)
-            for idx < n && valueEquals(i.Cases[idx].Val, val) {
-                targets = append(targets, vm.indexedClauseBodyStart(i.Cases[idx].TargetPC))
-                idx++
-            }
-            if len(targets) > 0 {
-                return vm.enterIndexedAlternatives(targets)
-            }
-        }
-        vm.PC++
-        return true').
+    go_render_step_method(GoCode).
 
 % ============================================================================
 % PHASE 3b: Helper functions → Go
 % ============================================================================
 
 %% compile_wam_helpers_to_go(+Options, -GoCode)
+%  The static WAM helper methods. The Go source now lives in
+%  templates/targets/go_wam/runtime/helpers.go.mustache and is spliced by
+%  wam_go_templates:go_render_helper_methods/1 (design
+%  docs/proposals/wam_go_template_refactor_design.md, Phase 1). The section
+%  loader returns the blob without its final LF; this wrapper re-appends it so
+%  the predicate keeps its historical trailing-LF contract (design Q1(b)),
+%  leaving content-grepping callers and compile_wam_runtime_to_go/2 unchanged.
 compile_wam_helpers_to_go(_Options, GoCode) :-
-    format(atom(GoCode),
-'// Run executes the WAM instruction loop until halt or failure.
-func (vm *WamState) Run() bool {
-    for {
-        if vm.Halted {
-            return true
-        }
-        instr := vm.fetch()
-        if instr == nil {
-            return false
-        }
-        if !vm.Step(instr) {
-            if !vm.backtrack() {
-                return false
-            }
-        }
-    }
-}
-
-func (vm *WamState) indexedClauseBodyStart(targetPC int) int {
-    if targetPC < 0 || targetPC >= len(vm.Ctx.Code) {
-        return targetPC
-    }
-    switch vm.Ctx.Code[targetPC].(type) {
-    case *TryMeElse, *TryMeElsePc, *RetryMeElse, *RetryMeElsePc, *TrustMe:
-        return targetPC + 1
-    default:
-        return targetPC
-    }
-}
-
-func (vm *WamState) enterIndexedAlternatives(targets []int) bool {
-    if len(targets) == 0 {
-        return false
-    }
-    if len(targets) > 1 {
-        // count non-nil A-regs as arity approximation when not statically known
-        arity := 0
-        for i := 0; i < 32; i++ {
-            if vm.Regs[i] != nil { arity = i + 1 }
-        }
-        if arity < 1 { arity = 1 }
-        vm.pushIndexedChoicePoint(targets[1:], arity)
-    }
-    vm.PC = targets[0]
-    return true
-}
-
-func (vm *WamState) enterIndexedClause(targetPC int) bool {
-    return vm.enterIndexedAlternatives([]int{vm.indexedClauseBodyStart(targetPC)})
-}
-
-func (vm *WamState) runIsolatedGoal(targetPC int, args []Value) bool {
-    sub := vm.Clone()
-    for idx := range sub.Regs {
-        sub.Regs[idx] = nil
-    }
-    for idx, arg := range args {
-        if idx >= len(sub.Regs) {
-            break
-        }
-        sub.Regs[idx] = arg
-    }
-    sub.PC = targetPC
-    sub.CP = 0
-    sub.E = -1
-    sub.Stack = nil
-    sub.Trail = nil
-    sub.TrailLen = 0
-    sub.ChoicePoints = nil
-    sub.Halted = false
-    sub.CurrentStruct = nil
-    sub.CurrentList = nil
-    return sub.Run()
-}
-
-// CollectResults gathers values from A registers (indices 0..N-1).
-func (vm *WamState) CollectResults() []Value {
-	results := make([]Value, 0)
-	for i := 0; i < 100; i++ {
-		val := vm.Regs[i]
-		if val == nil {
-			break
-		}
-		results = append(results, vm.deref(val))
-	}
-	return results
-}
-
-// fetch retrieves the instruction at the current PC.
-func (vm *WamState) fetch() Instruction {
-    if vm.PC >= 0 && vm.PC < len(vm.Ctx.Code) {
-        return vm.Ctx.Code[vm.PC]
-    }
-    return nil
-}
-
-func resolveInstructions(code []Instruction, labels map[string]int) []Instruction {
-    // resolveLabel handles the "default" sentinel that the constant-index
-    // emitter (build_constant_index/5 in wam_target.pl) puts on the
-    // first clause''s entry — at runtime that label means "fall through
-    // to the next instruction" (vm.PC+1). resolveInstructions runs over
-    // the code linearly, so the "next" PC is always idx+1 of the
-    // current SwitchOnConstant. Without this resolution, every
-    // SwitchOnConstant with a default entry stays unresolved (because
-    // labels["default"] doesn''t exist), keeping the linear-scan
-    // SwitchOnConstant runtime case alive — at scale-300 with
-    // category_parent''s 6000-clause table the O(N) scan dominates
-    // the per-call cost.
-    resolveLabel := func(label string, idx int) (int, bool) {
-        if label == "default" {
-            return idx + 1, true
-        }
-        pc, ok := labels[label]
-        return pc, ok
-    }
-    resolved := make([]Instruction, 0, len(code))
-    for idx, instr := range code {
-        switch i := instr.(type) {
-        case *Call:
-            if pc, ok := labels[i.Pred]; ok {
-                resolved = append(resolved, &CallPc{TargetPC: pc, Arity: i.Arity})
-            } else {
-                resolved = append(resolved, instr)
-            }
-        case *CallForeign:
-            resolved = append(resolved, instr)
-        case *Execute:
-            if pc, ok := labels[i.Pred]; ok {
-                resolved = append(resolved, &ExecutePc{TargetPC: pc})
-            } else {
-                resolved = append(resolved, instr)
-            }
-        case *Jump:
-            if pc, ok := labels[i.Label]; ok {
-                resolved = append(resolved, &JumpPc{TargetPC: pc})
-            } else {
-                resolved = append(resolved, instr)
-            }
-        case *TryMeElse:
-            if pc, ok := labels[i.Label]; ok {
-                resolved = append(resolved, &TryMeElsePc{NextPC: pc, Arity: i.Arity})
-            } else {
-                resolved = append(resolved, instr)
-            }
-        case *RetryMeElse:
-            if pc, ok := labels[i.Label]; ok {
-                resolved = append(resolved, &RetryMeElsePc{NextPC: pc, Arity: i.Arity})
-            } else {
-                resolved = append(resolved, instr)
-            }
-        case *SwitchOnConstant:
-            cases := make([]ConstPcCase, 0, len(i.Cases))
-            complete := true
-            for _, c := range i.Cases {
-                pc, ok := resolveLabel(c.Label, idx)
-                if !ok {
-                    complete = false
-                    break
-                }
-                cases = append(cases, ConstPcCase{Val: c.Val, TargetPC: pc})
-            }
-            if complete {
-                sort.Slice(cases, func(a, b int) bool {
-                    return compareValues(cases[a].Val, cases[b].Val) < 0
-                })
-                resolved = append(resolved, &SwitchOnConstantPc{Cases: cases})
-            } else {
-                resolved = append(resolved, instr)
-            }
-        case *SwitchOnStructure:
-            cases := make([]StructPcCase, 0, len(i.Cases))
-            complete := true
-            for _, c := range i.Cases {
-                pc, ok := resolveLabel(c.Label, idx)
-                if !ok {
-                    complete = false
-                    break
-                }
-                cases = append(cases, StructPcCase{Functor: c.Functor, TargetPC: pc})
-            }
-            if complete {
-                resolved = append(resolved, &SwitchOnStructurePc{Cases: cases})
-            } else {
-                resolved = append(resolved, instr)
-            }
-        case *SwitchOnConstantA2:
-            cases := make([]ConstPcCase, 0, len(i.Cases))
-            complete := true
-            for _, c := range i.Cases {
-                pc, ok := resolveLabel(c.Label, idx)
-                if !ok {
-                    complete = false
-                    break
-                }
-                cases = append(cases, ConstPcCase{Val: c.Val, TargetPC: pc})
-            }
-            if complete {
-                sort.Slice(cases, func(a, b int) bool {
-                    return compareValues(cases[a].Val, cases[b].Val) < 0
-                })
-                resolved = append(resolved, &SwitchOnConstantA2Pc{Cases: cases})
-            } else {
-                resolved = append(resolved, instr)
-            }
-        default:
-            resolved = append(resolved, instr)
-        }
-    }
-    return resolved
-}
-
-func (vm *WamState) executeAggregate(aggType string, valueReg int, resultReg int) bool {
-    endPC, ok := vm.findMatchingAggregateEnd(vm.PC)
-    if !ok {
-        return false
-    }
-    sub := vm.Clone()
-    baseChoicePoints := len(sub.ChoicePoints)
-    sub.PC = vm.PC + 1
-    sub.Halted = false
-    sub.CurrentStruct = nil
-    sub.CurrentList = nil
-
-    values := make([]Value, 0)
-    count := 0
-    for {
-        if !sub.runUntilPC(endPC, baseChoicePoints) {
-            break
-        }
-        count++
-        if aggType != "count" {
-            val := sub.Regs[valueReg]
-            if val == nil {
-                return false
-            }
-            values = append(values, sub.deref(val))
-        }
-        if !sub.backtrackAbove(baseChoicePoints) {
-            break
-        }
-    }
-
-    result, ok := aggregateResultValue(aggType, values, count)
-    if !ok {
-        return false
-    }
-    if !vm.bindOrUnifyReg(resultReg, result) {
-        return false
-    }
-    vm.PC = endPC + 1
-    return true
-}
-
-func (vm *WamState) findMatchingAggregateEnd(startPC int) (int, bool) {
-    depth := 1
-    for pc := startPC + 1; pc < len(vm.Ctx.Code); pc++ {
-        switch vm.Ctx.Code[pc].(type) {
-        case *BeginAggregate:
-            depth++
-        case *EndAggregate:
-            depth--
-            if depth == 0 {
-                return pc, true
-            }
-        }
-    }
-    return 0, false
-}
-
-func (vm *WamState) runUntilPC(targetPC int, baseChoicePoints int) bool {
-    for {
-        if vm.Halted {
-            return false
-        }
-        if vm.PC == targetPC {
-            return true
-        }
-        instr := vm.fetch()
-        if instr == nil {
-            return false
-        }
-        if !vm.Step(instr) {
-            if !vm.backtrackAbove(baseChoicePoints) {
-                return false
-            }
-        }
-    }
-}
-
-func (vm *WamState) backtrackAbove(limit int) bool {
-    if len(vm.ChoicePoints) <= limit {
-        return false
-    }
-    return vm.backtrack()
-}
-
-func (vm *WamState) bindOrUnifyReg(reg int, val Value) bool {
-    existing := vm.Regs[reg]
-    if existing == nil {
-        vm.trailBinding(reg)
-        vm.putReg(reg, val)
-        return true
-    }
-    return vm.Unify(existing, val)
-}
-
-func aggregateResultValue(aggType string, values []Value, count int) (Value, bool) {
-    switch aggType {
-    case "count":
-        return &Integer{Val: int64(count)}, true
-    case "collect":
-        return &List{Elements: append([]Value(nil), values...)}, true
-    case "bag", "bagof":
-        return &List{Elements: append([]Value(nil), values...)}, true
-    case "set", "setof":
-        return &List{Elements: uniqueAggregateValues(values)}, true
-    case "sum":
-        total := 0.0
-        for _, value := range values {
-            number, ok := aggregateNumericValue(value)
-            if !ok {
-                return nil, false
-            }
-            total += number
-        }
-        return &Float{Val: total}, true
-    case "max":
-        if len(values) == 0 {
-            return nil, false
-        }
-        best, ok := aggregateNumericValue(values[0])
-        if !ok {
-            return nil, false
-        }
-        for _, value := range values[1:] {
-            number, ok := aggregateNumericValue(value)
-            if !ok {
-                return nil, false
-            }
-            if number > best {
-                best = number
-            }
-        }
-        return &Float{Val: best}, true
-    case "min":
-        if len(values) == 0 {
-            return nil, false
-        }
-        best, ok := aggregateNumericValue(values[0])
-        if !ok {
-            return nil, false
-        }
-        for _, value := range values[1:] {
-            number, ok := aggregateNumericValue(value)
-            if !ok {
-                return nil, false
-            }
-            if number < best {
-                best = number
-            }
-        }
-        return &Float{Val: best}, true
-    default:
-        return nil, false
-    }
-}
-
-func uniqueAggregateValues(values []Value) []Value {
-    out := make([]Value, 0, len(values))
-    for _, value := range values {
-        found := false
-        for _, existing := range out {
-            if valueEquals(existing, value) {
-                found = true
-                break
-            }
-        }
-        if !found {
-            out = append(out, value)
-        }
-    }
-    return out
-}
-
-func aggregateNumericValue(value Value) (float64, bool) {
-    switch t := value.(type) {
-    case *Integer:
-        return float64(t.Val), true
-    case *Float:
-        return t.Val, true
-    default:
-        return 0, false
-    }
-}
-
-func (vm *WamState) registerForeignNativeKind(predKey string, kind string) {
-    vm.Ctx.ForeignNativeKinds[predKey] = kind
-}
-
-func (vm *WamState) registerForeignResultLayout(predKey string, layout string) {
-    vm.Ctx.ForeignResultLayouts[predKey] = layout
-}
-
-func (vm *WamState) registerForeignResultMode(predKey string, mode string) {
-    vm.Ctx.ForeignResultModes[predKey] = mode
-}
-
-func (vm *WamState) registerForeignStringConfig(predKey string, key string, value string) {
-    cfg, ok := vm.Ctx.ForeignStringConfigs[predKey]
-    if !ok {
-        cfg = make(map[string]string)
-        vm.Ctx.ForeignStringConfigs[predKey] = cfg
-    }
-    cfg[key] = value
-}
-
-func (vm *WamState) registerForeignUsizeConfig(predKey string, key string, value int) {
-    cfg, ok := vm.Ctx.ForeignUsizeConfigs[predKey]
-    if !ok {
-        cfg = make(map[string]int)
-        vm.Ctx.ForeignUsizeConfigs[predKey] = cfg
-    }
-    cfg[key] = value
-}
-
-func (vm *WamState) registerIndexedAtomFact2Pairs(predKey string, pairs []AtomPair) {
-    vm.Ctx.IndexedAtomFactPairs[predKey] = pairs
-    vm.registerAtomFact2Source(predKey, newStaticAtomFact2Source(pairs))
-}
-
-func (vm *WamState) registerAtomFact2Source(predKey string, source AtomFact2Source) {
-    if source == nil {
-        return
-    }
-    vm.Ctx.AtomFact2Sources[predKey] = source
-    vm.Ctx.IndexedAtomFactPairs[predKey] = source.Scan()
-}
-
-func (vm *WamState) registerTsvAtomFact2(predKey string, path string) error {
-    data, err := os.ReadFile(path)
-    if err != nil {
-        return err
-    }
-    lines := strings.Split(string(data), "\\n")
-    pairs := make([]AtomPair, 0, len(lines))
-    for idx, line := range lines {
-        line = strings.TrimSpace(line)
-        if line == "" {
-            continue
-        }
-        if idx == 0 {
-            continue
-        }
-        cols := strings.Split(line, "\\t")
-        if len(cols) < 2 {
-            continue
-        }
-        left := strings.TrimSpace(cols[0])
-        right := strings.TrimSpace(cols[1])
-        if left == "" || right == "" {
-            continue
-        }
-        pairs = append(pairs, AtomPair{Left: left, Right: right})
-    }
-    vm.registerAtomFact2Source(predKey, newStaticAtomFact2Source(pairs))
-    return nil
-}
-
-func (vm *WamState) registerLmdbAtomFact2(predKey string, artifactDir string) error {
-    source := newLmdbAtomFact2Source(predKey, artifactDir)
-    vm.Ctx.AtomFact2Sources[predKey] = source
-    return nil
-}
-
-func (vm *WamState) registerIndexedWeightedEdgeTriples(predKey string, triples []WeightedEdgeTriple) {
-    vm.Ctx.IndexedWeightedEdgeTriples[predKey] = triples
-}
-
-func (vm *WamState) foreignResultLayout(predKey string) string {
-    return vm.Ctx.ForeignResultLayouts[predKey]
-}
-
-func (vm *WamState) foreignResultMode(predKey string) string {
-    return vm.Ctx.ForeignResultModes[predKey]
-}
-
-func (vm *WamState) foreignStringConfig(predKey string, key string) string {
-    cfg, ok := vm.Ctx.ForeignStringConfigs[predKey]
-    if !ok {
-        return ""
-    }
-    return cfg[key]
-}
-
-func (vm *WamState) foreignUsizeConfig(predKey string, key string) int {
-    cfg, ok := vm.Ctx.ForeignUsizeConfigs[predKey]
-    if !ok {
-        return 0
-    }
-    return cfg[key]
-}
-
-func parseForeignTupleLayout(layout string) int {
-    var arity int
-    if _, err := fmt.Sscanf(layout, "tuple:%d", &arity); err == nil {
-        return arity
-    }
-    return 0
-}
-
-type staticAtomFact2Source struct {
-    pairs []AtomPair
-    byLeft map[string][]AtomPair
-}
-
-func newStaticAtomFact2Source(pairs []AtomPair) *staticAtomFact2Source {
-    copied := append([]AtomPair(nil), pairs...)
-    byLeft := make(map[string][]AtomPair)
-    for _, pair := range copied {
-        byLeft[pair.Left] = append(byLeft[pair.Left], pair)
-    }
-    return &staticAtomFact2Source{pairs: copied, byLeft: byLeft}
-}
-
-func (source *staticAtomFact2Source) Scan() []AtomPair {
-    if source == nil {
-        return nil
-    }
-    return append([]AtomPair(nil), source.pairs...)
-}
-
-func (source *staticAtomFact2Source) LookupArg1(left string) []AtomPair {
-    if source == nil {
-        return nil
-    }
-    return append([]AtomPair(nil), source.byLeft[left]...)
-}
-
-type lmdbAtomFact2Source struct {
-    predKey string
-    artifactDir string
-    helperBin string
-}
-
-func newLmdbAtomFact2Source(predKey string, artifactDir string) *lmdbAtomFact2Source {
-    helperBin := os.Getenv("UW_LMDB_RELATION_ARTIFACT_BIN")
-    if helperBin == "" {
-        helperBin = "lmdb_relation_artifact"
-    }
-    return &lmdbAtomFact2Source{predKey: predKey, artifactDir: artifactDir, helperBin: helperBin}
-}
-
-func (source *lmdbAtomFact2Source) Scan() []AtomPair {
-    if source == nil {
-        return nil
-    }
-    return source.run("scan", source.artifactDir, source.predKey)
-}
-
-func (source *lmdbAtomFact2Source) LookupArg1(left string) []AtomPair {
-    if source == nil {
-        return nil
-    }
-    return source.run("get", source.artifactDir, source.predKey, left)
-}
-
-func (source *lmdbAtomFact2Source) run(args ...string) []AtomPair {
-    if source.helperBin == "" {
-        return nil
-    }
-    output, err := exec.Command(source.helperBin, args...).Output()
-    if err != nil {
-        return nil
-    }
-    return parseAtomFact2Rows(string(output))
-}
-
-func parseAtomFact2Rows(output string) []AtomPair {
-    lines := strings.Split(output, "\\n")
-    pairs := make([]AtomPair, 0, len(lines))
-    for _, line := range lines {
-        line = strings.TrimSpace(line)
-        if line == "" {
-            continue
-        }
-        cols := strings.Split(line, "\\t")
-        if len(cols) < 2 {
-            continue
-        }
-        left := strings.TrimSpace(cols[0])
-        right := strings.TrimSpace(cols[1])
-        if left == "" || right == "" {
-            continue
-        }
-        pairs = append(pairs, AtomPair{Left: left, Right: right})
-    }
-    return pairs
-}
-
-func (vm *WamState) applyForeignResult(predKey string, resultRegs []int, result Value) bool {
-    tupleArity := parseForeignTupleLayout(vm.foreignResultLayout(predKey))
-    if tupleArity <= 1 {
-        if len(resultRegs) < 1 {
-            return false
-        }
-        return vm.Unify(vm.getReg(resultRegs[0]), result)
-    }
-    tuple, ok := result.(*Compound)
-    if !ok || tuple.Functor != "__tuple__" || len(tuple.Args) != tupleArity || len(resultRegs) < tupleArity {
-        return false
-    }
-    for idx := 0; idx < tupleArity; idx++ {
-        if !vm.Unify(vm.getReg(resultRegs[idx]), tuple.Args[idx]) {
-            return false
-        }
-    }
-    return true
-}
-
-func (vm *WamState) finishForeignResults(predKey string, resultRegs []int, results []Value) bool {
-    if len(results) == 0 {
-        return false
-    }
-    resumePC := vm.PC + 1
-    mode := vm.foreignResultMode(predKey)
-    switch mode {
-    case "stream":
-        return vm.finishStreamResults(predKey, resultRegs, results)
-    default:
-        if !vm.applyForeignResult(predKey, resultRegs, results[0]) {
-            return false
-        }
-        vm.PC = resumePC
-        return true
-    }
-}
-
-func (vm *WamState) finishStreamResults(predKey string, resultRegs []int, results []Value) bool {
-    if len(results) == 0 {
-        return false
-    }
-    resumePC := vm.PC + 1
-    var baseRegs [320]Value
-    baseRegs = vm.Regs
-    // Capture stack length and the env-pointer instead of cloning
-    // the stack — backtrack truncates to baseStackLen and restores
-    // baseE the same way the regular CP path does.
-    baseStackLen := len(vm.Stack)
-    baseE := vm.E
-    trailMark := vm.TrailLen
-    heapTop := vm.HeapLen
-    for idx, result := range results {
-        vm.unwindTrailTo(trailMark)
-        vm.Regs = baseRegs
-        if baseStackLen <= len(vm.Stack) {
-            vm.Stack = vm.Stack[:baseStackLen]
-        }
-        vm.E = baseE
-        if heapTop >= 0 && heapTop <= vm.HeapLen {
-            vm.heapTrimTo(heapTop)
-        }
-        vm.Halted = false
-        vm.CurrentStruct = nil
-        vm.CurrentList = nil
-        if !vm.applyForeignResult(predKey, resultRegs, result) {
-            continue
-        }
-        if idx+1 < len(results) {
-            remaining := append([]Value(nil), results[idx+1:]...)
-            ycount := vm.MaxYReg - 200
-            if ycount < 0 {
-                ycount = 0
-            }
-            savedRegs := make([]Value, 8+ycount)
-            copy(savedRegs[:8], baseRegs[:8])
-            if ycount > 0 {
-                copy(savedRegs[8:], baseRegs[200:200+ycount])
-            }
-            vm.ChoicePoints = append(vm.ChoicePoints, ChoicePoint{
-                NextPC: resumePC,
-                ResumePC: resumePC,
-                CP: vm.CP,
-                E: baseE,
-                StackLen: baseStackLen,
-                SavedRegs: savedRegs,
-                HeapTop: heapTop,
-                TrailMark: trailMark,
-                ForeignPredKey: predKey,
-                ForeignResultRegs: append([]int(nil), resultRegs...),
-                ForeignResults: remaining,
-            })
-        }
-        vm.PC = resumePC
-        return true
-    }
-    return false
-}
-
-func (vm *WamState) executeIndexedAtomFact2(predKey string) bool {
-    key, ok := valueAsAtomString(vm, vm.getReg(0))
-    if !ok {
-        return false
-    }
-    pairs := vm.Ctx.IndexedAtomFactPairs[predKey]
-    if source, ok := vm.Ctx.AtomFact2Sources[predKey]; ok {
-        pairs = source.LookupArg1(key)
-    }
-    results := make([]Value, 0)
-    for _, pair := range pairs {
-        if pair.Left == key {
-            results = append(results, internAtom(pair.Right))
-        }
-    }
-    return vm.finishStreamResults(predKey, []int{1}, results)
-}
-
-func valueAsAtomString(vm *WamState, v Value) (string, bool) {
-    val := vm.deref(v)
-    atom, ok := val.(*Atom)
-    if !ok {
-        return "", false
-    }
-    return atom.Name, true
-}
-
-func valueAsInteger(vm *WamState, v Value) (int64, bool) {
-    val := vm.deref(v)
-    integer, ok := val.(*Integer)
-    if !ok {
-        return 0, false
-    }
-    return integer.Val, true
-}
-
-func valueAsFloat(vm *WamState, v Value) (float64, bool) {
-    val := vm.deref(v)
-    switch n := val.(type) {
-    case *Integer:
-        return float64(n.Val), true
-    case *Float:
-        return n.Val, true
-    default:
-        return 0, false
-    }
-}
-
-func listAsSlice(vm *WamState, v Value) ([]Value, bool) {
-    val := vm.deref(v)
-    list, ok := val.(*List)
-    if !ok {
-        return nil, false
-    }
-    return list.Elements, true
-}
-
-func (vm *WamState) collectNativeListSuffixes(items []Value, out *[]Value) {
-    for idx := 0; idx <= len(items); idx++ {
-        suffix := append([]Value(nil), items[idx:]...)
-        *out = append(*out, &List{Elements: suffix})
-    }
-}
-
-func tupleValue(items ...Value) Value {
-    return &Compound{Functor: "__tuple__", Args: items}
-}
-
-func atomAdjacency(pairs []AtomPair) map[string][]string {
-    adjacency := make(map[string][]string)
-    for _, pair := range pairs {
-        adjacency[pair.Left] = append(adjacency[pair.Left], pair.Right)
-    }
-    return adjacency
-}
-
-func weightedAdjacency(triples []WeightedEdgeTriple) map[string][]WeightedEdgeTriple {
-    adjacency := make(map[string][]WeightedEdgeTriple)
-    for _, triple := range triples {
-        adjacency[triple.Left] = append(adjacency[triple.Left], triple)
-    }
-    return adjacency
-}
-
-func (vm *WamState) collectNativeTransitiveClosureResults(source string, pairs []AtomPair) []Value {
-    adjacency := atomAdjacency(pairs)
-    visited := make(map[string]bool)
-    queue := append([]string(nil), adjacency[source]...)
-    results := make([]Value, 0)
-    for len(queue) > 0 {
-        node := queue[0]
-        queue = queue[1:]
-        if visited[node] {
-            continue
-        }
-        visited[node] = true
-        results = append(results, internAtom(node))
-        queue = append(queue, adjacency[node]...)
-    }
-    return results
-}
-
-func (vm *WamState) collectNativeTransitiveDistanceResults(source string, pairs []AtomPair) []Value {
-    adjacency := atomAdjacency(pairs)
-    visited := map[string]bool{source: true}
-    dist := map[string]int{source: 0}
-    queue := []string{source}
-    results := make([]Value, 0)
-    for len(queue) > 0 {
-        current := queue[0]
-        queue = queue[1:]
-        for _, next := range adjacency[current] {
-            if visited[next] {
-                continue
-            }
-            visited[next] = true
-            dist[next] = dist[current] + 1
-            queue = append(queue, next)
-            results = append(results, tupleValue(
-                internAtom(next),
-                &Integer{Val: int64(dist[next])},
-            ))
-        }
-    }
-    return results
-}
-
-func (vm *WamState) collectNativeTransitiveParentDistanceResults(source string, pairs []AtomPair) []Value {
-    adjacency := atomAdjacency(pairs)
-    visited := map[string]bool{source: true}
-    dist := map[string]int{source: 0}
-    parent := make(map[string]string)
-    queue := []string{source}
-    results := make([]Value, 0)
-    for len(queue) > 0 {
-        current := queue[0]
-        queue = queue[1:]
-        for _, next := range adjacency[current] {
-            if visited[next] {
-                continue
-            }
-            visited[next] = true
-            dist[next] = dist[current] + 1
-            parent[next] = current
-            queue = append(queue, next)
-            results = append(results, tupleValue(
-                internAtom(next),
-                internAtom(parent[next]),
-                &Integer{Val: int64(dist[next])},
-            ))
-        }
-    }
-    return results
-}
-
-func (vm *WamState) collectNativeTransitiveStepParentDistanceResults(source string, pairs []AtomPair) []Value {
-    adjacency := atomAdjacency(pairs)
-    visited := map[string]bool{source: true}
-    dist := map[string]int{source: 0}
-    parent := make(map[string]string)
-    firstStep := make(map[string]string)
-    queue := []string{source}
-    results := make([]Value, 0)
-    for len(queue) > 0 {
-        current := queue[0]
-        queue = queue[1:]
-        for _, next := range adjacency[current] {
-            if visited[next] {
-                continue
-            }
-            visited[next] = true
-            dist[next] = dist[current] + 1
-            parent[next] = current
-            if current == source {
-                firstStep[next] = next
-            } else {
-                firstStep[next] = firstStep[current]
-            }
-            queue = append(queue, next)
-            results = append(results, tupleValue(
-                internAtom(next),
-                internAtom(firstStep[next]),
-                internAtom(parent[next]),
-                &Integer{Val: int64(dist[next])},
-            ))
-        }
-    }
-    return results
-}
-
-func pickShortestCandidate(dist map[string]float64, settled map[string]bool) (string, bool) {
-    bestNode := ""
-    bestDist := 0.0
-    found := false
-    for node, d := range dist {
-        if settled[node] {
-            continue
-        }
-        if !found || d < bestDist || (d == bestDist && node < bestNode) {
-            bestNode = node
-            bestDist = d
-            found = true
-        }
-    }
-    return bestNode, found
-}
-
-func heuristicLookup(triples []WeightedEdgeTriple, from string, target string) float64 {
-    for _, triple := range triples {
-        if triple.Left == from && triple.Right == target {
-            return triple.Weight
-        }
-    }
-    return 0
-}
-
-func (vm *WamState) collectNativeWeightedShortestPathResults(source string, triples []WeightedEdgeTriple) []Value {
-    adjacency := weightedAdjacency(triples)
-    dist := map[string]float64{source: 0}
-    settled := make(map[string]bool)
-    results := make([]Value, 0)
-    for {
-        current, ok := pickShortestCandidate(dist, settled)
-        if !ok {
-            break
-        }
-        settled[current] = true
-        if current != source {
-            results = append(results, tupleValue(
-                internAtom(current),
-                &Float{Val: dist[current]},
-            ))
-        }
-        for _, edge := range adjacency[current] {
-            candidate := dist[current] + edge.Weight
-            prev, exists := dist[edge.Right]
-            if !exists || candidate < prev {
-                dist[edge.Right] = candidate
-            }
-        }
-    }
-    return results
-}
-
-func (vm *WamState) collectNativeAstarShortestPathResult(source string, target string, weighted []WeightedEdgeTriple, direct []WeightedEdgeTriple) []Value {
-    adjacency := weightedAdjacency(weighted)
-    gScore := map[string]float64{source: 0}
-    open := map[string]bool{source: true}
-    closed := make(map[string]bool)
-    for len(open) > 0 {
-        current := ""
-        bestScore := 0.0
-        found := false
-        for node := range open {
-            score := gScore[node] + heuristicLookup(direct, node, target)
-            if !found || score < bestScore || (score == bestScore && node < current) {
-                current = node
-                bestScore = score
-                found = true
-            }
-        }
-        if !found {
-            break
-        }
-        delete(open, current)
-        if current == target {
-            return []Value{&Float{Val: gScore[current]}}
-        }
-        closed[current] = true
-        for _, edge := range adjacency[current] {
-            if closed[edge.Right] {
-                continue
-            }
-            candidate := gScore[current] + edge.Weight
-            prev, exists := gScore[edge.Right]
-            if !exists || candidate < prev {
-                gScore[edge.Right] = candidate
-                open[edge.Right] = true
-            }
-        }
-    }
-    return nil
-}
-
-// listAsAtomStrings walks a Prolog cons-list and pulls each element
-// out as an atom string. Uses vm.listToSlice rather than listAsSlice
-// because the latter returns the 2-element [head, tail] cons cell,
-// not the full flattened list — `category_ancestor`''s visited list
-// can be many cells deep, and reading just the first cons would
-// silently truncate it (causing the kernel to walk paths through
-// already-visited nodes and produce wrong hop counts).
-func listAsAtomStrings(vm *WamState, v Value) ([]string, bool) {
-    items, ok := vm.listToSlice(v)
-    if !ok {
-        return nil, false
-    }
-    out := make([]string, 0, len(items))
-    for _, item := range items {
-        s, ok := valueAsAtomString(vm, item)
-        if !ok {
-            return nil, false
-        }
-        out = append(out, s)
-    }
-    return out, true
-}
-
-// collectNativeCategoryAncestorHops walks the parent edges of `cat`
-// looking for `root`, emitting one hop count per matching path. Mirrors
-// the Rust implementation at wam_rust_target.pl:1797 — same DFS, same
-// max-depth semantics, same visited-set skip. The adjacency map is
-// built once at the top level and threaded into the recursive helper
-// to avoid rebuilding it per call.
-func (vm *WamState) collectNativeCategoryAncestorHops(cat string, root string, visited []string, maxDepth int, pairs []AtomPair) []int64 {
-    adjacency := atomAdjacency(pairs)
-    var out []int64
-    vm.collectNativeCategoryAncestorHopsRec(cat, root, visited, maxDepth, adjacency, &out)
-    return out
-}
-
-func (vm *WamState) collectNativeCategoryAncestorHopsRec(cat string, root string, visited []string, maxDepth int, adjacency map[string][]string, out *[]int64) {
-    rootSeen := false
-    for _, v := range visited {
-        if v == root {
-            rootSeen = true
-            break
-        }
-    }
-    parents := adjacency[cat]
-    if !rootSeen {
-        for _, p := range parents {
-            if p == root {
-                *out = append(*out, 1)
-                break
-            }
-        }
-    }
-    if len(visited) >= maxDepth {
-        return
-    }
-    for _, parent := range parents {
-        skip := false
-        for _, v := range visited {
-            if v == parent {
-                skip = true
-                break
-            }
-        }
-        if skip {
-            continue
-        }
-        nextVisited := make([]string, 0, len(visited)+1)
-        nextVisited = append(nextVisited, parent)
-        nextVisited = append(nextVisited, visited...)
-        before := len(*out)
-        vm.collectNativeCategoryAncestorHopsRec(parent, root, nextVisited, maxDepth, adjacency, out)
-        for i := before; i < len(*out); i++ {
-            (*out)[i] += 1
-        }
-    }
-}
-
-func (vm *WamState) executeForeignPredicate(pred string, arity int) bool {
-    predKey := fmt.Sprintf("%s/%d", pred, arity)
-    nativeKind, ok := vm.Ctx.ForeignNativeKinds[predKey]
-    if !ok {
-        return false
-    }
-    switch nativeKind {
-    case "countdown_sum2":
-        n, ok := valueAsInteger(vm, vm.getReg(0))
-        if !ok {
-            return false
-        }
-        sum := n * (n + 1) / 2
-        return vm.finishForeignResults(predKey, []int{1}, []Value{&Integer{Val: sum}})
-    case "list_suffix2":
-        items, ok := listAsSlice(vm, vm.getReg(0))
-        if !ok {
-            return false
-        }
-        suffixes := make([]Value, 0, len(items)+1)
-        vm.collectNativeListSuffixes(items, &suffixes)
-        packed := make([]Value, 0, len(suffixes))
-        for _, suffix := range suffixes {
-            packed = append(packed, suffix)
-        }
-        return vm.finishForeignResults(predKey, []int{1}, packed)
-    case "list_suffixes2":
-        items, ok := listAsSlice(vm, vm.getReg(0))
-        if !ok {
-            return false
-        }
-        suffixes := make([]Value, 0, len(items)+1)
-        vm.collectNativeListSuffixes(items, &suffixes)
-        return vm.finishForeignResults(predKey, []int{1}, []Value{&List{Elements: suffixes}})
-    case "transitive_closure2":
-        source, ok := valueAsAtomString(vm, vm.getReg(0))
-        if !ok {
-            return false
-        }
-        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
-        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
-        results := vm.collectNativeTransitiveClosureResults(source, pairs)
-        return vm.finishForeignResults(predKey, []int{1}, results)
-    case "transitive_distance3":
-        source, ok := valueAsAtomString(vm, vm.getReg(0))
-        if !ok {
-            return false
-        }
-        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
-        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
-        results := vm.collectNativeTransitiveDistanceResults(source, pairs)
-        return vm.finishForeignResults(predKey, []int{1, 2}, results)
-    case "transitive_parent_distance4":
-        source, ok := valueAsAtomString(vm, vm.getReg(0))
-        if !ok {
-            return false
-        }
-        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
-        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
-        results := vm.collectNativeTransitiveParentDistanceResults(source, pairs)
-        return vm.finishForeignResults(predKey, []int{1, 2, 3}, results)
-    case "transitive_step_parent_distance5":
-        source, ok := valueAsAtomString(vm, vm.getReg(0))
-        if !ok {
-            return false
-        }
-        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
-        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
-        results := vm.collectNativeTransitiveStepParentDistanceResults(source, pairs)
-        return vm.finishForeignResults(predKey, []int{1, 2, 3, 4}, results)
-    case "category_ancestor":
-        // category_ancestor(Cat, Root, Hops, Visited) — output is Hops
-        // (A3, reg index 2). Cat=A1, Root=A2, Visited=A4. The WAM
-        // semantics: walk parents of Cat up to max_depth hops; emit one
-        // integer hop count per path that reaches Root, skipping any
-        // node already in Visited. See
-        // src/unifyweaver/core/recursive_kernel_detection.pl:135 for the
-        // canonical register layout and call spec.
-        cat, ok := valueAsAtomString(vm, vm.getReg(0))
-        if !ok {
-            return false
-        }
-        root, ok := valueAsAtomString(vm, vm.getReg(1))
-        if !ok {
-            return false
-        }
-        visited, ok := listAsAtomStrings(vm, vm.getReg(3))
-        if !ok {
-            return false
-        }
-        maxDepth := vm.foreignUsizeConfig(predKey, "max_depth")
-        edgePred := vm.foreignStringConfig(predKey, "edge_pred")
-        pairs := vm.Ctx.IndexedAtomFactPairs[edgePred]
-        hops := vm.collectNativeCategoryAncestorHops(cat, root, visited, maxDepth, pairs)
-        if len(hops) == 0 {
-            return false
-        }
-        results := make([]Value, len(hops))
-        for i, h := range hops {
-            results[i] = &Integer{Val: h}
-        }
-        return vm.finishForeignResults(predKey, []int{2}, results)
-    case "weighted_shortest_path3":
-        source, ok := valueAsAtomString(vm, vm.getReg(0))
-        if !ok {
-            return false
-        }
-        weightPred := vm.foreignStringConfig(predKey, "weight_pred")
-        triples := vm.Ctx.IndexedWeightedEdgeTriples[weightPred]
-        results := vm.collectNativeWeightedShortestPathResults(source, triples)
-        return vm.finishForeignResults(predKey, []int{1, 2}, results)
-    case "astar_shortest_path4":
-        source, ok := valueAsAtomString(vm, vm.getReg(0))
-        if !ok {
-            return false
-        }
-        target, ok := valueAsAtomString(vm, vm.getReg(1))
-        if !ok {
-            return false
-        }
-        if _, ok := valueAsFloat(vm, vm.getReg(2)); !ok {
-            return false
-        }
-        weightPred := vm.foreignStringConfig(predKey, "weight_pred")
-        directPred := vm.foreignStringConfig(predKey, "direct_dist_pred")
-        weighted := vm.Ctx.IndexedWeightedEdgeTriples[weightPred]
-        direct := vm.Ctx.IndexedWeightedEdgeTriples[directPred]
-        results := vm.collectNativeAstarShortestPathResult(source, target, weighted, direct)
-        return vm.finishForeignResults(predKey, []int{3}, results)
-    default:
-        return false
-    }
-}
-', []).
+    go_render_helper_methods(Helpers),
+    atom_concat(Helpers, '\n', GoCode).
 
 %% escape_go_string(+Atom, -Escaped)
-%  Escapes backslashes for Go string literals.
+%  Escapes an atom/string for a Go double-quoted string literal. Backslash
+%  MUST be escaped first (so the backslashes added for the later cases are
+%  not doubled). Double-quote handling is required now that resolver_store.pl
+%  interns a `"`-bearing atom; newline/tab/CR are covered defensively since a
+%  Go string literal cannot carry a raw control character.
 escape_go_string(Atom, Escaped) :-
-    atom_string(Atom, Str),
-    split_string(Str, "\\", "", Parts),
-    atomic_list_concat(Parts, "\\\\", Escaped).
+    atom_string(Atom, Str0),
+    go_str_replace(Str0, "\\", "\\\\", S1),
+    go_str_replace(S1, "\"", "\\\"", S2),
+    go_str_replace(S2, "\n", "\\n", S3),
+    go_str_replace(S3, "\t", "\\t", S4),
+    go_str_replace(S4, "\r", "\\r", Escaped).
+
+go_str_replace(In, From, To, Out) :-
+    split_string(In, From, "", Parts),
+    atomic_list_concat(Parts, To, Out).
 
 % ============================================================================
 % Atom Interning (for lowered Go emission)
@@ -3649,21 +2397,26 @@ emit_atom_table_go(GoCode) :-
         ], "\n", DeclHeader),
         atomic_list_concat(DeclLines, "\n", DeclBody),
         atomic_list_concat([DeclHeader, DeclBody, "\n)\n"], DeclBlock),
-        maplist(format_atom_register_line, Pairs, RegisterLines),
-        atomic_list_concat(RegisterLines, "\n", RegisterBody),
         format(atom(RuntimeHelper),
 '
-// atomInternMap is populated at package init time with every interned
-// atom from the var block above. internAtom(name) returns the shared
-// pointer for that name, allocating + caching one if the name is new.
+// atomInternMap is the single source of pointer identity for atoms.
+// internAtom(name) returns the shared pointer for that name, allocating
+// and caching one if the name is new. The wamAtom_ vars above are
+// themselves initialised through internAtom, so they populate this map
+// as a side effect of package initialisation.
+//
+// Deliberately NOT an init() that assigns into the map: Go runs every
+// package-level variable initialiser before any init(), so a var in
+// another file of this package that calls internAtom during its own
+// initialisation (state.go''s emptyListAtom) would win the map slot and
+// then be overwritten here, leaving two atoms with the same name and
+// different pointers. Atom.Equals is pointer-only, so that silently
+// broke equality — `get_constant []` against a real empty list.
+//
 // Bench drivers should construct atoms via internAtom rather than
-// `&Atom{Name: x}` so SwitchOnConstant in the WAM bytecode matches in
-// O(1) (Atom.Equals short-circuits on pointer identity).
+// `&Atom{Name: x}` for the same reason: SwitchOnConstant in the WAM
+// bytecode matches in O(1) on pointer identity.
 var atomInternMap = make(map[string]*Atom)
-
-func init() {
-~w
-}
 
 func internAtom(name string) *Atom {
     if a, ok := atomInternMap[name]; ok {
@@ -3673,12 +2426,17 @@ func internAtom(name string) *Atom {
     atomInternMap[name] = a
     return a
 }
-', [RegisterBody]),
+
+// InternAtom is the exported form. Drivers and embedders must build
+// atoms through this rather than &Atom{Name: x}: Atom.Equals is pointer
+// identity only, so a fresh literal with the same name compares unequal
+// to the interned one the bytecode carries.
+func InternAtom(name string) *Atom {
+    return internAtom(name)
+}
+', []),
         atomic_list_concat([DeclBlock, RuntimeHelper], GoCode)
     ).
-
-format_atom_register_line(VarName-_, Line) :-
-    format(atom(Line), "    atomInternMap[~w.Name] = ~w", [VarName, VarName]).
 
 % Sort by the trailing _<seq> on the variable name so emission order
 % matches first-seen order rather than alphabetical.
@@ -3693,9 +2451,31 @@ pair_seq_key(VarName-_, Seq) :-
     last(Parts, SeqStr),
     number_string(Seq, SeqStr).
 
+%% format_atom_decl(+VarName-Str, -Line)
+%  Each interned atom is initialised *through* internAtom rather than as
+%  a bare &Atom literal.
+%
+%  Atom.Equals is pointer-only, so every atom with a given name has to be
+%  the one object in atomInternMap. Registering the vars from an init()
+%  did not guarantee that: Go runs all package-level variable
+%  initialisers before any init(), so a var elsewhere in the package that
+%  calls internAtom during its own initialisation — state.go's
+%  `var emptyListAtom = internAtom("[]")` — created and cached its own
+%  "[]" atom first, and the init() then *overwrote* the map entry with
+%  the codegen's wamAtom_ var. The result was two distinct "[]" atoms:
+%  one reached through emptyListAtom (list tails, get_list on a
+%  one-element list) and one baked into the bytecode as a get_constant
+%  operand. `get_constant []` then failed against a genuinely empty
+%  list, which is what stopped the compiled portable parser dead at
+%  parse_op_loop/10's base clause.
+%
+%  Going through internAtom makes the var block order-independent:
+%  Go's initialisation-dependency analysis runs atomInternMap first
+%  (internAtom references it), and whichever caller asks for a name
+%  first, everyone gets the same pointer.
 format_atom_decl(VarName-Str, Line) :-
     escape_go_string(Str, Escaped),
-    format(atom(Line), "    ~w = &Atom{Name: \"~w\"}", [VarName, Escaped]).
+    format(atom(Line), "    ~w = internAtom(\"~w\")", [VarName, Escaped]).
 
 % ============================================================================
 % dimension_n Resolution (for codegen-time substitution)

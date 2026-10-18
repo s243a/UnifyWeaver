@@ -1,0 +1,12 @@
+# Regenerated harness artifacts.
+.corpus_out/
+.corpus_direct/
+.diff_out/
+
+# The generated C++ WAM project (written by build.sh / build.pl). It bakes the
+# absolute store path into register_seek_fact_source, so it is a per-build
+# artifact, not a committed source. build.sh regenerates it.
+uw_resolve_wam_cpp_store/
+
+# Per-backend binary copies the memory×scale harness (run_scale) leaves behind.
+uw_resolve_wam_cpp_store_*

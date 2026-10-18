@@ -48,17 +48,29 @@
     reg_to_int/2,                    % +RegName, -Index
     constant_to_r_term/2,            % +ConstStr, -RTermLiteral
     intern_r_atom/2,                 % +AtomStr, -Id
-    wam_r_resolve_emit_mode/2        % +Options, -Mode
+    wam_r_resolve_emit_mode/2,       % +Options, -Mode
+    % --- ISO-R-0: shared wiring + is/2 vertical slice -----
+    iso_errors_resolve_options/2,
+    iso_errors_load_config/2,
+    iso_errors_mode_for/3,
+    iso_errors_rewrite_text/4,
+    wam_r_iso_audit/3,
+    wam_r_iso_audit_report/1
 ]).
 
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
+:- use_module(library(process), [process_create/3, process_wait/2]).
 :- use_module('../targets/wam_target', [
     compile_predicate_to_wam_text/3,
     compile_predicate_to_wam_items/3
 ]).
-:- use_module('../targets/wam_text_parser', [wam_classify_constant_token/2]).
+:- use_module('../targets/wam_text_parser', [
+    wam_classify_constant_token/2,
+    wam_tokenize_line/2,
+    wam_recognise_instruction/2
+]).
 :- use_module(wam_ir_mode, [wam_ir_mode/4]).
 :- use_module('../core/template_system', [render_template/3]).
 % Lowered emitter: real Phase-2 implementation lives there. We keep the
@@ -73,6 +85,18 @@
 :- use_module(wam_runtime_parser_capability,
              [parser_dependent_body_goal/2,
               wam_target_runtime_parser/3]).
+:- use_module('../core/cost_model',
+             [resolve_auto_lmdb_materialisation/2]).
+:- use_module('../core/iso_errors',
+             [ iso_errors_resolve_options/2,
+               iso_errors_load_config/2,
+               iso_errors_mode_for/3,
+               iso_errors_warn_multi_module/2,
+               iso_errors_rewrite/4,
+               iso_errors_rewrite_item/3,
+               iso_errors_audit_normalise_pi/2,
+               iso_errors_audit_walk/5
+             ]).
 
 % ============================================================================
 % EMIT MODE
@@ -411,6 +435,12 @@ wam_parts_to_r(["switch_on_constant" | Cases], Lit) :-
     atomic_list_concat(CaseLits, ', ', CasesStr),
     format(string(Lit), 'SwitchOnConstant(list(~w))', [CasesStr]).
 
+% Fallthrough indexes precede the linear try/retry/trust chain.  A direct
+% indexed hit would bypass TryMeElse and lose the trailing variable clause
+% as a backtracking alternative, so preserve correctness by using the
+% existing fall-through no-op.
+wam_parts_to_r(["switch_on_constant_fallthrough" | _], 'SwitchOnTerm()').
+
 % --- Switch on term (type-mixed dispatch) ---
 % Emitted by the WAM compiler when a predicate's clauses have a mix
 % of first-arg types (constant + struct + list). The runtime
@@ -419,6 +449,17 @@ wam_parts_to_r(["switch_on_constant" | Cases], Lit) :-
 % filters non-matching ones, so correctness is preserved without
 % the optimisation.
 wam_parts_to_r(["switch_on_term" | _], 'SwitchOnTerm()').
+
+% A2 form: same correctness-preserving no-op as switch_on_term.
+% member/2 emits switch_on_term_a2 ahead of a complete try/trust chain.
+wam_parts_to_r(["switch_on_term_a2" | _], 'SwitchOnTerm()').
+
+% Remaining A2 indexing hints (constant / constant-fallthrough / structure)
+% also lower to the linear no-op. Do not reuse SwitchOnConstant here: an
+% indexed jump can bypass TryMeElse and drop trailing clauses on backtrack.
+wam_parts_to_r(["switch_on_constant_a2" | _], 'SwitchOnTerm()').
+wam_parts_to_r(["switch_on_constant_a2_fallthrough" | _], 'SwitchOnTerm()').
+wam_parts_to_r(["switch_on_structure_a2" | _], 'SwitchOnTerm()').
 
 % --- Switch on structure (functor-shape dispatch) ---
 % Each case is "F/N:label". Behaviour parallels switch_on_constant: when
@@ -923,7 +964,12 @@ compile_predicates_for_project(Predicates, Options,
                                       CompilePredicates),
     wam_r_resolve_emit_mode(Options, EmitMode),
     wam_r_emit_ir_mode(Options, EmitMode, IrMode),
-    compile_all_predicates(CompilePredicates, Options, EmitMode, IrMode, 1,
+    % ISO-R-0: resolve once per project; warn on bare-PI multi-module
+    % overrides. Rewrite is applied per predicate before array/lowered.
+    iso_errors_resolve_options(Options, IsoConfig),
+    iso_errors_warn_multi_module(IsoConfig, CompilePredicates),
+    compile_all_predicates(CompilePredicates, Options, EmitMode, IrMode,
+                           IsoConfig, 1,
                            [], [], [], [], [], [], [],
                            AllInstrs, TopLevelLabelEntries,
                            AllLabelEntries, Wrappers, LoweredEntries,
@@ -951,11 +997,11 @@ same_predicate_indicator(P0, P1) :-
 predicate_indicator_key(_:Pred/Arity, Pred/Arity) :- !.
 predicate_indicator_key(Pred/Arity, Pred/Arity).
 
-compile_all_predicates([], _, _, _, _, Instrs, TopLabels, AllLabels, Wrappers,
+compile_all_predicates([], _, _, _, _, _, Instrs, TopLabels, AllLabels, Wrappers,
                        Lowered, FactComments, Dispatch,
                        Instrs, TopLabels, AllLabels, Wrappers,
                        Lowered, FactComments, Dispatch).
-compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
+compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, IsoConfig, BasePC,
                        InstrAcc, TopLabelAcc, AllLabelAcc, WrapperAcc, LoweredAcc,
                        FactCommentAcc, LoweredDispAcc,
                        AllInstrs, TopLevelLabelEntries,
@@ -996,8 +1042,12 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
         % to P/Arity defaults compile_predicate_to_wam's module to
         % `user`, which silently produces "no clauses" for predicates
         % defined in any other module.
-        compile_predicate_to_wam_text(Pred, [], WamCode),
-        compile_r_predicate_array_wam(Pred, IrMode, WamCode, WamForArray),
+        compile_predicate_to_wam_text(Pred, [], WamCode0),
+        % ISO rewrite before array vs lowered choice (ISO-R-0).
+        iso_errors_pi_for_rewrite(Pred, RewritePI),
+        iso_errors_rewrite_text(IsoConfig, RewritePI, WamCode0, WamCode),
+        compile_r_predicate_array_wam(Pred, IrMode, IsoConfig, RewritePI,
+                                      WamCode, WamForArray),
         WamCodeForLower = WamCode,
         atom_string(WamCode, WamStr),
         split_string(WamStr, "\n", "", WamLines),
@@ -1025,13 +1075,22 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
     % detector (recognised graph pattern -> native R fast path);
     % then the fact-table path; then the regular Phase-3 lowered
     % emitter; otherwise the WAM array.
-    (   r_fact_source_spec(P, Arity, Options, ExternalFactSpec)
-    ->  emit_external_fact_source(P, Arity, ExternalFactSpec,
-                                   ExtData, ExtFunc, ExtFuncName),
+    (   r_fact_source_spec(P, Arity, Options, ExternalFactSpec0)
+    ->  r_normalize_fact_source_spec(ExternalFactSpec0, Options,
+                                      ExternalFactSpec),
+        emit_external_fact_source(P, Arity, ExternalFactSpec,
+                                   ExtData, ExtFunc, ExtFuncName, LookupReg),
         NewLoweredAcc = [ExtData, ExtFunc | LoweredAcc],
         emit_r_lowered_wrapper(P, Arity, ExtFuncName, WrapperCode),
         emit_lowered_dispatch_entry(P, Arity, ExtFuncName, DispEntry),
-        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        % LookupReg registers an explicit bound-arg1 parent-lookup
+        % capability into shared_program$arg1_lookups when the source
+        % supports it (in-memory indexes or on-demand LMDB). Empty
+        % string means leave category_ancestor on iterate_goal fallback.
+        (   LookupReg == ""
+        ->  NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        ;   NewLoweredDispAcc = [LookupReg, DispEntry | LoweredDispAcc]
+        )
     ;   kernel_layout_enabled(Options),
         catch(wam_r_kernel_detect(Pred, Kernel), _, fail),
         catch(emit_kernel(P, Kernel, KData, KFunc, KFuncName), _, fail)
@@ -1041,7 +1100,13 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
         ),
         emit_r_lowered_wrapper(P, Arity, KFuncName, WrapperCode),
         emit_lowered_dispatch_entry(P, Arity, KFuncName, DispEntry),
-        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        % PERF-R-AGGREGATE-LOWER: category_ancestor also publishes a
+        % bulk_collect capability so scalar aggregate regions can reduce
+        % hops without EndAggregate/backtrack. Other kernels omit this.
+        (   emit_bulk_collect_entry(P, Arity, Kernel, BulkEntry)
+        ->  NewLoweredDispAcc = [BulkEntry, DispEntry | LoweredDispAcc]
+        ;   NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
+        )
     ;   WamCodeForLower \= "",
         catch(wam_r_fact_classify(WamCodeForLower,
                                    fact_info(NCls, _FArity, FTuples)),
@@ -1072,11 +1137,19 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
         % per-pred wrapper. Internal calls keep going through the
         % WAM array, matching the pre-PR behaviour.
         NewLoweredDispAcc = LoweredDispAcc
+    ;   should_try_lower(EmitMode, P, Arity),  % PERF-R-BULK-REDUCE-PLAN-1
+        WamCodeForLower \= "",
+        r_pack_bulk_reduce_plan(WamCodeForLower, Plan),
+        emit_bulk_reduce_plan_fusion(P, Arity, Plan, FuncName, FusedR),
+        emit_r_lowered_wrapper(P, Arity, FuncName, WrapperCode),
+        emit_lowered_dispatch_entry(P, Arity, FuncName, DispEntry)
+    ->  NewLoweredAcc = [FusedR | LoweredAcc],
+        NewLoweredDispAcc = [DispEntry | LoweredDispAcc]
     ;   NewLoweredAcc = LoweredAcc,
         NewLoweredDispAcc = LoweredDispAcc,
         emit_r_wrapper(P, Arity, BasePC, WrapperCode)
     ),
-    compile_all_predicates(Rest, Options, EmitMode, IrMode, NewPC,
+    compile_all_predicates(Rest, Options, EmitMode, IrMode, IsoConfig, NewPC,
                            NewInstrs, NewTopLabels, NewAllLabels,
                            [WrapperCode|WrapperAcc], NewLoweredAcc,
                            NewFactCommentAcc,
@@ -1085,9 +1158,24 @@ compile_all_predicates([Pred|Rest], Options, EmitMode, IrMode, BasePC,
                            AllLabelEntries, AllWrappers, AllLowered,
                            AllFactComments, AllLoweredDispatch).
 
-compile_r_predicate_array_wam(_Pred, wam_text, WamCode, WamCode).
-compile_r_predicate_array_wam(Pred, wam_items_bridge, _WamCode, Items) :-
-    compile_predicate_to_wam_items(Pred, [], Items).
+compile_r_predicate_array_wam(_Pred, wam_text, _IsoConfig, _RewritePI,
+                              WamCode, WamCode).
+compile_r_predicate_array_wam(Pred, wam_items_bridge, IsoConfig, RewritePI,
+                              _WamCode, Items) :-
+    compile_predicate_to_wam_items(Pred, [], Items0),
+    iso_errors_rewrite(IsoConfig, RewritePI, Items0, Items1),
+    % Drop rewrites to keys R has not implemented yet (cross-target
+    % multifile pollution from F#/Haskell/Python compare/succ tables).
+    maplist(r_iso_filter_item_rewrite, Items0, Items1, Items).
+
+r_iso_filter_item_rewrite(Item0, Item1, Item) :-
+    (   Item0 == Item1
+    ->  Item = Item1
+    ;   arg(1, Item0, OldKey),
+        r_iso_rewritable_key(OldKey)
+    ->  Item = Item1
+    ;   Item = Item0
+    ).
 
 %% emit_lowered_dispatch_entry(+Pred, +Arity, +FuncName, -Entry)
 %  Generates an `assign("Pred/Arity", FuncName, envir = ...)` line
@@ -1099,6 +1187,123 @@ emit_lowered_dispatch_entry(Pred, Arity, FuncName, Entry) :-
     format(string(Entry),
            'assign("~w/~w", ~w, envir = shared_program$lowered_dispatch)',
            [Pred, Arity, FuncName]).
+
+%% emit_bulk_collect_entry(+Pred, +Arity, +Kernel, -Entry) is semidet.
+%  Registers a bulk_collect callback for kernels that can materialize
+%  all solutions without streaming choice points. Currently only
+%  category_ancestor/4 (hop integers on A3).
+emit_bulk_collect_entry(Pred, 4, recursive_kernel(category_ancestor, _, ConfigOps),
+                        Entry) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
+    member(max_depth(MaxDepth), ConfigOps),
+    integer(MaxDepth),
+    MaxDepth > 0,
+    format(string(Entry),
+'WamRuntime$register_bulk_collect(shared_program, "~w/4", function(program, state) {
+  WamRuntime$category_ancestor_bulk_collect(program, state, "~w", "~w/2", ~wL)
+}, 3L)',
+           [Pred, EdgePred, EdgePred, MaxDepth]).
+
+r_pack_bulk_reduce_plan(WamCode, Plan) :-
+    atom_string(WamCode, S), split_string(S, "\n", " \t", Ls0),
+    exclude([L]>>(L == "" ; sub_string(L, _, 1, 0, ":")), Ls0, Ls),
+    maplist(tokenize_wam_line, Ls, Ps),
+    include([X]>>(X = ["begin_aggregate"|_]), Ps, [_]),
+    include([X]>>(X = ["end_aggregate"|_]), Ps, [_]),
+    forall(member([H|_], Ps), memberchk(H, ["allocate","deallocate","proceed","get_variable","put_value",
+      "put_variable","put_structure","put_list","put_constant","set_value","set_constant","builtin_call","call","begin_aggregate","end_aggregate"])),
+    append(Before, [Begin|Rest], Ps),
+    Begin = ["begin_aggregate", KindS, TRegS, BagYS],
+    atom_string(Kind, KindS), memberchk(Kind, [sum, count, min, max]),
+    reg_to_int(TRegS, TReg), reg_to_int(BagYS, BagY),
+    append(Body, [End|After], Rest), End = ["end_aggregate"|_],
+    include([C]>>(C = ["call",_,_]), Body, [Call]), Call = ["call", BulkKey, _],
+    findall(Y-Ai, (member(["get_variable", Ys, As], Before),
+                   reg_to_int(Ys, Y), reg_to_int(As, Ai)), Y2A),
+    ( member(BagY-BagAi, Y2A) -> true ; BagAi = BagY ),
+    findall(Ai, (append(_, [["put_value", Ys, _], ["builtin_call", "nonvar/1", _]|_], Before),
+                 reg_to_int(Ys, Y), (member(Y-Ai, Y2A) -> true ; Ai = Y)), Nonvars),
+    r_br_exp(Before, ExpFact, ExpY, UMinus),
+    findall(C, (member(C, Before), C=["call"|_]), Cs), (ExpFact == '' -> Cs=[] ; Cs=[["call",ExpFact,"1"]]),
+    findall(B, member(["builtin_call",B,_], Before), Bs),
+    include([B]>>(B == "nonvar/1"), Bs, NBs), length(NBs, N), length(Nonvars, N),
+    exclude([B]>>(B == "nonvar/1"), Bs, OB), (ExpFact=='' -> OB=[] ; OB=[Is],memberchk(Is,["is/2","is_lax/2"])),
+    append(Pre, [Call|Post], Body),
+    findall(Ai-Y, (member(["put_variable", Ys, As], Pre),
+                   reg_to_int(Ys, Y), reg_to_int(As, Ai)), Aliases),
+    r_br_puts(Pre, Y2A, Puts), Puts \= [],
+    r_br_compile(Post, TReg, Compiled), Compiled \= [],
+    r_br_after(After, BagYS, Gt0),
+    Plan = br_plan(Kind, BagAi, BulkKey, Nonvars, ExpFact, ExpY, UMinus,
+                   Gt0, TReg, Compiled, Aliases, Puts).
+
+r_br_exp(Before, Fact, ExpY, true) :-
+    append(_, [["put_variable", _, "A1"], ["call", Fact, "1"],
+               ["put_variable", EYs, "A1"], ["put_structure", "-/1", "A2"],
+               ["set_value", _], ["builtin_call", Is, _]|_], Before),
+    (Is == "is/2" ; Is == "is_lax/2"), !, reg_to_int(EYs, ExpY).
+r_br_exp(_, '', 0, false).
+r_br_after([["deallocate"],["proceed"]], _, false).
+r_br_after([["proceed"]], _, false).
+r_br_after([["put_value",B,_],["put_constant","0",_],["builtin_call",C,_],["deallocate"],["proceed"]], B, true) :- memberchk(C, [">/2",">_lax/2"]).
+
+r_br_puts([], _, []).
+r_br_puts([["put_value", Ys, As]|Rest], Y2A, [put(copy, Ai, From)|Puts]) :- !,
+    reg_to_int(As, Ai), reg_to_int(Ys, Y),
+    (member(Y-From, Y2A) -> true ; From = Y), r_br_puts(Rest, Y2A, Puts).
+r_br_puts([["put_variable", _, As]|Rest], Y2A, [put(fresh, Ai, 0)|Puts]) :- !,
+    reg_to_int(As, Ai), r_br_puts(Rest, Y2A, Puts).
+r_br_puts([["put_list", As], ["set_value", Ys], ["set_constant", "[]"]|Rest],
+          Y2A, [put(list1, Ai, From)|Puts]) :- !,
+    reg_to_int(As, Ai), reg_to_int(Ys, Y),
+    (member(Y-From, Y2A) -> true ; From = Y), r_br_puts(Rest, Y2A, Puts).
+
+r_br_compile([], _, []).
+r_br_compile([Target, ["put_structure", FA, "A2"]|Rest0], TReg,
+             [step(Dest, Op, Arity, Args)|More]) :-
+    ( Target = ["put_variable", Ds, "A1"], reg_to_int(Ds, Dest)
+    ; Target = ["put_value", Ds, "A1"], reg_to_int(Ds, Dest), Dest =:= TReg ),
+    split_string(FA, "/", "", [Op, ArS]), number_string(Arity, ArS),
+    memberchk(Op, ["+", "-", "*", "/", "//", "**", "^"]), !,
+    length(SetLits, Arity), append(SetLits, [["builtin_call", Is, _]|Tail], Rest0),
+    (Is == "is/2" ; Is == "is_lax/2"),
+    maplist(r_br_arg, SetLits, Args), r_br_compile(Tail, TReg, More).
+r_br_arg(["set_value", Rs], arg(reg, R)) :- !, reg_to_int(Rs, R).
+r_br_arg(["set_constant", Ns], arg(const, N)) :- number_string(N, Ns), !.
+
+emit_bulk_reduce_plan_fusion(Pred, Arity, Plan, FuncName, FusedR) :-
+    format(atom(Func0), 'fused_br_~w_~w', [Pred, Arity]),
+    atom_string(Func0, S0), split_string(S0, "$", "", Parts),
+    atomic_list_concat(Parts, "_", FuncName),
+    r_br_plan_to_r(Plan, PlanLit),
+    format(string(FusedR),
+"~w_plan <- ~w
+~w <- function(program, state) {
+  WamRuntime$exec_bulk_reduce_plan(program, state, ~w_plan, \"~w/~w\")
+}
+", [FuncName, PlanLit, FuncName, FuncName, Pred, Arity]).
+
+r_br_plan_to_r(br_plan(Kind, BagAi, BulkKey, Nonvars, ExpFact, ExpY, UMinus,
+                       Gt0, TReg, Compiled, Aliases, Puts), Lit) :-
+    ( Nonvars == [] -> NV = "integer(0)"
+    ; atomic_list_concat(Nonvars, "L, ", NV0), format(string(NV), "c(~wL)", [NV0]) ),
+    maplist(r_br_step_r, Compiled, Ss), atomic_list_concat(Ss, ", ", Steps),
+    maplist([Ai-Y, L]>>format(string(L), 'c(~wL, ~wL)', [Ai, Y]), Aliases, As),
+    atomic_list_concat(As, ", ", Als),
+    maplist(r_br_put_r, Puts, Ps), atomic_list_concat(Ps, ", ", PutsS),
+    ( UMinus == true -> UM = "TRUE" ; UM = "FALSE" ),
+    ( Gt0 == true -> G = "TRUE" ; G = "FALSE" ),
+    format(string(Lit),
+'list(kind="~w",bag_ai=~wL,bulk_key="~w",nonvar_ais=~w,exp_fact="~w",exp_y=~wL,uminus=~w,gt0=~w,tkey="~w",compiled=list(~w),aliases=list(~w),puts=list(~w))',
+           [Kind, BagAi, BulkKey, NV, ExpFact, ExpY, UM, G, TReg, Steps, Als, PutsS]).
+r_br_step_r(step(D,O,A,Args), L) :-
+    maplist(r_br_arg_r, Args, AL), atomic_list_concat(AL, ", ", AS),
+    format(string(L), 'list(dest=~wL,opname="~w",arity=~wL,args=list(~w))', [D,O,A,AS]).
+r_br_arg_r(arg(reg,R), X) :- format(string(X), 'list(kind="reg",reg=~wL)', [R]).
+r_br_arg_r(arg(const,N), X) :- format(string(X), 'list(kind="const",val=~w)', [N]).
+r_br_put_r(put(copy,Ai,F), L) :- format(string(L), 'list(k="c",a=~wL,f=~wL)', [Ai,F]).
+r_br_put_r(put(fresh,Ai,_), L) :- format(string(L), 'list(k="f",a=~wL)', [Ai]).
+r_br_put_r(put(list1,Ai,F), L) :- format(string(L), 'list(k="l",a=~wL,f=~wL)', [Ai,F]).
 
 offset_label_entry(Offset, Entry0, Entry) :-
     atom_string(Entry0, S),
@@ -1340,12 +1545,16 @@ emit_kernel(Pred, recursive_kernel(category_ancestor, _, ConfigOps),
     r_pred_name(Pred, RName),
     format(atom(FuncName), '~w_kernel_ca', [RName]),
     DataDecl = "",
+    % Fleet layout: Cat=A1, Root=A2, Hops=A3 (streamed), Visited=A4.
     format(string(LoweredFunc),
 '~w <- function(program, state) {
-  source   <- WamRuntime$get_reg(state, 1L)
-  ancestor <- WamRuntime$get_reg(state, 2L)
+  source  <- WamRuntime$get_reg(state, 1L)
+  root    <- WamRuntime$get_reg(state, 2L)
+  hops    <- WamRuntime$get_reg(state, 3L)
+  visited <- WamRuntime$get_reg(state, 4L)
   WamRuntime$category_ancestor(program, state, "~w/4", "~w", "~w/2",
-                                ~wL, source, ancestor, state$pc + 1L)
+                                ~wL, source, root, hops, visited,
+                                state$pc + 1L)
 }',
            [FuncName, Pred, EdgePred, EdgePred, MaxDepth]).
 emit_kernel(Pred, recursive_kernel(astar_shortest_path4, _, ConfigOps),
@@ -1404,15 +1613,102 @@ fact_source_pi_match(_:Name/Ar, P, Arity) :- !,
 fact_source_pi_match(Name/Ar, P, Arity) :-
     Name == P, Ar =:= Arity.
 
+%% r_normalize_fact_source_spec(+Spec0, +Options, -Spec)
+%  lmdb_arg1_v1 → concrete Mode via existing R-1/R-2A emitters.
+%  Absent lmdb_materialisation → lazy (R default; do NOT call the
+%  shared resolver, whose no-metadata default is eager).
+%  Explicit auto/lazy/eager/cached → resolve_auto_lmdb_materialisation/2.
+r_normalize_fact_source_spec(lmdb_arg1_v1(Path), Options, Spec) :- !,
+    (   option(lmdb_materialisation(_), Options)
+    ->  resolve_auto_lmdb_materialisation(Options, Mode)
+    ;   Mode = lazy
+    ),
+    (   Mode == cached
+    ->  option(lmdb_l2_capacity(Cap0), Options, 4096),
+        r_lmdb_l2_capacity(Cap0, Cap),
+        Spec = lmdb_arg1_v1(Path, cached, Cap)
+    ;   Spec = lmdb_arg1_v1(Path, Mode)
+    ).
+r_normalize_fact_source_spec(Spec, _Options, Spec).
+
+r_lmdb_l2_capacity(N, N) :-
+    integer(N), N > 0, !.
+r_lmdb_l2_capacity(N, _) :-
+    throw(error(domain_error(lmdb_l2_capacity_positive_integer, N), _)).
+
+r_lmdb_arg1_v1_arity(Arity) :-
+    (   Arity >= 2 -> true
+    ;   throw(error(domain_error(arity_ge_2_for_lmdb_arg1_v1, Arity), _))
+    ).
+
 %% emit_external_fact_source(+P, +Arity, +Spec,
-%%                            -DataDecl, -LoweredFunc, -FuncName)
-%  Emits the loader + fact-iter dispatch fn. Spec dispatches to a
-%  per-shape loader call (CSV, grouped-by-first TSV, ...); the
-%  generated loader output feeds the same build_fact_indexes +
-%  fact_table_dispatch pipeline used by inline fact tables, so
-%  per-arg indexing and dispatch are unchanged across backends.
+%%                            -DataDecl, -LoweredFunc, -FuncName, -LookupReg)
+%  lmdb_arg1_v1(Path, lazy|eager|cached(+Cap)):
+%  lazy = on-demand; eager = stream-once+indexes; cached = L1/L2 LRU.
+%  LookupReg is an R assignment (or "") registered into
+%  shared_program$arg1_lookups for arity-2 sources that can answer
+%  bound-arg1 parent probes without guessing generated variable names.
+emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, lazy),
+                          DataDecl, LoweredFunc, FuncName, LookupReg) :- !,
+    r_lmdb_arg1_v1_arity(Arity),
+    r_pred_name(Pred, RName),
+    format(atom(PathVar), '~w_lmdb_path', [RName]),
+    format(atom(FuncName), '~w_fact_iter', [RName]),
+    atom_string(Path, PathStr), r_string_literal(PathStr, PathLit),
+    format(string(DataDecl),
+'# External fact source for ~w/~w (lmdb_arg1_v1 lazy: ~w)
+~w <- ~w', [Pred, Arity, PathStr, PathVar, PathLit]),
+    fact_args_collect(Arity, ArgsCollect),
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  args <- ~w
+  WamRuntime$lmdb_arg1_v1_dispatch(program, state, ~w, ~wL, args, state$pc + 1L)
+}', [FuncName, ArgsCollect, PathVar, Arity]),
+    r_emit_arg1_lookup_reg_lmdb(Pred, Arity, PathVar, none, LookupReg).
+emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, eager),
+                          DataDecl, LoweredFunc, FuncName, LookupReg) :- !,
+    r_lmdb_arg1_v1_arity(Arity),
+    r_pred_name(Pred, RName),
+    format(atom(DataName), '~w_facts', [RName]),
+    format(atom(IndexesName), '~w_indexes', [RName]),
+    format(atom(FuncName), '~w_fact_iter', [RName]),
+    atom_string(Path, PathStr), r_string_literal(PathStr, PathLit),
+    format(string(DataDecl),
+'# External fact source for ~w/~w (lmdb_arg1_v1 eager: ~w)
+~w <- WamRuntime$lmdb_arg1_v1_stream(~w, ~wL, intern_table)
+~w <- WamRuntime$build_fact_indexes(~w, ~wL)',
+        [Pred, Arity, PathStr, DataName, PathLit, Arity,
+         IndexesName, DataName, Arity]),
+    fact_args_collect(Arity, ArgsCollect),
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  args <- ~w
+  WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w, args, state$pc + 1L)
+}', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]),
+    r_emit_arg1_lookup_reg_indexed(Pred, Arity, DataName, IndexesName, LookupReg).
+emit_external_fact_source(Pred, Arity, lmdb_arg1_v1(Path, cached, Cap),
+                          DataDecl, LoweredFunc, FuncName, LookupReg) :- !,
+    r_lmdb_arg1_v1_arity(Arity),
+    r_pred_name(Pred, RName),
+    format(atom(PathVar), '~w_lmdb_path', [RName]),
+    format(atom(CacheVar), '~w_lmdb_cache', [RName]),
+    format(atom(FuncName), '~w_fact_iter', [RName]),
+    atom_string(Path, PathStr), r_string_literal(PathStr, PathLit),
+    format(string(DataDecl),
+'# External fact source for ~w/~w (lmdb_arg1_v1 cached cap=~w: ~w)
+~w <- ~w
+~w <- WamRuntime$lmdb_arg1_v1_new_cache(~wL)',
+        [Pred, Arity, Cap, PathStr, PathVar, PathLit, CacheVar, Cap]),
+    fact_args_collect(Arity, ArgsCollect),
+    format(string(LoweredFunc),
+'~w <- function(program, state) {
+  args <- ~w
+  WamRuntime$lmdb_arg1_v1_cached_dispatch(program, state, ~w, ~wL, args,
+                                           state$pc + 1L, ~w)
+}', [FuncName, ArgsCollect, PathVar, Arity, CacheVar]),
+    r_emit_arg1_lookup_reg_lmdb(Pred, Arity, PathVar, CacheVar, LookupReg).
 emit_external_fact_source(Pred, Arity, Spec,
-                          DataDecl, LoweredFunc, FuncName) :-
+                          DataDecl, LoweredFunc, FuncName, LookupReg) :-
     r_pred_name(Pred, RName),
     format(atom(DataName), '~w_facts', [RName]),
     format(atom(IndexesName), '~w_indexes', [RName]),
@@ -1431,7 +1727,35 @@ emit_external_fact_source(Pred, Arity, Spec,
   WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w,
                                   args, state$pc + 1L)
 }',
-        [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]).
+        [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]),
+    r_emit_arg1_lookup_reg_indexed(Pred, Arity, DataName, IndexesName, LookupReg).
+
+%% r_emit_arg1_lookup_reg_indexed(+Pred, +Arity, +FactsVar, +IndexesVar, -Reg)
+%  In-memory indexed FactSource / eager LMDB / inline fact table.
+r_emit_arg1_lookup_reg_indexed(Pred, Arity, DataName, IndexesName, Reg) :-
+    (   Arity >= 2
+    ->  format(string(Reg),
+'WamRuntime$register_indexed_arg1_parent_lookup(shared_program, "~w/~w", ~w, ~w)',
+               [Pred, Arity, DataName, IndexesName])
+    ;   Reg = ""
+    ).
+
+%% r_emit_arg1_lookup_reg_lmdb(+Pred, +Arity, +PathVar, +CacheOrNone, -Reg)
+%  On-demand LMDB capability (lazy or cached). Does not stream-all.
+r_emit_arg1_lookup_reg_lmdb(Pred, Arity, PathVar, none, Reg) :- !,
+    (   Arity >= 2
+    ->  format(string(Reg),
+'WamRuntime$register_lmdb_arg1_parent_lookup(shared_program, "~w/~w", ~w, ~wL)',
+               [Pred, Arity, PathVar, Arity])
+    ;   Reg = ""
+    ).
+r_emit_arg1_lookup_reg_lmdb(Pred, Arity, PathVar, CacheVar, Reg) :-
+    (   Arity >= 2
+    ->  format(string(Reg),
+'WamRuntime$register_lmdb_cached_arg1_parent_lookup(shared_program, "~w/~w", ~w, ~wL, ~w)',
+               [Pred, Arity, PathVar, Arity, CacheVar])
+    ;   Reg = ""
+    ).
 
 %% fact_source_loader_call(+Spec, +Arity, -LoaderCallSrc, -CommentTag)
 %  Maps a Spec to the R source that loads the table, plus a short
@@ -1455,6 +1779,21 @@ fact_source_loader_call(grouped_by_first(Path), Arity, LoaderCall, Comment) :-
            'WamRuntime$read_facts_grouped_tsv(~w, intern_table)',
            [PathLit]),
     format(string(Comment), 'grouped-by-first tsv file: ~w', [PathStr]).
+% Atom-preserving grouped TSV: every field is interned as an atom, even
+% when it looks numeric. Needed for Wikipedia-style IDs such as '1827'
+% that are atoms in Prolog facts.pl but would otherwise become IntTerm
+% under the default numeric field parser.
+fact_source_loader_call(grouped_by_first_atoms(Path), Arity, LoaderCall, Comment) :-
+    (   Arity =:= 2
+    ->  true
+    ;   throw(error(domain_error(arity_2_for_grouped_by_first_atoms, Arity), _))
+    ),
+    atom_string(Path, PathStr),
+    r_string_literal(PathStr, PathLit),
+    format(string(LoaderCall),
+           'WamRuntime$read_facts_grouped_tsv_atoms(~w, intern_table)',
+           [PathLit]),
+    format(string(Comment), 'grouped-by-first atoms tsv file: ~w', [PathStr]).
 fact_source_loader_call(lmdb(Path), _Arity, LoaderCall, Comment) :-
     % Step-1 backend: load-everything. Treats LMDB as a serialization
     % format -- the runtime reads all key/value pairs at program-load
@@ -1647,9 +1986,17 @@ emit_fact_table(Pred, Arity, Tuples, DataDecl, LoweredFunc, FuncName,
   WamRuntime$fact_table_dispatch(program, state, "~w/~w", ~w, ~w,
                                   args, state$pc + 1L)
 }', [FuncName, ArgsCollect, Pred, Arity, DataName, IndexesName]),
-    format(string(RangeRegistration),
+    format(string(RangeReg0),
 'assign("~w/~w", list(facts = ~w, range = ~w), envir = shared_program$fact_range_indexes)',
-           [Pred, Arity, DataName, RangeIndexesName]).
+           [Pred, Arity, DataName, RangeIndexesName]),
+    % Also publish a bound-arg1 parent-lookup capability for recursive
+    % kernels (category_ancestor). Reuses the same facts+indexes; no
+    % parallel indexing system.
+    r_emit_arg1_lookup_reg_indexed(Pred, Arity, DataName, IndexesName, LookupReg),
+    (   LookupReg == ""
+    ->  RangeRegistration = RangeReg0
+    ;   format(string(RangeRegistration), '~w\n~w', [RangeReg0, LookupReg])
+    ).
 
 %% fact_sorted_indexes_block(+Tuples, +Arity, +RName, +RangeIndexesName, -Body)
 %  Emits per-arg sorted-by-value indexes alongside the hash indexes
@@ -1900,6 +2247,7 @@ r_escape_chars([C    | T], [C | RestEsc]) :-
 %    DESCRIPTION                R package metadata
 %    R/wam_runtime.R            WAM runtime
 %    R/generated_program.R      compiled program (instr array, labels, wrappers)
+%    src/uw_ca_hops.c[.so]      optional native CA hop kernel (soft-fail build)
 write_wam_r_project(Predicates, Options, ProjectDir) :-
     option(module_name(ModName), Options, 'wam.r.generated'),
     wam_target_runtime_parser(wam_r, Options, RuntimeParserMode),
@@ -1922,11 +2270,56 @@ write_wam_r_project(Predicates, Options, ProjectDir) :-
     r_foreign_handlers_code(Options, ForeignHandlersBody),
     r_op_decls_code(Options, OpDeclsBody),
     write_runtime_source(RDir),
+    % Emit/build the optional native kernel only when codegen actually
+    % registered a CA bulk capability. Other R projects incur no C toolchain work.
+    (   sub_string(LoweredDispatchCode, _, _, _, 'category_ancestor_bulk_collect')
+    ->  write_native_ca_hops_source(ProjectDir)
+    ;   true
+    ),
+    % Additive conformance driver (CONF-R): when true, the Rscript main
+    % prints only true/false for argv[0]=pred/arity. Default human/bench
+    % CLI is unchanged when the option is absent/false.
+    option(conformance_main(ConfMain), Options, false),
     write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                          WrapperCode, IdToStringStr, ForeignHandlersBody,
                          LoweredFunctionsCode, FactShapeComments,
                          LoweredDispatchCode, OpDeclsBody,
-                         RuntimeParserModeCode).
+                         RuntimeParserModeCode, ConfMain).
+
+%% write_native_ca_hops_source(+ProjectDir) is det.
+%  Emits src/uw_ca_hops.c and best-effort compiles uw_ca_hops.so beside it.
+write_native_ca_hops_source(ProjectDir) :-
+    directory_file_path(ProjectDir, 'src', SrcDir),
+    make_directory_path(SrcDir),
+    find_template('templates/targets/r_wam/uw_ca_hops.c.mustache', Template),
+    get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
+    render_template(Template, ['date'=DateStr], Content),
+    directory_file_path(SrcDir, 'uw_ca_hops.c', CPath),
+    write_file(CPath, Content),
+    directory_file_path(SrcDir, 'uw_ca_hops.so', SoPath),
+    (   catch(try_compile_native_ca_hops(CPath, SoPath), _, fail)
+    ->  true
+    ;   true
+    ).
+
+try_compile_native_ca_hops(CPath, SoPath) :-
+    absolute_file_name(CPath, CAbs, [access(read)]),
+    file_directory_name(SoPath, SoDir0),
+    absolute_file_name(SoDir0, SoDir, [file_type(directory), access(write)]),
+    file_base_name(SoPath, SoBase),
+    directory_file_path(SoDir, SoBase, SoAbs),
+    process_create(path('R'),
+                   ['CMD', 'SHLIB', '-o', SoAbs, CAbs],
+                   [stdout(null), stderr(null), process(PID), cwd(SoDir)]),
+    process_wait(PID, exit(0)),
+    exists_file(SoAbs),
+    % Drop object file; do not commit/build-cache .o beside sources.
+    file_name_extension(Stub, 'c', CAbs),
+    file_name_extension(Stub, 'o', OAbs),
+    (   exists_file(OAbs)
+    ->  catch(delete_file(OAbs), _, true)
+    ;   true
+    ).
 
 write_description(ProjectDir, ModName) :-
     find_template('templates/targets/r_wam/DESCRIPTION.mustache', Template),
@@ -1947,7 +2340,7 @@ write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
                      WrapperCode, IdToStringStr, ForeignHandlersBody,
                      LoweredFunctionsCode, FactShapeComments,
                      LoweredDispatchCode, OpDeclsBody,
-                     RuntimeParserModeCode) :-
+                     RuntimeParserModeCode, ConfMain) :-
     find_template('templates/targets/r_wam/program.R.mustache', Template),
     get_time(T), format_time(string(DateStr), "%Y-%m-%d", T),
     render_template(Template,
@@ -1962,7 +2355,8 @@ write_program_source(RDir, InstrBody, LabelBody, DispatchBody,
           'lowered_functions'=LoweredFunctionsCode,
           'fact_shape_comments'=FactShapeComments,
           'op_decls'=OpDeclsBody,
-          'runtime_parser_mode'=RuntimeParserModeCode
+          'runtime_parser_mode'=RuntimeParserModeCode,
+          'conformance_main'=ConfMain
         ], Content),
     directory_file_path(RDir, 'generated_program.R', Path),
     write_file(Path, Content).
@@ -2031,3 +2425,164 @@ find_template(RelPath, Template) :-
     ;   AbsPath = RelPath
     ),
     read_file_to_string(AbsPath, Template, []).
+
+% ============================================================================
+% ISO-R-0/R-2A: shared ISO wiring + is/2 + arithmetic comparisons
+% ============================================================================
+% Key-table safety: register a default key only when matching R runtime
+% branches exist.  Catch/throw, is_*, and compares ship already; ISO-R-2B
+% adds succ_iso / succ_lax.
+
+iso_errors:iso_errors_default_to_iso("is/2", "is_iso/2").
+iso_errors:iso_errors_default_to_lax("is/2", "is_lax/2").
+
+iso_errors:iso_errors_default_to_iso("</2", "<_iso/2").
+iso_errors:iso_errors_default_to_iso(">/2", ">_iso/2").
+iso_errors:iso_errors_default_to_iso(">=/2", ">=_iso/2").
+iso_errors:iso_errors_default_to_iso("=</2", "=<_iso/2").
+iso_errors:iso_errors_default_to_iso("=:=/2", "=:=_iso/2").
+iso_errors:iso_errors_default_to_iso("=\\=/2", "=\\=_iso/2").
+iso_errors:iso_errors_default_to_iso("succ/2", "succ_iso/2").
+
+iso_errors:iso_errors_default_to_lax("</2", "<_lax/2").
+iso_errors:iso_errors_default_to_lax(">/2", ">_lax/2").
+iso_errors:iso_errors_default_to_lax(">=/2", ">=_lax/2").
+iso_errors:iso_errors_default_to_lax("=</2", "=<_lax/2").
+iso_errors:iso_errors_default_to_lax("=:=/2", "=:=_lax/2").
+iso_errors:iso_errors_default_to_lax("=\\=/2", "=\\=_lax/2").
+iso_errors:iso_errors_default_to_lax("succ/2", "succ_lax/2").
+
+% Keep the module when present: qualified overrides must not leak to a
+% same-named predicate in another module.
+iso_errors_pi_for_rewrite(M:Pred/Arity, M:Pred/Arity) :- !.
+iso_errors_pi_for_rewrite(Pred/Arity, Pred/Arity) :- !.
+iso_errors_pi_for_rewrite(PI, PI).
+
+%% iso_errors_rewrite_text(+Config, +PI, +WamText, -RewrittenText)
+%  Per-target adapter: tokenize → recognise → shared rewrite_item → splice.
+%  Covers builtin_call / put_structure / call / execute via the shared
+%  item rewriter.  Not exported by core/iso_errors.pl.
+iso_errors_rewrite_text(Config, PI, WamText, RewrittenText) :-
+    iso_errors_mode_for(Config, PI, Mode),
+    (   Mode == false,
+        \+ iso_errors_has_lax_entries
+    ->  RewrittenText = WamText
+    ;   atom_string(WamText, S),
+        split_string(S, "\n", "", Lines),
+        maplist(iso_errors_rewrite_line(Mode), Lines, RewrittenLines),
+        atomic_list_concat(RewrittenLines, '\n', RewrittenText)
+    ).
+
+iso_errors_has_lax_entries :- iso_errors:iso_errors_default_to_lax(_, _), !.
+
+iso_errors_rewrite_line(Mode, Line, OutLine) :-
+    (   wam_tokenize_line(Line, Tokens),
+        wam_recognise_instruction(Tokens, Item0),
+        iso_errors_rewrite_item(Mode, Item0, Item1),
+        Item0 \== Item1,
+        arg(1, Item0, OldKey),
+        % ISO-R-0: only keep rewrites for keys this target implements.
+        % Other loaded targets' multifile tables must not route R codegen
+        % to missing >_lax / succ_iso arms.
+        r_iso_rewritable_key(OldKey),
+        arg(1, Item1, NewKey),
+        iso_errors_splice_line(Line, OldKey, NewKey, OutLine)
+    ->  true
+    ;   OutLine = Line
+    ).
+
+%% Keys with matching R runtime branches (ISO-R-0/2A/2B).
+r_iso_rewritable_key("is/2").
+r_iso_rewritable_key("</2").
+r_iso_rewritable_key(">/2").
+r_iso_rewritable_key(">=/2").
+r_iso_rewritable_key("=</2").
+r_iso_rewritable_key("=:=/2").
+r_iso_rewritable_key("=\\=/2").
+r_iso_rewritable_key("succ/2").
+
+iso_errors_clean_key_token(Token0, Token) :-
+    (   string_concat(Token, ",", Token0)
+    ->  true
+    ;   Token = Token0
+    ).
+
+iso_errors_splice_line(Line, Key, NewKey, OutLine) :-
+    sub_string(Line, Before, KLen, _After, Key),
+    string_length(Key, KLen),
+    sub_string(Line, 0, Before, _, Pre),
+    PostStart is Before + KLen,
+    sub_string(Line, PostStart, _, 0, Post),
+    string_concat(Pre, NewKey, T1),
+    string_concat(T1, Post, OutLine), !.
+
+%% wam_r_iso_audit(+Predicates, +Options, -Audit)
+wam_r_iso_audit(Predicates, Options, Audit) :-
+    iso_errors_resolve_options(Options, Config),
+    findall(audit(PI, Mode, Sites), (
+        member(P, Predicates),
+        iso_errors_audit_normalise_pi(P, PI),
+        iso_errors_mode_for(Config, PI, Mode),
+        iso_errors_audit_predicate_r(PI, Mode, Sites)
+    ), Audit).
+
+iso_errors_audit_predicate_r(PI, Mode, Sites) :-
+    (   catch(
+            ( iso_errors_audit_wam_for_pi_r(PI, WamText),
+              iso_errors_audit_parse_lines_r(WamText, Items)
+            ),
+            _, fail)
+    ->  iso_errors_audit_walk(Items, 0, Mode, [], SitesRev),
+        reverse(SitesRev, Sites)
+    ;   Sites = []
+    ).
+
+iso_errors_audit_wam_for_pi_r(Module:Pred/Arity, WamText) :- !,
+    compile_predicate_to_wam_text(Module:Pred/Arity, [], WamText).
+iso_errors_audit_wam_for_pi_r(Pred/Arity, WamText) :-
+    compile_predicate_to_wam_text(Pred/Arity, [], WamText).
+
+iso_errors_audit_parse_lines_r(WamText, Items) :-
+    atom_string(WamText, S),
+    split_string(S, "\n", "", Lines),
+    maplist(iso_errors_audit_parse_one_r, Lines, MaybeItems),
+    exclude(==(skip), MaybeItems, Items).
+
+iso_errors_audit_parse_one_r(Line, Item) :-
+    split_string(Line, " \t", " \t", Parts0),
+    exclude(==(""), Parts0, Parts),
+    iso_errors_audit_classify_line_r(Parts, Item).
+
+iso_errors_audit_classify_line_r([], skip).
+iso_errors_audit_classify_line_r([Tok], label) :-
+    string_concat(_, ":", Tok), !.
+iso_errors_audit_classify_line_r(["builtin_call", Key0 | _],
+                                builtin_call(Key, 0)) :- !,
+    iso_errors_clean_key_token(Key0, Key).
+% succ/2 and other library predicates emit Call/Execute, not BuiltinCall.
+iso_errors_audit_classify_line_r(["execute", Key0 | _],
+                                builtin_call(Key, 0)) :- !,
+    iso_errors_clean_key_token(Key0, Key).
+iso_errors_audit_classify_line_r(["call", Key0 | Rest],
+                                builtin_call(Key, 0)) :- !,
+    (   Rest = [ArityStr | _],
+        \+ sub_string(Key0, _, _, _, "/"),
+        format(string(Key1), "~w/~w", [Key0, ArityStr])
+    ->  Key = Key1
+    ;   iso_errors_clean_key_token(Key0, Key)
+    ).
+iso_errors_audit_classify_line_r(["put_structure", Key0 | _],
+                                builtin_call(Key, 0)) :- !,
+    iso_errors_clean_key_token(Key0, Key).
+iso_errors_audit_classify_line_r(_, other).
+
+wam_r_iso_audit_report([]).
+wam_r_iso_audit_report([audit(PI, Mode, Sites)|Rest]) :-
+    format('~w [~w]~n', [PI, Mode]),
+    (   Sites == []
+    ->  format('  (no builtin_call sites)~n', [])
+    ;   forall(member(site(PC, Orig, Res, Src, Flip), Sites),
+               format('  pc=~w  ~w -> ~w  (~w)  flip-changes=~w~n',
+                      [PC, Orig, Res, Src, Flip]))
+    ),
+    wam_r_iso_audit_report(Rest).

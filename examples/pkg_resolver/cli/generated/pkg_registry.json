@@ -1,0 +1,39 @@
+{
+  "resolve": {
+    "options": {"catalog":"string", "json":"boolean"},
+    "positionals": ["name", "...more" ]
+  },
+  "install-plan": {
+    "options": {"catalog":"string", "json":"boolean"},
+    "positionals": ["name", "...more" ]
+  },
+  "layer": {
+    "options": {"catalog":"string", "json":"boolean"},
+    "positionals": ["name", "...more" ]
+  },
+  "why-blocked": {
+    "options": {"catalog":"string", "json":"boolean"},
+    "positionals": ["name" ]
+  },
+  "deps": {
+    "options": {"catalog":"string", "json":"boolean"},
+    "positionals": ["name" ]
+  },
+  "what-needs": {
+    "options": {"installed":"boolean", "catalog":"string", "json":"boolean"},
+    "positionals": ["name" ]
+  },
+  "orphans": {
+    "options": {"catalog":"string", "json":"boolean"},
+    "positionals": ["name" ]
+  },
+  "why-frozen": {
+    "options": {"catalog":"string", "json":"boolean"},
+    "positionals": ["name" ]
+  },
+  "audit": {"options": {"catalog":"string", "json":"boolean"}, "positionals": []},
+  "safe-upgrade": {
+    "options": {"catalog":"string", "json":"boolean"},
+    "positionals": ["name", "version" ]
+  }
+}

@@ -3,6 +3,8 @@
 % Usage: swipl -g run_tests -t halt tests/test_wam_rust_target.pl
 
 :- use_module('../src/unifyweaver/targets/wam_rust_target').
+:- use_module('../src/unifyweaver/targets/wam_llvm_target',
+              [builtin_op_to_id/2]).
 :- use_module('../src/unifyweaver/targets/wam_rust_lowered_emitter',
               [lower_predicate_to_rust/4]).
 :- use_module('../src/unifyweaver/targets/rust_target').
@@ -449,10 +451,100 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, 'true/0'),
         sub_string(S, _, _, _, 'fail/0'),
         sub_string(S, _, _, _, '!/0'),
-        sub_string(S, _, _, _, '"write/1" | "display/1"'),
+        sub_string(S, _, _, _, '"write/1" | "display/1" | "print/1"'),
+        sub_string(S, _, _, _, '"write_canonical/1"'),
+        sub_string(S, _, _, _, '"writeln/1"'),
+        sub_string(S, _, _, _, '"tab/1"'),
+        sub_string(S, _, _, _, '"put_char/1"'),
+        sub_string(S, _, _, _, '"put_code/1"'),
+        sub_string(S, _, _, _, '"exists_file/1"'),
+        sub_string(S, _, _, _, '"exists_directory/1"'),
+        sub_string(S, _, _, _, '"directory_files/2"'),
+        sub_string(S, _, _, _, '"size_file/2"'),
+        sub_string(S, _, _, _, '"time_file/2"'),
+        sub_string(S, _, _, _, '"get_time/1"'),
+        sub_string(S, _, _, _, '"getenv/2"'),
+        sub_string(S, _, _, _, '"setenv/2"'),
+        sub_string(S, _, _, _, '"unsetenv/1"'),
+        sub_string(S, _, _, _, '"getpid/1"'),
+        sub_string(S, _, _, _, 'fn process_identity'),
+        sub_string(S, _, _, _, '"getuid/1"'),
+        sub_string(S, _, _, _, '"geteuid/1"'),
+        sub_string(S, _, _, _, '"getgid/1"'),
+        sub_string(S, _, _, _, '"getegid/1"'),
+        sub_string(S, _, _, _, '"getppid/1"'),
+        sub_string(S, _, _, _, '"getpgrp/1"'),
+        sub_string(S, _, _, _, 'fn system_name'),
+        sub_string(S, _, _, _, '"gethostname/1"'),
+        sub_string(S, _, _, _, '"uname_sysname/1"'),
+        sub_string(S, _, _, _, '"uname_machine/1"'),
+        sub_string(S, _, _, _, 'fn runtime_metric'),
+        sub_string(S, _, _, _, '"cpu_time/1"'),
+        sub_string(S, _, _, _, '"monotonic_time/1"'),
+        sub_string(S, _, _, _, '"process_user_time/1"'),
+        sub_string(S, _, _, _, '"process_system_time/1"'),
+        sub_string(S, _, _, _, '"process_max_rss/1"'),
+        sub_string(S, _, _, _, 'fn current_os_error_code'),
+        sub_string(S, _, _, _, 'fn os_error_message'),
+        sub_string(S, _, _, _, '"errno/1"'),
+        sub_string(S, _, _, _, '"strerror/2"'),
+        sub_string(S, _, _, _, 'fn process_priority'),
+        sub_string(S, _, _, _, 'fn adjust_process_priority'),
+        sub_string(S, _, _, _, 'fn set_process_priority'),
+        sub_string(S, _, _, _, 'fn process_soft_limit'),
+        sub_string(S, _, _, _, 'fn set_process_soft_limit'),
+        sub_string(S, _, _, _, 'fn login_name'),
+        sub_string(S, _, _, _, '"getpriority/1"'),
+        sub_string(S, _, _, _, '"nice/1" | "setpriority/1"'),
+        sub_string(S, _, _, _, '"getrlimit/2"'),
+        sub_string(S, _, _, _, '"setrlimit/2"'),
+        sub_string(S, _, _, _, '"getlogin/1"'),
+        sub_string(S, _, _, _, 'fn stamp_date_time_value'),
+        sub_string(S, _, _, _, 'fn date_time_stamp_value'),
+        sub_string(S, _, _, _, 'fn format_local_time'),
+        sub_string(S, _, _, _, '"stamp_date_time/3"'),
+        sub_string(S, _, _, _, '"date_time_stamp/2"'),
+        sub_string(S, _, _, _, '"format_time/3"'),
+        sub_string(S, _, _, _, 'fn random_unit_value'),
+        sub_string(S, _, _, _, 'fn random_between_value'),
+        sub_string(S, _, _, _, 'fn seed_random_value'),
+        sub_string(S, _, _, _, '"random/1"'),
+        sub_string(S, _, _, _, '"random_between/3"'),
+        sub_string(S, _, _, _, '"set_random/1"'),
+        sub_string(S, _, _, _, 'fn filesystem_access'),
+        sub_string(S, _, _, _, 'fn filesystem_chmod'),
+        sub_string(S, _, _, _, 'fn filesystem_chown'),
+        sub_string(S, _, _, _, 'fn filesystem_mkfifo'),
+        sub_string(S, _, _, _, '"access/2" | "chmod/2" | "mkfifo/2"'),
+        sub_string(S, _, _, _, '"chown/3"'),
+        sub_string(S, _, _, _, 'fn signal_process'),
+        sub_string(S, _, _, _, 'fn create_temporary_file'),
+        sub_string(S, _, _, _, '"kill/2"'),
+        sub_string(S, _, _, _, '"tmp_file/2"'),
+        sub_string(S, _, _, _, 'fn current_working_directory'),
+        sub_string(S, _, _, _, 'fn change_working_directory'),
+        sub_string(S, _, _, _, 'fn set_file_creation_mask'),
+        sub_string(S, _, _, _, '"working_directory/2"'),
+        sub_string(S, _, _, _, '"umask/2"'),
+        sub_string(S, _, _, _, 'fn line_reader_table'),
+        sub_string(S, _, _, _, 'fn open_line_reader'),
+        sub_string(S, _, _, _, 'fn read_line_reader'),
+        sub_string(S, _, _, _, 'fn close_line_reader'),
+        sub_string(S, _, _, _, '"stream_open/2"'),
+        sub_string(S, _, _, _, '"read_line/2"'),
+        sub_string(S, _, _, _, '"stream_close/1"'),
+        sub_string(S, _, _, _, 'fn shell_process'),
+        sub_string(S, _, _, _, '"shell/1"'),
+        sub_string(S, _, _, _, '"shell/2"'),
+        sub_string(S, _, _, _, '"system_to_atom/2"'),
+        sub_string(S, _, _, _, '"atom_to_system/2"'),
+        sub_string(S, _, _, _, '"sleep/1"'),
+        sub_string(S, _, _, _, '"halt/0"'),
+        sub_string(S, _, _, _, '"halt/1"'),
         sub_string(S, _, _, _, 'print!("{}", derefed)'),
         sub_string(S, _, _, _, 'nl/0'),
         sub_string(S, _, _, _, 'atom/1'),
+        sub_string(S, _, _, _, 'atomic/1'),
         sub_string(S, _, _, _, 'number/1'),
         sub_string(S, _, _, _, 'member/2'),
         sub_string(S, _, _, _, 'builtin_state'),
@@ -461,16 +553,107 @@ test_builtin_dispatch :-
         sub_string(S, _, _, _, '"arg/3"'),
         sub_string(S, _, _, _, '"=../2"'),
         sub_string(S, _, _, _, '"copy_term/2"'),
+        sub_string(S, _, _, _, '"term_variables/2"'),
+        sub_string(S, _, _, _, '"numbervars/3"'),
+        sub_string(S, _, _, _, '"=@=/2"'),
+        sub_string(S, _, _, _, 'variant_terms'),
+        sub_string(S, _, _, _, '"unifiable/3"'),
+        sub_string(S, _, _, _, '"subtract/3"'),
+        sub_string(S, _, _, _, '"intersection/3"'),
+        sub_string(S, _, _, _, '"union/3"'),
+        sub_string(S, _, _, _, '"list_to_set/2"'),
+        sub_string(S, _, _, _, 'builtin_unify_member'),
+        sub_string(S, _, _, _, '"sort/4"'),
+        sub_string(S, _, _, _, 'builtin_sort_key'),
+        sub_string(S, _, _, _, '"pairs_keys/2" | "pairs_values/2"'),
+        sub_string(S, _, _, _, '"pairs_keys_values/3"'),
+        sub_string(S, _, _, _, 'pair_list_columns'),
+        sub_string(S, _, _, _, '"split_string/4"'),
+        sub_string(S, _, _, _, '"atom_split/3"'),
+        sub_string(S, _, _, _, '"atom_starts_with/2"'),
+        sub_string(S, _, _, _, '"atom_ends_with/2"'),
+        sub_string(S, _, _, _, '"atom_contains/2"'),
+        sub_string(S, _, _, _, '"sub_atom/5"'),
+        sub_string(S, _, _, _, '"code_type/2"'),
+        sub_string(S, _, _, _, '"must_be/2"'),
+        sub_string(S, _, _, _, '"format/1" | "format/2" | "format/3"'),
+        sub_string(S, _, _, _, '"file_base_name/2" | "file_directory_name/2"'),
+        sub_string(S, _, _, _, '"file_name_extension/3"'),
+        sub_string(S, _, _, _, '"is_absolute_file_name/1"'),
+        sub_string(S, _, _, _, '"path_join/3"'),
+        sub_string(S, _, _, _, '"realpath/2" | "read_link/2"'),
+        sub_string(S, _, _, _, '"same_file/2"'),
+        sub_string(S, _, _, _, 'MetadataExt'),
+        sub_string(S, _, _, _, '"make_directory/1" | "delete_file/1" | "delete_directory/1"'),
+        sub_string(S, _, _, _, '"copy_file/2" | "rename_file/2"'),
+        sub_string(S, _, _, _, '"read_file_to_atom/2"'),
+        sub_string(S, _, _, _, '"write_atom_to_file/2" | "append_atom_to_file/2"'),
+        sub_string(S, _, _, _, '"symlink/2" | "link/2"'),
+        sub_string(S, _, _, _, '"truncate/2"'),
         %% copy_term_walk helper (sharing-preserving recursive copy).
         sub_string(S, _, _, _, 'copy_term_walk'),
         %% Runtime-parser bridge support and the parser-required text/list builtins.
         sub_string(S, _, _, _, '"atom_codes/2"'),
+        sub_string(S, _, _, _, '"string_codes/2"'),
+        sub_string(S, _, _, _, '"string_chars/2"'),
+        sub_string(S, _, _, _, '"string_code/3"'),
         sub_string(S, _, _, _, '"number_codes/2"'),
+        sub_string(S, _, _, _, '"number_chars/2"'),
         sub_string(S, _, _, _, '"reverse/2"'),
         sub_string(S, _, _, _, '"term_to_atom/2"'),
         sub_string(S, _, _, _, 'bind_compiled_parse_atom')
     ->  pass(Test)
     ;   fail_test(Test, 'Missing builtin dispatch cases')
+    ).
+
+rust_string_literal(Atom, Literal) :-
+    atom_codes(Atom, Codes),
+    rust_escape_string_codes(Codes, Escaped),
+    append([34|Escaped], [34], LiteralCodes),
+    atom_codes(Literal, LiteralCodes).
+
+rust_escape_string_codes([], []).
+rust_escape_string_codes([92|Codes], [92,92|Escaped]) :- !,
+    rust_escape_string_codes(Codes, Escaped).
+rust_escape_string_codes([34|Codes], [92,34|Escaped]) :- !,
+    rust_escape_string_codes(Codes, Escaped).
+rust_escape_string_codes([Code|Codes], [Code|Escaped]) :-
+    rust_escape_string_codes(Codes, Escaped).
+
+rust_dispatch_literal(Code, Literal) :-
+    sub_atom(Code, Before, Length, _, Literal),
+    After is Before + Length,
+    sub_atom(Code, After, _, 0, Tail),
+    atom_codes(Tail, TailCodes),
+    drop_rust_whitespace(TailCodes, DispatchCodes),
+    ( DispatchCodes = [124|_]
+    ; DispatchCodes = [61,62|_]
+    ), !.
+
+drop_rust_whitespace([Code|Codes], Rest) :-
+    memberchk(Code, [9,10,13,32]), !,
+    drop_rust_whitespace(Codes, Rest).
+drop_rust_whitespace(Codes, Codes).
+
+test_llvm_builtin_registry_parity :-
+    Test = 'WAM-Rust: dispatch covers the LLVM builtin registry',
+    compile_wam_helpers_to_rust([], Code),
+    findall(Op,
+            ( builtin_op_to_id(Op, Id),
+              Id =\= 200
+            ),
+            Ops0),
+    sort(Ops0, Ops),
+    findall(Op,
+            ( member(Op, Ops),
+              rust_string_literal(Op, Literal),
+              \+ rust_dispatch_literal(Code, Literal)
+            ),
+            Missing),
+    (   Missing == []
+    ->  pass(Test)
+    ;   format('[INFO] Missing Rust builtin dispatch literals: ~q~n', [Missing]),
+        fail_test(Test, 'LLVM builtin registry entries are missing from Rust')
     ).
 
 test_predicate_wrapper :-
@@ -505,7 +688,7 @@ test_foreign_spec_wrapper_generation :-
         sub_string(S, _, _, _, 'register_foreign_result_mode("category_ancestor/4", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Generic foreign spec did not drive wrapper generation')
     ).
@@ -697,7 +880,7 @@ test_foreign_stream_stage_traversal_ir :-
         sub_string(TraversalCode, _, _, _, 'let joined_values_1 = match vm.indexed_atom_fact2.get("target_label/2").and_then(|table| table.get(&target)) {'),
         sub_string(TraversalCode, _, _, _, 'let joined_values_2 = match vm.indexed_atom_fact2.get("label_bucket/2").and_then(|table| table.get(joined_value_1)) {'),
         sub_string(TraversalCode, _, _, _, 'let agg_value = (cost + 1_f64);'),
-        sub_string(TraversalCode, _, _, _, 'packed_results.push(Value::Str("__tuple__".to_string(), vec![')
+        sub_string(TraversalCode, _, _, _, 'packed_results.push(Value::strv("__tuple__".to_string(), vec![')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign stream stage traversal did not render expected joined traversal')
     ).
@@ -880,7 +1063,7 @@ test_foreign_lowering_category_ancestor :-
         sub_string(S, _, _, _, 'register_foreign_result_mode("category_ancestor/4", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_usize_config("category_ancestor/4", "max_depth", 10)'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("category_ancestor", 4)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for category_ancestor/4')
     ).
@@ -896,7 +1079,7 @@ test_foreign_lowering_transitive_closure :-
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_ancestor/2", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_ancestor", 2)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_ancestor/2')
     ).
@@ -910,7 +1093,7 @@ test_foreign_lowering_countdown_sum :-
         sub_string(S, _, _, _, 'register_foreign_result_layout("tri_sum/2", "tuple:1")'),
         sub_string(S, _, _, _, 'register_foreign_result_mode("tri_sum/2", "deterministic")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tri_sum", 2)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tri_sum/2')
     ).
@@ -924,7 +1107,7 @@ test_foreign_lowering_list_suffix :-
         sub_string(S, _, _, _, 'register_foreign_result_layout("tail_suffix/2", "tuple:1")'),
         sub_string(S, _, _, _, 'register_foreign_result_mode("tail_suffix/2", "stream")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tail_suffix", 2)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tail_suffix/2')
     ).
@@ -938,7 +1121,7 @@ test_foreign_lowering_list_suffixes :-
         sub_string(S, _, _, _, 'register_foreign_result_layout("tail_suffixes/2", "tuple:1")'),
         sub_string(S, _, _, _, 'register_foreign_result_mode("tail_suffixes/2", "deterministic_collection")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tail_suffixes", 2)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tail_suffixes/2')
     ).
@@ -948,7 +1131,7 @@ test_foreign_only_wrapper_omits_dead_wam_code :-
     (   rust_target:compile_predicate_to_rust(user:tail_suffixes/2,
             [include_main(false), foreign_lowering(true)], Code),
         atom_string(Code, S),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();'),
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());'),
         sub_string(S, _, _, _, 'vm.labels = HashMap::new();'),
         \+ sub_string(S, _, _, _, 'let code: Vec<Instruction> = vec!['),
         \+ sub_string(S, _, _, _, 'labels.insert('),
@@ -969,7 +1152,7 @@ test_foreign_lowering_reverse_transitive_closure :-
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_descendant/2", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("bob", "tom"), ("liz", "tom"), ("ann", "bob"), ("pat", "bob"), ("jim", "pat")])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_descendant", 2)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_descendant/2')
     ).
@@ -985,7 +1168,7 @@ test_foreign_lowering_transitive_distance :-
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_distance/3", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'register_indexed_atom_fact2_pairs("tc_parent/2", &[("tom", "bob"), ("tom", "liz"), ("bob", "ann"), ("bob", "pat"), ("pat", "jim")])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_distance", 3)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_distance/3')
     ).
@@ -1000,7 +1183,7 @@ test_foreign_lowering_transitive_parent_distance :-
         sub_string(S, _, _, _, 'register_foreign_result_mode("tc_parent_distance/4", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_parent_distance/4", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_parent_distance", 4)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_parent_distance/4')
     ).
@@ -1015,7 +1198,7 @@ test_foreign_lowering_transitive_step_parent_distance :-
         sub_string(S, _, _, _, 'register_foreign_result_mode("tc_step_parent_distance/5", "stream")'),
         sub_string(S, _, _, _, 'register_foreign_string_config("tc_step_parent_distance/5", "edge_pred", "tc_parent/2")'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("tc_step_parent_distance", 5)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for tc_step_parent_distance/5')
     ).
@@ -1031,7 +1214,7 @@ test_foreign_lowering_weighted_shortest_path :-
         sub_string(S, _, _, _, 'register_foreign_string_config("weighted_path/3", "weight_pred", "weighted_edge/3")'),
         sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("weighted_edge/3", &[("s", "a", 1.0), ("s", "b", 4.0), ("a", "b", 2.0), ("a", "c", 5.0), ("b", "c", 1.0), ("c", "d", 3.0)])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("weighted_path", 3)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for weighted_path/3')
     ).
@@ -1050,7 +1233,7 @@ test_foreign_lowering_astar_shortest_path :-
         sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("weighted_edge/3", &[("s", "a", 1.0), ("s", "b", 4.0), ("a", "b", 2.0), ("a", "c", 5.0), ("b", "c", 1.0), ("c", "d", 3.0)])'),
         sub_string(S, _, _, _, 'register_indexed_weighted_edge_triples("direct_semantic_dist/3", &[("s", "a", 1.0), ("s", "b", 3.0), ("s", "c", 4.0), ("s", "d", 7.0), ("a", "b", 2.0), ("a", "c", 3.0), ("a", "d", 6.0), ("b", "c", 1.0), ("b", "d", 4.0), ("c", "d", 3.0)])'),
         sub_string(S, _, _, _, 'execute_foreign_predicate("astar_weighted_path", 4)'),
-        sub_string(S, _, _, _, 'vm.code = Vec::new();')
+        sub_string(S, _, _, _, 'vm.code = std::sync::Arc::new(Vec::new());')
     ->  pass(Test)
     ;   fail_test(Test, 'Foreign lowering was not selected for astar_weighted_path/4')
     ).
@@ -1368,7 +1551,7 @@ test_compile_wam_runtime_output :-
         sub_string(S, _, _, _, 'collect_native_transitive_parent_distance_results'),
         sub_string(S, _, _, _, 'collect_native_transitive_step_parent_distance_results'),
         sub_string(S, _, _, _, 'collect_native_weighted_shortest_path_results'),
-        sub_string(S, _, _, _, 'collect_native_astar_shortest_path_results')
+        sub_string(S, _, _, _, 'collect_native_astar_shortest_path_cost')
     ->  pass(Test)
     ;   fail_test(Test, 'Runtime impl block incomplete')
     ).
@@ -1649,7 +1832,8 @@ test_aggregate_instruction_parser :-
     (   compile_wam_predicate_to_rust(agg/1, WamCode, [], RustCode),
         atom_string(RustCode, S),
         sub_string(S, _, _, _, 'Instruction::BeginAggregate("sum".to_string(), "Y1".to_string(), "A1".to_string())'),
-        sub_string(S, _, _, _, 'Instruction::EndAggregate("Y1".to_string())')
+        % R1: register operands are decoded `Reg`s.
+        sub_string(S, _, _, _, 'Instruction::EndAggregate(Reg::y(1))')
     ->  pass(Test)
     ;   fail_test(Test, 'Aggregate instructions were not lowered')
     ).
@@ -1912,7 +2096,7 @@ fn compiled_runtime_parser_parses_public_entries() {
     let mut vm = empty_vm();
     let ops = op_table(&mut vm);
     vm.reset_query();
-    let codes = Value::List("p(a)".chars().map(|c| Value::Integer(c as i64)).collect());
+    let codes = Value::list("p(a)".chars().map(|c| Value::Integer(c as i64)).collect());
     assert!(parse_term_from_codes_3(
         &mut vm,
         codes,
@@ -2224,9 +2408,11 @@ test_lowered_quoted_numeric_atom_strips_quotes :-
     (   lower_predicate_to_rust(test_quoted_numeric/1, WamCode, [], Lines),
         atomic_list_concat(Lines, '\n', RustCode),
         %% Must contain the quote-stripped form...
-        sub_string(RustCode, _, _, _, 'Value::Atom("42".to_string())'),
+        %% (R-1f: atom literals are `.into()`, so they compile whether
+        %% `Sym` is the interned id or a plain `String`.)
+        sub_string(RustCode, _, _, _, 'Value::Atom("42".into())'),
         %% ...and must NOT contain the buggy verbatim-with-quotes form.
-        \+ sub_string(RustCode, _, _, _, 'Value::Atom("\'42\'".to_string())')
+        \+ sub_string(RustCode, _, _, _, 'Value::Atom("\'42\'".into())')
     ->  pass(Test)
     ;   fail_test(Test,
             'Lowered emitter rendered quoted-numeric atom with quotes baked into the Rust string literal')
@@ -2242,7 +2428,7 @@ test_lowered_unquoted_integer_stays_integer :-
     (   lower_predicate_to_rust(test_unquoted_integer/1, WamCode, [], Lines),
         atomic_list_concat(Lines, '\n', RustCode),
         sub_string(RustCode, _, _, _, 'Value::Integer(42)'),
-        \+ sub_string(RustCode, _, _, _, 'Value::Atom("42".to_string())')
+        \+ sub_string(RustCode, _, _, _, 'Value::Atom("42".into())')
     ->  pass(Test)
     ;   fail_test(Test,
             'Lowered emitter mis-classified an unquoted integer as an atom')
@@ -2259,6 +2445,7 @@ run_tests :-
     test_full_runtime_generation,
     test_all_instruction_arms,
     test_builtin_dispatch,
+    test_llvm_builtin_registry_parity,
     test_predicate_wrapper,
     test_foreign_spec_wrapper_generation,
     test_recursive_kernel_ir_selection,

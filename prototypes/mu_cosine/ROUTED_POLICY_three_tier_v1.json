@@ -1,0 +1,72 @@
+{
+  "schema": "unifyweaver.routed-policy.v1",
+  "record_type": "policy_envelope",
+  "policy_id": "4e38b7e5c9420fdf7c400416a7b16004ce686dc3bc730418225e2f9c38733df3",
+  "policy_core": {
+    "name": "three-tier-margin-v1",
+    "evidence_status": "exploratory_transductive",
+    "frozen_date": "2026-07-23",
+    "privacy_policy_id": "pearltrees-public-only-v1",
+    "catalog_policy_id": "pearltrees-public-alphanumeric-title-v1",
+    "primary_grading": "exact_destination_id",
+    "sensitivity_grading": "best_title_equivalent_destination",
+    "judge_prompt": {
+      "path": "ROUTED_JUDGE_PROMPT_three_tier_v1.md",
+      "sha256": "eadb767bbd71ceb0b6f6d2bfa7a2cac916ddff615979c436d6f62415c7859fb6"
+    },
+    "selection_history": "Thresholds, menu sizes, judge family, and lineage context were selected after inspecting the historical 1,200-row benchmark. Freezing them now does not convert that benchmark into confirmatory evidence. The public-only catalog and outcome-blind alphanumeric-title eligibility rule define a new prospective population and are frozen before its decision labels are used.",
+    "next_decision_test": {
+      "population": "later bookmark cohort or one untouched outer node-disjoint split",
+      "selection": "no threshold, menu, judge, prompt, or lineage changes after labels are revealed",
+      "primary_metric": "exact-destination filing recall@1",
+      "interval": "paired bookmark-folder connected-component bootstrap",
+      "judge_repeats": "repeat the frozen judge procedure to expose judge-draw variance"
+    },
+    "tiers": [
+      {
+        "tier_id": "low",
+        "band": {
+          "lower_float64_hex": null,
+          "upper_float64_hex": "0x1.47ae147ae147bp-6",
+          "semantics": "lower-inclusive_upper-exclusive"
+        },
+        "action": "judge",
+        "menu_size": 10,
+        "lineage": true,
+        "lineage_depth": 3,
+        "required_judge_family": "sonnet"
+      },
+      {
+        "tier_id": "middle",
+        "band": {
+          "lower_float64_hex": "0x1.47ae147ae147bp-6",
+          "upper_float64_hex": "0x1.eb851eb851eb8p-6",
+          "semantics": "lower-inclusive_upper-exclusive"
+        },
+        "action": "judge",
+        "menu_size": 20,
+        "lineage": true,
+        "lineage_depth": 3,
+        "required_judge_family": "sonnet"
+      },
+      {
+        "tier_id": "auto",
+        "band": {
+          "lower_float64_hex": "0x1.eb851eb851eb8p-6",
+          "upper_float64_hex": null,
+          "semantics": "lower-inclusive_upper-exclusive"
+        },
+        "action": "auto_top1"
+      }
+    ],
+    "bootstrap": {
+      "unit": "bookmark-folder-connected-component",
+      "seed": 3867001,
+      "replicates": 9999,
+      "interval": [
+        0.025,
+        0.975
+      ]
+    }
+  }
+}

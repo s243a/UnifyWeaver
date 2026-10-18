@@ -522,11 +522,31 @@ generate_kernel_haskell([], KF, EF) :- !,
     KF = "-- No kernels detected; no native functions generated.",
     EF = "executeForeign :: WamContext -> String -> WamState -> Maybe WamState\nexecuteForeign _ _ _ = Nothing".
 generate_kernel_haskell(DetectedKernels, KernelFunctionsCode, ExecuteForeignCode) :-
-    % For each detected kernel, find its template and render
-    maplist(render_kernel_function, DetectedKernels, KernelParts),
+    % Native function names are fixed per kernel kind, while relation-specific
+    % fact lookups and configuration are passed as function arguments.  Emit
+    % one reusable body per distinct kind; rendering per predicate would make
+    % two predicates of the same kind generate duplicate top-level Haskell
+    % definitions.  executeForeign still receives the full list below so each
+    % predicate keeps its own dispatch clause.
+    distinct_kernel_handler_pairs(DetectedKernels, HandlerKernels),
+    maplist(render_kernel_function, HandlerKernels, KernelParts),
     atomic_list_concat(KernelParts, '\n\n', KernelFunctionsCode),
     % Generate executeForeign with entries for each kernel
     generate_execute_foreign(DetectedKernels, ExecuteForeignCode).
+
+distinct_kernel_handler_pairs(KernelPairs, DistinctPairs) :-
+    distinct_kernel_handler_pairs(KernelPairs, [], DistinctPairs).
+
+distinct_kernel_handler_pairs([], _, []).
+distinct_kernel_handler_pairs([Key-Kernel|Rest], SeenKinds, DistinctPairs) :-
+    Kernel = recursive_kernel(Kind, _, _),
+    (   memberchk(Kind, SeenKinds)
+    ->  DistinctPairs = RestDistinct,
+        NextSeen = SeenKinds
+    ;   DistinctPairs = [Key-Kernel|RestDistinct],
+        NextSeen = [Kind|SeenKinds]
+    ),
+    distinct_kernel_handler_pairs(Rest, NextSeen, RestDistinct).
 
 render_kernel_function(Key-Kernel, Code) :-
     Kernel = recursive_kernel(Kind, _, ConfigOps),
@@ -803,6 +823,7 @@ emit_stream_binding_single(OutRegN, OutType, Indent) :-
     format('~w          , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s~n', [Indent]),
     format('~w          , cpCutBar = wsCutBar s, cpAggFrame = Nothing~n', [Indent]),
     format('~w          , cpBuiltin = Just (HopsRetry outVar (map fromIntegral restResults) retPC)~n', [Indent]),
+    format('~w          , cpLevels = IM.empty~n', [Indent]),
     format('~w          }~n', [Indent]),
     format('~w    in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })~n', [Indent]).
 
@@ -816,6 +837,20 @@ emit_stream_binding_multi(OutputRegs, Indent) :-
     format('~w    retPC = wsCP s~n', [Indent]),
     % Deref each output register
     emit_multi_out_derefs(OutputRegs, Indent),
+    % Filter native tuples using ordinary output-mode unification before
+    % yielding or creating a retry choice point.  This is shared by every
+    % multi-output kernel because they all use the same tuple ABI.
+    format('~w    resultMatches ', [Indent]),
+    emit_tuple_pattern(NOuts),
+    format(' =~n', []),
+    format('~w      let ', [Indent]),
+    emit_multi_wrap_bindings(OutputRegs, 1),
+    format('~w      in ffiTupleMatches [', [Indent]),
+    emit_multi_outreg_values(OutputRegs, 1),
+    format('] [', []),
+    emit_wrapped_value_list(OutputRegs, 1),
+    format(']~n', []),
+    format('~w    matchingResults = filter resultMatches results~n', [Indent]),
     % Emit bindResult: pattern matches a tuple, binds each output
     format('~w    bindResult ', [Indent]),
     emit_tuple_pattern(NOuts),
@@ -826,10 +861,12 @@ emit_stream_binding_multi(OutputRegs, Indent) :-
     emit_multi_reg_updates(OutputRegs, Indent),
     emit_multi_binding_updates(OutputRegs, Indent),
     emit_multi_trail_updates(OutputRegs, Indent),
-    format('~w         , wsTrailLen = wsTrailLen s + ~w~n', [Indent, NOuts]),
+    format('~w         , wsTrailLen = wsTrailLen s + length [() | Unbound _ <- [', [Indent]),
+    emit_multi_outreg_values(OutputRegs, 1),
+    format(']]~n', []),
     format('~w         }~n', [Indent]),
     % Dispatch over result stream
-    format('~win case results of~n', [Indent]),
+    format('~win case matchingResults of~n', [Indent]),
     format('~w  [] -> Nothing~n', [Indent]),
     format('~w  [h] -> Just (bindResult h)~n', [Indent]),
     format('~w  (h:restResults) ->~n', [Indent]),
@@ -848,6 +885,7 @@ emit_stream_binding_multi(OutputRegs, Indent) :-
     format('~w          , cpBuiltin = Just (FFIStreamRetry ', [Indent]),
     emit_outregs_list(OutputRegs),
     format(' outVars restWrapped retPC)~n', []),
+    format('~w          , cpLevels = IM.empty~n', [Indent]),
     format('~w          }~n', [Indent]),
     format('~w    in Just (s1 { wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })~n', [Indent]).
 
@@ -895,9 +933,28 @@ emit_multi_reg_updates(OutputRegs, Indent) :-
 
 emit_reg_insert_chain([], _).
 emit_reg_insert_chain([output(RegN, _)|Rest], I) :-
-    format('IM.insert ~w w_~w $ ', [RegN, I]),
+    % Preserve registers that were already bound at the call site.
+    format('(case outReg_~w of { Unbound _ -> IM.insert ~w w_~w; _ -> id }) $ ',
+           [RegN, RegN, I]),
     I1 is I + 1,
     emit_reg_insert_chain(Rest, I1).
+
+% Emit the dereferenced output cells as a Haskell list payload.
+emit_multi_outreg_values([], _).
+emit_multi_outreg_values([output(RegN, _)|Rest], I) :-
+    (   I =:= 1 -> true ; format(', ', []) ),
+    format('outReg_~w', [RegN]),
+    I1 is I + 1,
+    emit_multi_outreg_values(Rest, I1).
+
+% Emit the type-correct Value wrappers introduced by
+% emit_multi_wrap_bindings/2 as a Haskell list.
+emit_wrapped_value_list([], _).
+emit_wrapped_value_list([_|Rest], I) :-
+    (   I =:= 1 -> true ; format(', ', []) ),
+    format('w_~w', [I]),
+    I1 is I + 1,
+    emit_wrapped_value_list(Rest, I1).
 
 % Emit `, wsBindings = IM.insert vid_1 w_1 $ IM.insert vid_2 w_2 $ wsBindings s`
 % Only inserts for Unbound outputs; bound outputs are no-ops.
@@ -1157,9 +1214,11 @@ wam_to_haskell(try_me_else(Label), Code) :-
         , cpHeapLen  = length (wsHeap s)
         , cpBindings = wsBindings s   -- O(1): shared reference
         , cpCutBar   = wsCutBar s
+        , cpLevels   = pendingLevelMap (wsPendingLevel s)
         }
   in Just (s { wsPC = wsPC s + 1
              , wsCPs = cp : wsCPs s
+             , wsPendingLevel = Nothing
              })', [Label]).
 
 wam_to_haskell(trust_me, Code) :-
@@ -1263,6 +1322,10 @@ backtrack s = case wsCPs s of
               , wsHeapLen  = cpHeapLen cp
               , wsBindings = restoredBindings
               , wsCutBar   = cpCutBar cp
+              -- A `get_level` parked between the last choice point and this
+              -- failure never reached its try_me_else; it must not attach to
+              -- an unrelated choice point pushed later.
+              , wsPendingLevel = Nothing
               } } }
   where
     undoBinding bindings (TrailEntry vid mOld) =
@@ -1305,31 +1368,42 @@ resumeBuiltin (HopsRetry vid (h:hs) retPC) cp rest s =
             , wsHeapLen = cpHeapLen cp
             , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
 
--- Multi-output FFI retry: each remaining tuple is already a list of
--- wrapped Values matching outRegs/outVars in order.
-resumeBuiltin (FFIStreamRetry _ _ [] _) _ rest s =
-  backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
-resumeBuiltin (FFIStreamRetry outRegs outVars (tuple:rest_tuples) retPC) cp rest s =
-  let -- Insert each (reg, value) from the tuple into the registers.
-      newRegs = foldr (\\(rN, v) m -> IM.insert rN v m) (cpRegs cp)
-                      (zip outRegs tuple)
-      -- Insert each (varId, value) into bindings, skipping varId = -1
-      -- (meaning the output was originally bound, so no binding update).
-      newBindings = foldr (\\(vid, v) m ->
-                             if vid == -1 then m else IM.insert vid v m)
-                          (cpBindings cp)
-                          (zip outVars tuple)
-      newCPs = case rest_tuples of
-        [] -> rest
-        _  -> cp { cpBuiltin = Just (FFIStreamRetry outRegs outVars rest_tuples retPC) } : rest
-      diff = wsTrailLen s - cpTrailLen cp
-  in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
-            , wsCP = cpCP cp
-            , wsTrail = drop diff (wsTrail s)
-            , wsTrailLen = cpTrailLen cp
-            , wsHeap = take (cpHeapLen cp) (wsHeap s)
-            , wsHeapLen = cpHeapLen cp
-            , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
+-- Multi-output retry revalidates tuples against the saved call state.
+-- Generated call sites pre-filter too, so mismatches never become latent
+-- choice points and hand-built retry records remain safe.
+resumeBuiltin (FFIStreamRetry outRegs outVars tuples retPC) cp rest s =
+  let baseOutputs =
+        [ derefVar (cpBindings cp) $
+            fromMaybe (Unbound (-1)) (IM.lookup rN (cpRegs cp))
+        | rN <- outRegs
+        ]
+  in case dropWhile (not . ffiTupleMatches baseOutputs) tuples of
+    [] -> backtrack (s { wsCPs = rest, wsCPsLen = wsCPsLen s - 1 })
+    (tuple:restTuples) ->
+      let -- Bound registers retain their saved representation.
+          newRegs = foldr (\\(rN, vid, v) m ->
+                             if vid == -1 then m else IM.insert rN v m)
+                          (cpRegs cp)
+                          (zip3 outRegs outVars tuple)
+          newBindings = foldr (\\(vid, v) m ->
+                                 if vid == -1 then m else IM.insert vid v m)
+                              (cpBindings cp)
+                              (zip outVars tuple)
+          newCPs = case restTuples of
+            [] -> rest
+            _  -> cp { cpBuiltin = Just (FFIStreamRetry outRegs outVars restTuples retPC) } : rest
+          newCPsLen = case restTuples of
+            [] -> wsCPsLen s - 1
+            _  -> wsCPsLen s
+          diff = wsTrailLen s - cpTrailLen cp
+      in Just s { wsPC = retPC, wsRegs = newRegs, wsStack = cpStack cp
+                , wsCP = cpCP cp
+                , wsTrail = drop diff (wsTrail s)
+                , wsTrailLen = cpTrailLen cp
+                , wsHeap = take (cpHeapLen cp) (wsHeap s)
+                , wsHeapLen = cpHeapLen cp
+                , wsBindings = newBindings, wsCutBar = cpCutBar cp
+                , wsCPs = newCPs, wsCPsLen = newCPsLen }
 
 -- Phase F2: FactStream resume — iterate through inline fact tuples.
 -- Each (a1, a2) pair is unified against registers A1/A2. Variable IDs
@@ -1354,6 +1428,25 @@ resumeBuiltin (FactStream var1 var2 ((a1,a2):rows) retPC) cp rest s =
             , wsHeap = take (cpHeapLen cp) (wsHeap s)
             , wsHeapLen = cpHeapLen cp
             , wsBindings = newBindings, wsCutBar = cpCutBar cp, wsCPs = newCPs }
+
+-- | Check a foreign result tuple against the output cells present at the
+-- call site. Bound cells must match. Unbound cells accept a value, while
+-- repeated occurrences of the same variable must agree with each other.
+-- Keep this helper after every resumeBuiltin equation: Haskell requires all
+-- equations for a function to be contiguous.
+ffiTupleMatches :: [Value] -> [Value] -> Bool
+ffiTupleMatches outputs values
+  | length outputs /= length values = False
+  | otherwise = go IM.empty (zip outputs values)
+  where
+    go _ [] = True
+    go seen ((out, val):rest) =
+      case out of
+        Unbound vid ->
+          case IM.lookup vid seen of
+            Nothing -> go (IM.insert vid val seen) rest
+            Just old -> old == val && go seen rest
+        bound -> bound == val && go seen rest
 
 -- | Backtrack skipping past the aggregate_frame CP. If the top CP is
 -- an aggregate frame, return Nothing (inner solutions exhausted).
@@ -1450,7 +1543,12 @@ forkOrSequential !ctx s elseTarget =
       in if elsePC > 0
          then let branches = enumerateParBranches ctx (wsPC s) elsePC
               in if length branches >= forkMinBranches
-                 then Just (forkParBranches ctx s ms elsePC)
+                 -- The fork path pushes no guard choice point, so a level
+                 -- parked by a preceding `get_level` has nothing to attach
+                 -- to; drop it rather than let an unrelated later
+                 -- try_me_else adopt it.
+                 then Just ((forkParBranches ctx s ms elsePC)
+                              { wsPendingLevel = Nothing })
                  else fallback  -- too few branches; overhead > benefit
          else fallback
     _ -> fallback
@@ -1727,6 +1825,7 @@ callIndexedFact2 !ctx pred s =
                             , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
                             , cpCutBar = wsCutBar s, cpAggFrame = Nothing
                             , cpBuiltin = Just (FactRetry vid restIds retPC)
+                            , cpLevels = IM.empty
                             } : wsCPs s
                   newCPsLen = case restIds of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
               in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
@@ -1798,6 +1897,7 @@ streamFactRows rows s =
                     , cpHeapLen = wsHeapLen s, cpBindings = wsBindings s
                     , cpCutBar = wsCutBar s, cpAggFrame = Nothing
                     , cpBuiltin = Just (FactStream var1 var2 rest retPC)
+                    , cpLevels = IM.empty
                     } : wsCPs s
           newCPsLen = case rest of { [] -> wsCPsLen s; _ -> wsCPsLen s + 1 }
       in Just (s { wsPC = retPC, wsRegs = newRegs, wsBindings = newBindings
@@ -2188,8 +2288,10 @@ step !ctx s (TryMeElse label) =
         , cpBindings = wsBindings s
         , cpCutBar   = wsCutBar s
         , cpAggFrame = Nothing, cpBuiltin = Nothing
+        , cpLevels   = pendingLevelMap (wsPendingLevel s)
         }
-  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
+  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1
+             , wsPendingLevel = Nothing })
 
 -- TrustMe / RetryMeElse: when an indexed SwitchOnConstantPc jumps
 -- directly to a clause that begins with one of these (the WAM
@@ -2224,8 +2326,10 @@ step !ctx s (TryMeElsePc nextPC) =
         , cpBindings = wsBindings s
         , cpCutBar   = wsCutBar s
         , cpAggFrame = Nothing, cpBuiltin = Nothing
+        , cpLevels   = pendingLevelMap (wsPendingLevel s)
         }
-  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1 })
+  in Just (s { wsPC = wsPC s + 1, wsCPs = cp : wsCPs s, wsCPsLen = wsCPsLen s + 1
+             , wsPendingLevel = Nothing })
 
 -- See TrustMe above for the rationale for the empty-CP no-op-advance.
 step !ctx s (RetryMeElsePc nextPC) =
@@ -2306,12 +2410,47 @@ step !ctx s CutIte =
 -- register (before an if-then-else / negation try_me_else); Cut truncates
 -- the CP stack back to that depth at the commit site, removing the
 -- ITE/negation CP AND any CPs the condition pushed above it.
+-- The level is recorded on the if-then-else''s own CHOICE POINT, never in
+-- register `reg` -- see ChoicePoint.cpLevels for why a Y write here lands in
+-- the CALLER''s environment frame. Two emission shapes come out of
+-- compile_if_then_else/7:
+--   1. `get_level BarrierReg` immediately BEFORE the ITE `try_me_else` --
+--      park it so that TryMeElse records it on the guard CP it pushes;
+--   2. `get_level CondBarrierReg` immediately AFTER the try_me_else (only
+--      when the condition holds a top-level `!`) -- attach it to the guard CP
+--      that already exists, so a cut in the condition prunes only the
+--      condition''s own choice points.
+-- In both shapes the level itself is just wsCPsLen at this instant.
 step !ctx s (GetLevel reg) =
-  Just (s { wsPC = wsPC s + 1, wsRegs = IM.insert reg (Integer (wsCPsLen s)) (wsRegs s) })
+  let nextIsTry = case fetchInstr (wsPC s + 1) (wcCode ctx) of
+        Just (TryMeElse _)      -> True
+        Just (TryMeElsePc _)    -> True
+        -- The forkable variants are what the emitter actually plants in a
+        -- fork-eligible predicate; sequentially they route straight into
+        -- TryMeElse(Pc), which is where the parked level is consumed.
+        Just (ParTryMeElse _)   -> True
+        Just (ParTryMeElsePc _) -> True
+        _                       -> False
+  in if nextIsTry
+       then Just (s { wsPC = wsPC s + 1
+                    , wsPendingLevel = Just (reg, wsCPsLen s) })
+       else case wsCPs s of
+         (cp : rest) ->
+           Just (s { wsPC = wsPC s + 1
+                   , wsCPs = cp { cpLevels = IM.insert reg (wsCPsLen s)
+                                                        (cpLevels cp) } : rest })
+         [] -> Just (s { wsPC = wsPC s + 1 })
 
+-- `wsCPs` is NEWEST-FIRST, so truncating the stack back to depth `n` drops
+-- the (len - n) youngest choice points -- `drop`, not `take` (the old arm
+-- kept the n youngest and called the result depth n, which only coincided
+-- with the right answer for the n == 0 case).
 step !ctx s (Cut reg) =
-  case IM.lookup reg (wsRegs s) of
-    Just (Integer n) -> Just (s { wsPC = wsPC s + 1, wsCPs = take n (wsCPs s), wsCPsLen = n })
+  case lookupIteLevel reg (wsCPs s) of
+    Just n | n < wsCPsLen s ->
+      Just (s { wsPC = wsPC s + 1
+              , wsCPs = drop (wsCPsLen s - n) (wsCPs s)
+              , wsCPsLen = n })
     _ -> Just (s { wsPC = wsPC s + 1 })
 
 -- Type-checking builtins
@@ -2735,6 +2874,7 @@ step !ctx s (BeginAggregate typ valReg resReg) =
         , cpAggFrame = Just (AggFrame typ valReg resReg 0
                                       (inferMergeStrategy typ))
         , cpBuiltin = Nothing
+        , cpLevels = IM.empty
         }
   in Just (s { wsPC = wsPC s + 1
              , wsCPs = cp : wsCPs s
@@ -3188,10 +3328,12 @@ stepST _ regs !pw (TryMeElsePc nextPC) = do
         , mcpTrailLen = pwTrailLen pw, mcpHeapLen = pwHeapLen pw
         , mcpBindings = pwBindings pw, mcpCutBar = pwCutBar pw
         , mcpAggFrame = Nothing, mcpBuiltin = Nothing
+        , mcpLevels = pendingLevelMap (pwPendingLevel pw)
         }
   return $ Just pw { pwPC = pwPC pw + 1
                    , pwCPs = mcp : pwCPs pw
-                   , pwCPsLen = pwCPsLen pw + 1 }
+                   , pwCPsLen = pwCPsLen pw + 1
+                   , pwPendingLevel = Nothing }
 
 stepST _ _ !pw TrustMe =
   case pwCPs pw of
@@ -3249,20 +3391,39 @@ stepST _ _ !pw CutIte =
     [] -> return $ Just pw { pwPC = pwPC pw + 1 }
 
 -- M17 soft cut (see the pure `step` GetLevel/Cut for semantics).
--- M145: route the register access through putRegST/getRegST. GetLevel''s
--- operand is a Y register (id 201+), which lives in the topmost env
--- frame on the ST path -- the old raw writeArray/readArray hit the
--- STArray sized (1, maxRegId=199) and crashed every if-then-else
--- predicate with an index error.
-stepST _ regs !pw (GetLevel reg) = do
-  pw'' <- putRegST regs reg (Integer (pwCPsLen pw)) pw
-  return $ Just pw'' { pwPC = pwPC pw + 1 }
+-- M145: the operand is a Y register (id 201+), so the original raw
+-- writeArray/readArray hit the STArray sized (1, maxRegId=199) and crashed
+-- every if-then-else predicate with an index error. Routing it through
+-- putRegST/getRegST fixed the crash but moved the write into the TOPMOST env
+-- frame -- the CALLER''s, for the `Allocate`-less if-then-else clauses the
+-- shared emitter also emits `get_level` into. The barrier now lives on the
+-- ITE''s own choice point instead and touches no register at all.
+stepST !ctx _ !pw (GetLevel reg) =
+  let nextIsTry = case fetchInstr (pwPC pw + 1) (wcCode ctx) of
+        Just (TryMeElse _)      -> True
+        Just (TryMeElsePc _)    -> True
+        -- The forkable variants are what the emitter actually plants in a
+        -- fork-eligible predicate; sequentially they route straight into
+        -- TryMeElse(Pc), which is where the parked level is consumed.
+        Just (ParTryMeElse _)   -> True
+        Just (ParTryMeElsePc _) -> True
+        _                       -> False
+  in if nextIsTry
+       then return $ Just pw { pwPC = pwPC pw + 1
+                             , pwPendingLevel = Just (reg, pwCPsLen pw) }
+       else case pwCPs pw of
+         (mcp : rest) ->
+           return $ Just pw { pwPC = pwPC pw + 1
+                            , pwCPs = mcp { mcpLevels = IM.insert reg (pwCPsLen pw)
+                                                                  (mcpLevels mcp) } : rest }
+         [] -> return $ Just pw { pwPC = pwPC pw + 1 }
 
-stepST _ regs !pw (Cut reg) = do
-  mv <- getRegST regs reg pw
-  case mv of
-    Just (Integer n) -> return $ Just pw { pwPC = pwPC pw + 1
-                                         , pwCPs = take n (pwCPs pw), pwCPsLen = n }
+stepST _ _ !pw (Cut reg) =
+  case lookupIteLevelST reg (pwCPs pw) of
+    Just n | n < pwCPsLen pw ->
+      return $ Just pw { pwPC = pwPC pw + 1
+                       , pwCPs = drop (pwCPsLen pw - n) (pwCPs pw)
+                       , pwCPsLen = n }
     _ -> return $ Just pw { pwPC = pwPC pw + 1 }
 
 -- Type-checking builtins
@@ -3353,7 +3514,8 @@ stepST _ regs !pw (SetValue xn) = do
                             , pwBindings = pwBindings pw, pwCutBar = pwCutBar pw
                             , pwBuilder = pwBuilder pw, pwBuilderStack = pwBuilderStack pw
                             , pwVarCounter = pwVarCounter pw
-                            , pwAggAccum = pwAggAccum pw }
+                            , pwAggAccum = pwAggAccum pw
+                            , pwPendingLevel = pwPendingLevel pw }
       -- addToBuilder is pure: only modifies wsBuilder and wsRegs (for struct/list finalize)
       regMap <- freezeRegsToIntMap regs
       let ws = pureToWamState s0 regMap
@@ -3788,6 +3950,8 @@ backtrackST regs pw = case pwCPs pw of
         , pwCutBar = mcpCutBar mcp
         , pwCPs = rest
         , pwCPsLen = pwCPsLen pw - 1
+        -- See backtrack: drop a get_level that never reached its try_me_else.
+        , pwPendingLevel = Nothing
         }
     | otherwise -> do
       -- Complex case: aggregate/builtin. Delegate to pure bridge.
@@ -3930,9 +4094,14 @@ write_wam_haskell_project(Predicates, Options0, ProjectDir) :-
     % lowered function doesn't handle. Phase 4+ lowered functions only
     % inline clause 1; clause 2+ runs through the interpreter on backtrack.
     compile_predicates_to_haskell(InternalPreds, Options, PredsCode0, InlineDefs),
+    % Native WSP3/A* handlers read relation-keyed weighted adjacency from
+    % wcFfiWeightedFacts. Materialize detected inline/external relations now,
+    % while the compile-time atom table is still open for interning.
+    emit_weighted_ffi_facts_hs(DetectedKernels, Options, WeightedFactsCode),
     % Append compile-time atom table to Predicates.hs
     emit_atom_table_haskell(AtomTableCode),
-    format(string(PredsCode0WithAtoms), "~w~n~n~w", [PredsCode0, AtomTableCode]),
+    format(string(PredsCode0WithAtoms), "~w~n~n~w~n~n~w",
+           [PredsCode0, WeightedFactsCode, AtomTableCode]),
     apply_hashmap_rewrite(UseHM, generic, PredsCode0WithAtoms, PredsCode),
     directory_file_path(SrcDir, 'Predicates.hs', PredsPath),
     write_hs_file(PredsPath, PredsCode),
@@ -4125,8 +4294,13 @@ generate_main_hs(_Predicates, DetectedKernels, InlineDefs, Options, Code) :-
     hPutStrLn stderr $ "demand_skipped_seeds=" ++ show demandSkippedSeeds'
     ;   DemandMetrics = ''
     ),
-    % Phase F3/F4: generate wcInlineFacts wiring from InlineDefs
-    generate_inline_facts_wiring(InlineDefs, InlineFactsWiring),
+    % Phase F3/F4: generate fact wiring. declaredWeightedFfiFacts is emitted
+    % in Predicates.hs even when empty, so every generated context has one
+    % unambiguous source for native WSP3/A* relation data.
+    generate_inline_facts_wiring(InlineDefs, InlineFactsWiring0),
+    format(string(InlineFactsWiring),
+           '~w~n            , wcFfiWeightedFacts = declaredWeightedFfiFacts',
+           [InlineFactsWiring0]),
     % Phase B1: generate LMDB setup and context wiring
     generate_lmdb_wiring(Options, LmdbSetup, LmdbContext, LmdbImport),
     % Int-atom-seeds path: when use_lmdb(true) and seeds come pre-interned
@@ -4276,6 +4450,101 @@ generate_inline_facts_wiring(InlineDefs, Code) :-
     format(string(Code),
            '            , wcInlineFacts   = Map.fromList [~w]',
            [EntriesStr]).
+
+%% emit_weighted_ffi_facts_hs(+DetectedKernels, +Options, -Code)
+%  Emit compile-time-interned, relation-keyed weighted adjacency for native
+%  weighted_shortest_path3 and astar_shortest_path4 handlers. A* needs both
+%  its edge and direct-distance relations. Existing external_weighted_facts
+%  options are merged with inline facts rather than replaced.
+emit_weighted_ffi_facts_hs(DetectedKernels, Options, Code) :-
+    findall(Rel-Triples,
+            ( (   member(_-recursive_kernel(weighted_shortest_path3, _, Ops),
+                         DetectedKernels),
+                  member(edge_pred(Rel/3), Ops)
+              ;   member(_-recursive_kernel(astar_shortest_path4, _, Ops),
+                         DetectedKernels),
+                  ( member(edge_pred(Rel/3), Ops)
+                  ; member(direct_dist_pred(Rel/3), Ops)
+                  ; member(direct_dist_pred(Rel), Ops), atom(Rel)
+                  )
+              ),
+              atom(Rel),
+              collect_weighted_edge_triples_hs(Rel, Triples)
+            ),
+            Inline),
+    option(external_weighted_facts(External), Options, []),
+    append(Inline, External, Combined0),
+    keysort(Combined0, Combined),
+    group_pairs_by_key(Combined, Grouped),
+    maplist(merge_weighted_rel_group_hs, Grouped, Relations),
+    maplist(emit_weighted_rel_entry_hs, Relations, Entries),
+    atomic_list_concat(Entries, ',\n    ', EntryCode),
+    format(string(Code),
+'-- | Compile-time-interned weighted facts for native WSP3/A* kernels.
+declaredWeightedFfiFacts :: Map.Map String (IM.IntMap [(Int, Double)])
+declaredWeightedFfiFacts = Map.fromList
+  [ ~w
+  ]', [EntryCode]).
+
+collect_weighted_edge_triples_hs(Rel, Triples) :-
+    functor(Head, Rel, 3),
+    findall(row(From, To, W),
+            ( clause(user:Head, true),
+              Head =.. [Rel, From, To, W]
+            ),
+            Rows),
+    validate_weighted_rows_hs(Rel, Rows, Triples).
+
+validate_weighted_rows_hs(_, [], []).
+validate_weighted_rows_hs(Rel, [row(From, To, W0)|Rows], Triples) :-
+    (   atom(From)
+    ->  (   atom(To), number(W0)
+        ->  weighted_float_hs(W0, W),
+            Triples = [triple(From, To, W)|Rest]
+        ;   Fact =.. [Rel, From, To, W0],
+            format(atom(Message),
+                   'native weighted relation ~w requires atom/atom/number rows',
+                   [Rel]),
+            throw(error(domain_error(weighted_kernel_fact, Fact),
+                        context(wam_haskell_target:emit_weighted_ffi_facts_hs/3,
+                                Message)))
+        )
+    ;   % Non-atom sources cannot be reached from the atom-keyed native ABI.
+        Triples = Rest
+    ),
+    validate_weighted_rows_hs(Rel, Rows, Rest).
+
+merge_weighted_rel_group_hs(Rel-Lists, Rel-Triples) :-
+    append(Lists, Flat),
+    sort(Flat, Triples).
+
+emit_weighted_rel_entry_hs(Rel-[], Entry) :- !,
+    format(string(Entry), '("~w", IM.empty)', [Rel]).
+emit_weighted_rel_entry_hs(Rel-Triples, Entry) :-
+    maplist(emit_weighted_triple_hs, Triples, Rows),
+    atomic_list_concat(Rows, ', ', RowCode),
+    format(string(Entry),
+           '("~w", IM.fromListWith (flip (++)) [~w])',
+           [Rel, RowCode]).
+
+emit_weighted_triple_hs(triple(From, To, W0), Row) :-
+    atom(From), atom(To), number(W0),
+    weighted_float_hs(W0, W),
+    intern_atom(From, FromId),
+    intern_atom(To, ToId),
+    haskell_double_literal_hs(W, WCode),
+    format(string(Row), '(~w, [(~w, ~w)])', [FromId, ToId, WCode]).
+
+weighted_float_hs(W, W) :- float(W), !.
+weighted_float_hs(N, W) :- W is float(N).
+
+haskell_double_literal_hs(W, Code) :-
+    float_class(W, Class),
+    (   Class == nan -> Code = '(0 / 0)'
+    ;   Class == infinite, W > 0 -> Code = '(1 / 0)'
+    ;   Class == infinite -> Code = '(-1 / 0)'
+    ;   format(string(Code), '~w', [W])
+    ).
 
 %% generate_lmdb_wiring(+Options, -SetupCode, -ContextCode, -ImportCode)
 %  When use_lmdb(true), generates:
@@ -5408,6 +5677,7 @@ wamStateToPure s = PureWamState
   , pwBuilder = wsBuilder s, pwBuilderStack = wsBuilderStack s
   , pwVarCounter = wsVarCounter s
   , pwAggAccum = wsAggAccum s
+  , pwPendingLevel = wsPendingLevel s
   }
 
 pureToWamState :: PureWamState -> IM.IntMap Value -> WamState
@@ -5420,7 +5690,35 @@ pureToWamState pw regMap = WamState
   , wsBuilder = pwBuilder pw, wsBuilderStack = pwBuilderStack pw
   , wsVarCounter = pwVarCounter pw
   , wsAggAccum = pwAggAccum pw
+  , wsPendingLevel = pwPendingLevel pw
   }
+
+-- | Wrap a parked `get_level` into the level map its choice point carries.
+-- `Nothing` (the overwhelmingly common case) costs an empty IntMap.
+{-# INLINE pendingLevelMap #-}
+pendingLevelMap :: Maybe (Int, Int) -> IM.IntMap Int
+pendingLevelMap Nothing        = IM.empty
+pendingLevelMap (Just (r, lv)) = IM.singleton r lv
+
+-- | `cut Yn` — find the level `get_level Yn` recorded, innermost choice point
+-- first. Looking it up on the CP stack (rather than in a Y register) makes it
+-- per-activation for free, and a callee can never clobber a caller''s.
+-- `Nothing` means the guard was already cut away by an inner commit, in which
+-- case the stack is already at or below the level and cutting is a no-op.
+lookupIteLevel :: Int -> [ChoicePoint] -> Maybe Int
+lookupIteLevel _ [] = Nothing
+lookupIteLevel reg (cp : rest) =
+  case IM.lookup reg (cpLevels cp) of
+    Just lv -> Just lv
+    Nothing -> lookupIteLevel reg rest
+
+-- | ST-mode twin of lookupIteLevel.
+lookupIteLevelST :: Int -> [MutableChoicePoint] -> Maybe Int
+lookupIteLevelST _ [] = Nothing
+lookupIteLevelST reg (mcp : rest) =
+  case IM.lookup reg (mcpLevels mcp) of
+    Just lv -> Just lv
+    Nothing -> lookupIteLevelST reg rest
 
 -- | Read a register value in ST mode. Y-registers (>= 200) come from env frame.
 {-# INLINE getRegST #-}
@@ -5611,6 +5909,22 @@ data ChoicePoint = ChoicePoint
   , cpCutBar   :: {-# UNPACK #-} !Int
   , cpAggFrame :: !(Maybe AggFrame)
   , cpBuiltin  :: !(Maybe BuiltinState)
+  -- | If-then-else barrier levels captured by `get_level Yn` on THIS choice
+  -- point: register id -> the CP-stack depth `cut Yn` must truncate back to.
+  --
+  -- The shared WAM compiler reserves a *permanent* (Y) register for an ITE
+  -- barrier AFTER deciding whether the clause needs an environment
+  -- (`compile_if_then_else/7` in `wam_target.pl`), so it emits `get_level Y1`
+  -- in clauses with NO `Allocate` too. Both interpreters route Y registers to
+  -- the TOPMOST env frame, which for such a clause is the CALLER''s -- the old
+  -- register write replaced the caller''s permanent variable Yn with a
+  -- choice-point depth. That is a silent wrong answer, not a crash: the
+  -- WAM_FLEET_GAPS A2 hazard in its frameless-Y-write form (see
+  -- WAM_HASKELL_STATUS.md).
+  --
+  -- Keeping the level on the ITE''s own choice point means it never touches a
+  -- register, is per-activation for free, and dies with the choice point.
+  , cpLevels   :: !(IM.IntMap Int)
   } deriving (Show)
 
 -- | Builtin state for choice points that need custom retry logic.
@@ -5726,10 +6040,8 @@ data WamContext = WamContext
   -- FFI kernel path. Populated per-kernel from edge_pred config.
   , wcFfiFacts      :: !(Map.Map String (IM.IntMap [Int]))
   -- | Weighted fact indexes for kernels that need (target, weight)
-  -- pairs per edge (e.g., weighted_shortest_path3 / Dijkstra). Used
-  -- exclusively by the FFI kernel path. Populated from 3-column fact
-  -- sources — not wired into the default Main.hs template yet, so
-  -- standalone benchmarks build this directly.
+  -- pairs per edge (e.g., weighted_shortest_path3 / A*). Populated per
+  -- detected relation from compile-time and configured external facts.
   , wcFfiWeightedFacts :: !(Map.Map String (IM.IntMap [(Int, Double)]))
   -- | Phase F2: inline fact data for FactStream predicates. Keyed by
   -- predicate name (e.g., "category_parent"). Each entry is a list of
@@ -5776,6 +6088,10 @@ data WamState = WamState
   , wsBuilderStack :: ![Builder]    -- saved builders for nested get_structure
   , wsVarCounter   :: {-# UNPACK #-} !Int
   , wsAggAccum :: ![Value]
+  -- | An if-then-else barrier level taken by `get_level Yn` immediately BEFORE
+  -- the ITE''s `try_me_else`; consumed by that TryMeElse, which records it on
+  -- the guard choice point it pushes. See ChoicePoint.cpLevels.
+  , wsPendingLevel :: !(Maybe (Int, Int))
   } deriving (Show)
 
 -- | Maximum register ID. A1-A99=1-99, X1-X99=101-199, Y handled via stack.
@@ -5801,6 +6117,8 @@ data PureWamState = PureWamState
   , pwBuilderStack :: ![Builder]    -- saved builders for nested get_structure
   , pwVarCounter   :: {-# UNPACK #-} !Int
   , pwAggAccum     :: ![Value]
+  -- | ST-mode twin of wsPendingLevel. See ChoicePoint.cpLevels.
+  , pwPendingLevel :: !(Maybe (Int, Int))
   }
 
 -- | Choice point with frozen register snapshot (for ST-mode execution).
@@ -5815,6 +6133,8 @@ data MutableChoicePoint = MutableChoicePoint
   , mcpCutBar    :: {-# UNPACK #-} !Int
   , mcpAggFrame  :: !(Maybe AggFrame)
   , mcpBuiltin   :: !(Maybe BuiltinState)
+  -- | ST-mode twin of cpLevels. See ChoicePoint.
+  , mcpLevels    :: !(IM.IntMap Int)
   }
 
 -- | Instruction type for the WAM.
@@ -5932,6 +6252,7 @@ emptyState = WamState
   , wsBuilderStack = []
   , wsVarCounter = 0
   , wsAggAccum = []
+  , wsPendingLevel = Nothing
   }
 '.
 

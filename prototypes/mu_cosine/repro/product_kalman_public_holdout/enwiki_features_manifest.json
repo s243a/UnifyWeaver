@@ -1,0 +1,45 @@
+{
+  "batch_size": 32,
+  "branch_unit_count": 34,
+  "corpus": "enwiki",
+  "device": "cuda",
+  "e5_cache": "regenerable local cache: enwiki_e5.pt (not archived)",
+  "e5_cache_sha256": "c023cfda1c524723b7681ea7eeabd284dd1ccfbe6cdae9f9e78288222143bf53",
+  "e5_model": "intfloat/e5-small-v2",
+  "family_tied_rows": 11,
+  "feature_table": "enwiki_features.tsv",
+  "feature_table_sha256": "b8caff425552ace39a547dbaa6fd42da0b22f1ad88766aba33d19a2de00d6883",
+  "graph_measurement": {
+    "maximum": 1,
+    "mean": 0.16892810681163542,
+    "minimum": 0.0004629629629629629,
+    "unique_count": 196
+  },
+  "graph_source": {
+    "kind": "enwiki_lmdb_streamed",
+    "lmdb_data_mdb_size": 1319403520,
+    "lmdb_dir": "local enwiki scoped LMDB; regenerate with repository LMDB export scripts"
+  },
+  "guardrail": "fixed sources only; no split-specific calibration or comparative result",
+  "hop_counts": {
+    "1": 50,
+    "2": 50,
+    "3": 50,
+    "4": 50,
+    "5": 50
+  },
+  "identity_component_count": 413,
+  "model": "../../model_prod.pt",
+  "model_sha256": "a9dffd99620b61180f43b28bc0619f7070569bf4bc2f5975689eec6fdb8a83cf",
+  "operator_family_counts": {
+    "directional": 163,
+    "open_world": 52,
+    "symmetric": 35
+  },
+  "pairs": "prototypes/mu_cosine/repro/product_kalman_cross_corpus/enwiki_pairs_audited.tsv",
+  "pairs_sha256": "bf76f03f5d483051a9ee727e5447635aae58607afec1ba5a0622bd84578467e2",
+  "responses": "prototypes/mu_cosine/repro/product_kalman_cross_corpus/enwiki_merged_audited_responses.txt",
+  "responses_sha256": "6262b94facac5c9edd08630c36f5dedfcba159bd5669e9d25b7750684262778d",
+  "row_count": 250,
+  "schema_version": 1
+}

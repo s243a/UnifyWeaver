@@ -100,8 +100,14 @@ test_emit_table_lists_all_atoms :-
     emit_atom_table_go(Code),
     atom_string(Code, S),
     (   sub_string(S, _, _, _, "var ("),
-        sub_string(S, _, _, _, "&Atom{Name: \"alpha\"}"),
-        sub_string(S, _, _, _, "&Atom{Name: \"beta\"}"),
+        % Interned atoms are initialised through internAtom, not as bare
+        % &Atom literals: Go runs package-level var initialisers before
+        % any init(), so a var elsewhere in the package that calls
+        % internAtom would otherwise win the map slot and end up with a
+        % different pointer for the same name (Atom.Equals is
+        % pointer-only).
+        sub_string(S, _, _, _, "internAtom(\"alpha\")"),
+        sub_string(S, _, _, _, "internAtom(\"beta\")"),
         atom_string(VarA, VarAS),
         atom_string(VarB, VarBS),
         sub_string(S, _, _, _, VarAS),

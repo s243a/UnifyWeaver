@@ -2,6 +2,17 @@
 
 ## Mission
 
+For a focused comparison of hybrid WAM backends (all 17 modules, with
+deep coverage of Haskell / Rust / LLVM / C++ / F#), see
+[`WAM_HYBRID_TARGETS_COMPARISON.md`](WAM_HYBRID_TARGETS_COMPARISON.md).
+Per-target living status for the mature set:
+[`WAM_HASKELL_STATUS.md`](WAM_HASKELL_STATUS.md),
+[`WAM_RUST_STATUS.md`](WAM_RUST_STATUS.md),
+[`WAM_LLVM_STATUS.md`](WAM_LLVM_STATUS.md),
+[`WAM_CPP_STATUS.md`](WAM_CPP_STATUS.md),
+[`WAM_FSHARP_STATUS.md`](WAM_FSHARP_STATUS.md)
+(Elixir: [`design/WAM_ELIXIR_STATUS.md`](design/WAM_ELIXIR_STATUS.md)).
+
 Two intertwined goals for the graph-algorithm pipeline:
 
 - **Generalize** — how much Prolog can the transpiler accept, and how
@@ -91,10 +102,15 @@ Most architecturally complete of the WAM targets:
 
 Gaps relative to the lessons from other targets:
 
-- **No memory-mapped fact storage.** The bottleneck above ~100k facts
-  Haskell/C# both target.
-- **No kernel-based lowering.** No graph-algorithm FFI kernels yet.
-- **No interning.** Atoms are stored as Elixir strings everywhere.
+- **LMDB FactSource exists** (`FactSource.Lmdb` / `LmdbIntIds` in
+  generated runtime) but lacks F#/Haskell-style
+  eager/lazy/cached two-level `ILookupSource` policies; validate
+  under real `:elmdb` installs.
+- **Kernels: all 7 shared kinds shipped** (PRs #1799–#1826) — the
+  older “no kernel-based lowering” gap list below this section was
+  stale and is retained only as historical context in older commits.
+- **Atom interning** is opt-in (`intern_atoms(true)`) and
+  deprioritized for perf (string compares <1% post Y-regs fix).
 
 ## Table 1 — primary targets (Elixir-relevant lessons)
 
@@ -103,26 +119,27 @@ on a specific architectural question.
 
 | Target | Architectural question | Generalization | Lowering | Materialization | Kernels | Path forward |
 |---|---|---|---|---|---|---|
-| **Elixir** | reference baseline | Phase 3/4 + comprehensive builtins | dual: WAM-instr + per-predicate emitter | FactSource facade (ETS/SQLite/TSV); no memory-mapped | none | LMDB integration (high-value for >100k); hot-path graph kernels |
-| **Haskell** | how to make materialisation cheap at scale | broad WAM, parMap parallel | dual: WAM-instr + emitter | LMDB key/value (memory-mapped under the hood); raw-pointer interface abandoned due to crashes | parMap rdeepseq | calibrate fork-min-cost like Elixir; investigate cost-aware probing |
+| **Elixir** | reference baseline | Phase 3/4 + comprehensive builtins | dual: WAM-instr + per-predicate emitter (tests use `emit_mode(lowered)`; codegen default still `interpreter`) | FactSource facade (ETS/SQLite/TSV/**LMDB**/LmdbIntIds); lacks F#-style lazy/cached two-level policies | all 7 shared kernel kinds (PRs #1799–#1826) | deepen LMDB policies; emitter-driven Tier-2 fanout |
+| **Haskell** | how to make materialisation cheap at scale | broad WAM, parMap parallel | dual: WAM-instr + emitter | LMDB via `use_lmdb` + `lmdb_cache_mode` tiers (safe KV API); `lmdb_materialisation` option currently unused by emit | all 7 + bidirectional (mustache templates) + parMap | wire materialisation option into emit; Elixir-style cost gates |
 | **C#** | SQL/LINQ-as-substrate; the optimisation-inspiration target | broadest aggregate/join/negation coverage | LINQ pipeline (not WAM-shaped); split into `csharp_target` + `csharp_query_target` + `csharp_native_target` | source-mode sweeps measure cost; memory-mapped file in flight | n/a (LINQ-inspired lineage) | continue source-mode benchmark sweep; tighten cost model |
-| **Scala** | how aggressive can compile-time atom interning + classic-program coverage be | classic programs (n-queens, Ackermann, Fibonacci) — sets the generalisation upper bound | dual: WAM-instr + per-predicate emitter (`wam_scala_lowered_emitter.pl`, `emit_mode(functions)`) — clause-1 fast path with interpreter fallback | 4 backends (inline / file CSV / grouped TSV / **arity-N LMDB**, validated end-to-end); auto-inline ≤128 rows | all 7 kinds: `transitive_closure2`, `transitive_distance3`, `transitive_parent_distance4`, `transitive_step_parent_distance5`, `category_ancestor`, `weighted_shortest_path3`, `astar_shortest_path4` (opt-in `kernel_dispatch(true)`); intra-Scala mode benchmark (`benchmarks/wam_scala_mode_bench.md`) shows kernel ~4×@depth100, ~9×@depth300 | full kernel parity with Rust/Haskell/Elixir/Go; LMDB sidecar (Phase S8) shipping for any arity >= 2, validated end-to-end; next: cross-target benchmark vs Elixir/Haskell |
-| **Clojure** | LMDB JNI integration as a first-class data tier | deterministic-prefix lowering; sequential-only tests | dual: WAM-instr + emitter (deterministic prefix only — no `switch_on_constant` lowering yet) | LMDB only (production-grade JNI loader, delay-wrapped) + cache policies (memoize / shared / two_level) | none | extend lowered emitter to non-deterministic prefixes; add parallelism gates |
-| **Rust** | hand-tuned FFI kernel route | deterministic only in lowered emitter | dual: WAM-instr + emitter (deterministic only) | partial (LookupSource trait over LMDB lazy/cached + reverse-CSR artifact reader `csr_child_index(true)`; no full FactSource facade) | effective-distance matrix FFI kernel; **bidirectional_ancestor** (F# parity port: calibration + A*-pruned direction-cost search; opt-in `kernel_mode(bidirectional)`; child direction from CSR artifact, LMDB `category_child`, or derived reverse table) | simplewiki-scale bidirectional benchmark vs F#; distribution-cache phases; builtins parity sweep; FactSource generalisation |
-| **F#** | Haskell-shaped target on the .NET runtime | mirrors Haskell coverage | dual: WAM-instr + emitter | none documented | TPL Parallel.map mentioned, no gating | follow Haskell's LMDB lessons + Elixir's cost-gate calibration |
-| **LLVM** | portable native-codegen via LLVM IR (native binary or WASM) | broad WAM coverage; lowered emitter covers single-clause + multi-clause hybrid + pattern matching + cross-pred call/execute closures (M1-M4) | dual: WAM-instr (full @step) + lowered emitter (M1-M4) with closure analysis for cross-pred direct calls | arena allocator with growable trail/stack/CP/heap (M5/M6); no LMDB integration | 7 foreign-kernel kinds: `transitive_distance3`, `weighted_shortest_path3`, `astar_shortest_path4`, `transitive_closure2`, `category_ancestor`, `countdown_sum2`, `list_suffix2`; auto-detection via `foreign_lowering(true)` | real-workload benchmark suite (currently only have a dispatch microbench); LMDB fact-source; trail-rollback for hybrid clause-1 partial bindings |
+| **Scala** | how aggressive can compile-time atom interning + classic-program coverage be | classic programs (n-queens, Ackermann, Fibonacci) — sets the generalisation upper bound | dual: WAM-instr + per-predicate emitter (`wam_scala_lowered_emitter.pl`, `emit_mode(functions)`) — clause-1 fast path with interpreter fallback | 4 backends (inline / file CSV / grouped TSV / **arity-N LMDB**, validated end-to-end) | all 7 kinds opt-in `kernel_dispatch(true)`; mode bench ~4×@depth100, ~9×@depth300 (shallow queries can regress) | cross-target bench vs Elixir/Haskell; ISO adoption |
+| **Clojure** | LMDB JNI integration as a first-class data tier | deterministic-prefix lowering; sequential-only tests | dual: WAM-instr + emitter (T4; strips `switch_on_constant` prefix — no emitted switch table) | LMDB only (JNI loader) + cache policies (memoize / shared / two_level) | none (foreign handlers for category_parent/ancestor) | emit lowered switch tables; parallelism gates |
+| **Rust** | hand-tuned FFI kernel route | det/T4–T6/ITE lowered emitter | dual: WAM-instr + emitter | LookupSource; eager/lazy/cached in matrix path + templates (promote into default project writer); CSR | all 7 + matrix + bidirectional + **boundary** extra | simplewiki bi-dir vs F#; default `lmdb_materialisation` option; FactSource facade |
+| **F#** | Haskell-shaped target on the .NET runtime | mirrors Haskell coverage | dual: WAM-instr + emitter (default interpreter; functions ~1.0–1.07×) | LMDB `eager`/`lazy`/`cached`/`auto` (+ two-level L1/L2); CSR | detector fires for all kinds; **templates only for category_ancestor + bidirectional** (others stub); bi opt-in | finish kernel templates; classic conformance adapter; cost gates |
+| **LLVM** | portable native-codegen via LLVM IR (native binary or WASM) | broad WAM coverage; lowered M1–M4 | dual: WAM-instr + lowered emitter | arena only — no LMDB | **LLVM-specific 7** (has countdown/list_suffix; lacks parent/step-distance + bidirectional) | conformance adapter; LMDB; trail-rollback |
+| **C++** | systems substrate + ISO-error reference | broad WAM; classic conformance green on onboarding | dual: WAM-instr + lowered emitter (det / clause-1 / ITE / T4–T6) | arity-2 LMDB FactSource (v1) | `call_foreign` only — no shared-kernel detector | keep ISO reference; optional shared-kernel parity |
 | **Typr** | typed-functional R wrapper with explicit raw-R fallback | recursion-pattern matcher (per-path-visited, tail, tree, mutual); raw-R fallback for producer goals | native pattern lowering (different model — pattern recognition, not WAM-bytecode lowering) | none — input modes (stdin/file/VFS/function) | n/a | continue typed lifting per `docs/handoff/typr-*.md`; doesn't generalise easily to graph-algorithm benchmarks |
 
-## Table 2 — less-developed hybrid WAM targets
-
-Listed for completeness. These have substantial Prolog source but
-haven't yet hit the kernel-or-LMDB inflection point.
+## Table 2 — other hybrid WAM targets
 
 | Target | Source size | Status | Notes |
 |---|---|---|---|
-| **WAT** (WebAssembly text) | `wam_wat_target.pl` + `wam_wat_lowered_emitter.pl` | Substantial WAM-instruction lowering pipeline plus deterministic clause-1 lowered fast paths | Opt-in hybrid mode now mirrors Rust/Scala-style public-entry replay: lowered success returns immediately; lowered failure reinitialises and falls back to `$run_loop`. Browser-deployment angle remains the differentiator |
-| **C** | `wam_c_target.pl` (907 lines) + `wam_c_runtime/wam_runtime.h` | Has a C runtime header | Smaller surface; useful as a portable substrate for FFI kernels (Rust/Go FFI kernels could share C glue) |
-| **JVM** | `wam_jvm_target.pl` (711 lines) | Smaller than the Scala/Clojure entries | Generic JVM bytecode emit; both Scala and Clojure target the JVM via different routes — this is the third |
+| **WAT** (WebAssembly text) | `wam_wat_target.pl` (~6.4k) + `wam_wat_lowered_emitter.pl` | Substantial WAM-instruction lowering + T4–T6 hybrid; conformance green | Browser/sandboxed deploy; interpreter-bound |
+| **C** | `wam_c_target.pl` (~6.1k) + `wam_c_runtime/wam_runtime.h` (~1k) | **Strong systems** — all 7 shared kernels + `bidirectional_ancestor`, LMDB, reverse CSR, aggregates, lowered helpers | Living checklist: `WAM_C_TARGET_NEXT_STEPS.md`. Conformance green. Not “907 lines / less-developed.” |
+| **Go** | `wam_go_target.pl` (~3.5k) + lowered (~0.7k) | **All 7 FFI kernels** + TSV/LMDB atom facts; conformance via `prefer_wam(true)` | Default product path is still non-WAM `go_target.pl` |
+| **JVM** | `wam_jvm_target.pl` (~650) | Jamaica/Krakatau dual emit; no lowered emitter | Third JVM route after Scala/Clojure |
+| **Kotlin** | `wam_kotlin_target.pl` (~418) | Hybrid partition scaffold; Gradle e2e when available | No lowered emitter / kernels |
+| **ILAsm** | `wam_ilasm_target.pl` (~1.9k) | CIL hybrid + ~45 plunit tests | No lowered emitter |
 
 ## Cross-cutting observations
 

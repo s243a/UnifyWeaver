@@ -89,13 +89,13 @@ compile_predicate_to_wam_text(PredIndicator, Options, Code) :-
     compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code).
 
 %% compile_predicate_to_wam_items(+PredIndicator, +Options, -Items)
-%  Compile a predicate to structured WAM items. Facts and simple one-goal user
-%  tail calls use direct item emission. More complex predicates fall back to the
-%  text generator plus shared parser until the full WAM emitter is items-first.
+%  Compile a predicate to structured WAM items. Simple native shapes use direct
+%  item emission. More complex predicates fall back to the text generator plus
+%  shared parser until the full WAM emitter is items-first.
 compile_predicate_to_wam_items(PredIndicator, Options, Items) :-
     wam_predicate_clauses(PredIndicator, Options, Pred, Arity, Clauses),
-    (   compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items)
-    ->  true
+    (   compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, NativeItems)
+    ->  peephole_optimize_items(NativeItems, Items)
     ;   compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code),
         wam_text_to_items(Code, Items)
     ).
@@ -203,41 +203,197 @@ compile_clauses_to_wam(Pred, Arity, Clauses, Options, Code) :-
     ).
 
 %% compile_clauses_to_wam_items_native(+Pred, +Arity, +Clauses, +Options, -Items)
-%  Direct items path for simple single-clause predicates. This incremental
-%  native producer slice covers facts, simple user calls, generic builtin calls,
-%  compound body arguments using the default args-first set_* ordering, and
-%  conjunctions of those shapes. Aggregates, indexing, lowered builtins,
-%  control flow, legacy interleaved compound-arg emission, and other
-%  peephole-sensitive shapes intentionally fall back to the text bridge.
-compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], _Options, Items) :-
-    normalize_goals(Body, []),
+%  Direct items path for simple predicates. This incremental native producer
+%  slice covers facts, simple user calls, generic builtin calls, compound body
+%  arguments using the default args-first set_* ordering, conjunctions of those
+%  shapes, non-indexed linear multi-clause predicates composed of the same
+%  clause shapes, and the simplest A1/A2 switch_on_constant / fallthrough indexed
+%  variants. Aggregates, dispatch-chain indexing, lowered builtins, control flow, legacy
+%  interleaved compound-arg emission, and other peephole-sensitive shapes
+%  intentionally fall back to the text bridge.
+compile_clauses_to_wam_items_native(Pred, Arity, [Clause], Options, Items) :-
+    compile_clause_body_items_native(Clause, Options, InstrItems),
     !,
-    Head =.. [_|Args],
-    empty_varmap(V0),
-    compile_head_arguments_items(Args, 1, V0, _V1, HeadItems),
     format(string(Label), "~w/~w", [Pred, Arity]),
-    append(HeadItems, [proceed], InstrItems),
     Items = [label(Label)|InstrItems].
-compile_clauses_to_wam_items_native(Pred, Arity, [Head-Body], Options, Items) :-
-    normalize_goals(Body, Goals),
-    Goals = [_|_],
-    native_simple_goal_sequence(Goals, Options),
+compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
+    Clauses = [_,_|_],
+    native_first_arg_constant_index_item(Pred, Arity, Clauses, SwitchItem),
+    length(Clauses, N),
+    compile_multi_clause_items_linear(Clauses, 1, N, Pred, Arity, Options, ClauseItems),
     !,
-    Head =.. [_|Args],
-    empty_varmap(V0),
-    expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
     format(string(Label), "~w/~w", [Pred, Arity]),
-    (   native_simple_goals_need_env(Goals, ExpandedGoals)
-    ->  pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
-        compile_head_arguments_items(Args, 1, V0a, V1, HeadItems),
-        compile_goals_items_simple(Goals, V1, yes, _Vf, GoalItems),
-        PrefixItems = [label(Label), allocate]
-    ;   compile_head_arguments_items(Args, 1, V0, V1, HeadItems),
-        compile_goals_items_simple(Goals, V1, no, _Vf, GoalItems),
-        PrefixItems = [label(Label)]
+    Items = [label(Label), SwitchItem|ClauseItems].
+compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
+    Clauses = [_,_|_],
+    native_first_arg_constant_fallthrough_index_item(Pred, Arity, Clauses, SwitchItem),
+    length(Clauses, N),
+    compile_multi_clause_items_linear(Clauses, 1, N, Pred, Arity, Options, ClauseItems),
+    !,
+    format(string(Label), "~w/~w", [Pred, Arity]),
+    Items = [label(Label), SwitchItem|ClauseItems].
+compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
+    Clauses = [_,_|_],
+    native_second_arg_constant_index_item(Pred, Arity, Clauses, SwitchItem),
+    length(Clauses, N),
+    compile_multi_clause_items_linear(Clauses, 1, N, Pred, Arity, Options, ClauseItems),
+    !,
+    format(string(Label), "~w/~w", [Pred, Arity]),
+    Items = [label(Label), SwitchItem|ClauseItems].
+compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
+    Clauses = [_,_|_],
+    native_second_arg_constant_fallthrough_index_item(Pred, Arity, Clauses, SwitchItem),
+    length(Clauses, N),
+    compile_multi_clause_items_linear(Clauses, 1, N, Pred, Arity, Options, ClauseItems),
+    !,
+    format(string(Label), "~w/~w", [Pred, Arity]),
+    Items = [label(Label), SwitchItem|ClauseItems].
+compile_clauses_to_wam_items_native(Pred, Arity, Clauses, Options, Items) :-
+    Clauses = [_,_|_],
+    \+ native_clauses_would_index(Pred, Arity, Clauses),
+    length(Clauses, N),
+    compile_multi_clause_items_linear(Clauses, 1, N, Pred, Arity, Options, ClauseItems),
+    !,
+    format(string(Label), "~w/~w", [Pred, Arity]),
+    Items = [label(Label)|ClauseItems].
+
+compile_clause_body_items_native(Head-Body, Options, Items) :-
+    set_clause_binding_context(Head, Body),
+    set_clause_visited_context(Head),
+    Head =.. [_|Args],
+    normalize_goals(Body, Goals),
+    empty_varmap(V0),
+    (   Goals == []
+    ->  compile_head_arguments_items(Args, 1, V0, _V1, HeadItems),
+        append(HeadItems, [proceed], Items)
+    ;   Goals = [_|_],
+        native_simple_goal_sequence(Goals, Options),
+        expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
+        (   native_simple_goals_need_env(Goals, ExpandedGoals)
+        ->  pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
+            compile_head_arguments_items(Args, 1, V0a, V1, HeadItems),
+            compile_goals_items_simple(Goals, V1, yes, _Vf, GoalItems),
+            append([allocate|HeadItems], GoalItems, Items)
+        ;   compile_head_arguments_items(Args, 1, V0, V1, HeadItems),
+            compile_goals_items_simple(Goals, V1, no, _Vf, GoalItems),
+            append(HeadItems, GoalItems, Items)
+        )
+    ).
+
+native_clauses_would_index(Pred, Arity, Clauses) :-
+    (   build_first_arg_index(Pred, Arity, Clauses, _IndexHeader, _DispatchChains)
+    ;   Arity >= 2,
+        build_second_arg_index(Pred, Arity, Clauses, _IndexHeader, _DispatchChains)
     ),
-    append(HeadItems, GoalItems, InstrItems),
-    append(PrefixItems, InstrItems, Items).
+    !.
+
+native_first_arg_constant_index_item(Pred, Arity, Clauses, switch_on_constant(ItemEntries)) :-
+    classify_first_args(Clauses, Types),
+    Types = [_|_],
+    forall(member(Type, Types), Type = constant),
+    collect_const_groups(Clauses, 1, ConstGroups),
+    groups_to_entries_and_chains(ConstGroups, Pred, Arity, const,
+                                 Entries, ""),
+    Entries = [_|_],
+    index_entries_to_item_entries(Entries, ItemEntries).
+
+native_first_arg_constant_fallthrough_index_item(Pred, Arity, Clauses,
+                                                switch_on_constant_fallthrough(ItemEntries)) :-
+    classify_first_args(Clauses, Types),
+    member(variable, Types),
+    indexed_prefix(Types, Clauses, PrefixTypes, PrefixClauses),
+    PrefixClauses = [_|_],
+    forall(member(Type, PrefixTypes), Type = constant),
+    build_constant_index(PrefixClauses, 1, Pred, Arity, Entries),
+    Entries = [_|_],
+    index_entries_to_item_entries(Entries, ItemEntries).
+
+native_second_arg_constant_index_item(Pred, Arity, Clauses, switch_on_constant_a2(ItemEntries)) :-
+    Arity >= 2,
+    \+ build_first_arg_index(Pred, Arity, Clauses, _IndexHeader, _DispatchChains),
+    classify_second_args(Clauses, Types),
+    Types = [_|_],
+    forall(member(Type, Types), Type = constant),
+    build_constant_index_on(Clauses, 2, 1, Pred, Arity, Entries),
+    Entries = [_|_],
+    index_entries_to_item_entries(Entries, ItemEntries).
+
+native_second_arg_constant_fallthrough_index_item(Pred, Arity, Clauses,
+                                                 switch_on_constant_a2_fallthrough(ItemEntries)) :-
+    Arity >= 2,
+    \+ build_first_arg_index(Pred, Arity, Clauses, _IndexHeader, _DispatchChains),
+    classify_second_args(Clauses, Types),
+    member(variable, Types),
+    indexed_prefix(Types, Clauses, PrefixTypes, PrefixClauses),
+    PrefixClauses = [_|_],
+    forall(member(Type, PrefixTypes), Type = constant),
+    build_constant_index_on(PrefixClauses, 2, 1, Pred, Arity, Entries),
+    Entries = [_|_],
+    index_entries_to_item_entries(Entries, ItemEntries).
+
+index_entries_to_item_entries([], []).
+index_entries_to_item_entries([Key-Label|Rest], [Entry|RestEntries]) :-
+    quote_wam_constant(Key, KeyString),
+    format(string(Entry), "~w:~w", [KeyString, Label]),
+    index_entries_to_item_entries(Rest, RestEntries).
+
+compile_multi_clause_items_linear([], _, _, _, _, _, []).
+compile_multi_clause_items_linear([Clause|Rest], I, N, Pred, Arity, Options, Items) :-
+    linear_clause_choice_items(I, N, Pred, Arity, ChoiceItems),
+    compile_clause_body_items_native(Clause, Options, BodyItems),
+    append(ChoiceItems, BodyItems, ThisItems),
+    NextI is I + 1,
+    compile_multi_clause_items_linear(Rest, NextI, N, Pred, Arity, Options, RestItems),
+    append(ThisItems, RestItems, Items).
+
+linear_clause_choice_items(1, _N, Pred, Arity, [try_me_else(NextLabel)]) :-
+    !,
+    format(string(NextLabel), "L_~w_~w_2", [Pred, Arity]).
+linear_clause_choice_items(I, I, Pred, Arity,
+                           [label(Label), trust_me, label(BodyLabel)]) :-
+    !,
+    format(string(Label), "L_~w_~w_~w", [Pred, Arity, I]),
+    format(string(BodyLabel), "L_~w_~w_~w_body", [Pred, Arity, I]).
+linear_clause_choice_items(I, _N, Pred, Arity,
+                           [label(Label), retry_me_else(NextLabel), label(BodyLabel)]) :-
+    NextI is I + 1,
+    format(string(Label), "L_~w_~w_~w", [Pred, Arity, I]),
+    format(string(NextLabel), "L_~w_~w_~w", [Pred, Arity, NextI]),
+    format(string(BodyLabel), "L_~w_~w_~w_body", [Pred, Arity, I]).
+
+peephole_optimize_items(Items, Optimized) :-
+    peephole_item_list(Items, Optimized).
+
+peephole_item_list([], []).
+peephole_item_list([put_value(Reg, Ai), get_variable(Reg, Ai)|Rest], Result) :-
+    !,
+    peephole_item_list(Rest, Result).
+peephole_item_list([Item, Item|Rest], [Item|Result]) :-
+    put_instruction_item(Item),
+    !,
+    peephole_item_list(Rest, Result).
+peephole_item_list([get_variable(Reg, Ai), put_value(Reg, Ai)|Rest], Result) :-
+    \+ item_reg_used_in_rest(Reg, Rest),
+    !,
+    peephole_item_list(Rest, Result).
+peephole_item_list([put_variable(Reg, Ai), put_value(Reg, Ai)|Rest],
+                   [put_variable(Reg, Ai)|Result]) :-
+    !,
+    peephole_item_list(Rest, Result).
+peephole_item_list([Item|Rest], [Item|Result]) :-
+    peephole_item_list(Rest, Result).
+
+put_instruction_item(Item) :-
+    compound(Item),
+    functor(Item, Name, _),
+    atom(Name),
+    sub_atom(Name, 0, 4, _, 'put_').
+
+item_reg_used_in_rest(Reg, Items) :-
+    member(Item, Items),
+    term_string(Item, ItemString),
+    sub_string(ItemString, _, _, _, Reg),
+    !.
 
 native_simple_goals_need_env(Goals, ExpandedGoals) :-
     (   length(ExpandedGoals, N), N > 1
@@ -739,7 +895,7 @@ partition_by_key(K, [Other|Rest], Match, [Other|NonMatch]) :-
 %    - "default" if the first matching clause is clause 1;
 %    - L_<Pred>_<Arity>_<I>_body if exactly one clause matches and
 %      it is not clause 1;
-%    - L_<Pred>_<Arity>_<kind>_<sanitized_key>_dispatch when >1
+%    - L_<Pred>_<Arity>_<kind>_<sanitized_key>_<first_index>_dispatch when >1
 %      clauses match (none of which is clause 1) — a chain is
 %      emitted in DispatchCode targeting the body labels.
 groups_to_entries_and_chains([], _, _, _, [], "").
@@ -764,8 +920,12 @@ group_label_and_chain(_, [I], Pred, Arity, _, Label, "") :-
     format(atom(Label), "L_~w_~w_~w_body", [Pred, Arity, I]).
 group_label_and_chain(Key, Indices, Pred, Arity, Kind, Label, ChainCode) :-
     sanitize_dispatch_key(Key, Kind, KeyAtom),
-    format(atom(Label), "L_~w_~w_~w_~w_dispatch",
-           [Pred, Arity, Kind, KeyAtom]),
+    % Sanitization is not injective ('a-b' and a_b both become a_b).
+    % Groups have disjoint clause indices, so the first index makes each
+    % chain label unique even when distinct keys have the same spelling.
+    Indices = [First|_],
+    format(atom(Label), "L_~w_~w_~w_~w_~w_dispatch",
+           [Pred, Arity, Kind, KeyAtom, First]),
     format_dispatch_chain(Label, Indices, Pred, Arity, ChainCode).
 
 %% sanitize_dispatch_key(+Key, +Kind, -Atom)
@@ -1056,9 +1216,19 @@ format_index_entries(Entries, Str) :-
 %  the textual form. See
 %  wam_text_parser:wam_classify_constant_token/2 for the shared
 %  classification helper.
+%
+%  Prolog *strings* (SWI `string/1`, not atoms) are spelled with
+%  outer double quotes (`"hi"`), escaping `\\` and `"`. The shared
+%  classifier still returns `atom(Name)` for those tokens so every
+%  existing consumer stays byte-for-byte the same; string-aware
+%  runtimes (JS) consult
+%  wam_text_parser:wam_constant_token_is_string/1.
 quote_wam_constant(Value, Quoted) :-
     (   number(Value)
     ->  format(string(Quoted), "~w", [Value])
+    ;   string(Value)
+    ->  escape_for_wam_dquoting(Value, Escaped),
+        format(string(Quoted), '"~w"', [Escaped])
     ;   ( atom(Value) -> atom_string(Value, Str) ; Str = Value ),
         (   ( atom_looks_like_number(Str)
             ; constant_needs_quoting(Str)
@@ -1099,6 +1269,16 @@ escape_wam_char('\\', ['\\', '\\']).
 escape_wam_char('\'', ['\\', '\'']).
 escape_wam_char(C, [C]).
 
+escape_for_wam_dquoting(Str, Escaped) :-
+    string_chars(Str, Chars),
+    maplist(escape_wam_dquote_char, Chars, NestedChars),
+    append(NestedChars, EscChars),
+    string_chars(Escaped, EscChars).
+
+escape_wam_dquote_char('\\', ['\\', '\\']).
+escape_wam_dquote_char('"', ['\\', '"']).
+escape_wam_dquote_char(C, [C]).
+
 %% compile_single_clause_wam(+Clause, +Options, -Code)
 compile_single_clause_wam(Head-Body, Options, Code) :-
     set_clause_binding_context(Head, Body),
@@ -1119,6 +1299,7 @@ compile_single_clause_wam(Head-Body, Options, Code) :-
     expand_aggregate_goals_for_perm_vars(Goals, ExpandedGoals),
     (   ( length(ExpandedGoals, N), N > 1
         ; goals_contain_call_or_aggregate(Goals)
+        ; goals_contain_hard_cut_negation(Goals)
         )
     ->  % Pre-assign Yi registers, emit allocate before head so Yi
         % registers can be stored in the environment frame immediately.
@@ -1146,7 +1327,59 @@ goals_contain_call_or_aggregate(Goals) :-
     ; G = findall(_, _, _)
     ; wam_inline_bagof_setof_enabled, G = bagof(_, _, _)
     ; wam_inline_bagof_setof_enabled, G = setof(_, _, _)
+    % Under ite_use_y_level(true), an inlined `\+ G` compiles to the
+    % soft-cut form `(G -> fail ; true)`, whose get_level/cut barrier needs
+    % a permanent Y-register. A clause whose ONLY body goal is such a
+    % negation would otherwise skip allocation (length(Goals) == 1 and `\+`
+    % is treated as a builtin below), so its barrier Y-register aliases the
+    % CALLER's frame and corrupts a shared register cell. Force a frame only
+    % when that inline rewrite is enabled; the runtime-builtin opt-out emits
+    % no Y-level barrier. (`not/1` already reaches the callable arm below.)
+    ; wam_ite_use_y_level_enabled, wam_inline_not_enabled, G = \+(_)
     ; callable(G), functor(G, F, _), \+ is_builtin_goal(F)
+    ),
+    !.
+
+%% goals_contain_hard_cut_negation(+Goals)
+%  True when some goal is, or contains, a `\+` that will be lowered
+%  through the ((G, !, fail) ; true) rewrite below.
+%
+%  That rewrite emits a CLAUSE-SCOPE `builtin_call !/0`, whose runtime
+%  contract is "cut back to the environment frame''s barrier, captured
+%  by allocate at clause entry". So the clause MUST have an environment
+%  frame — but nothing was ensuring one. `p :- \+ q(a).` has a single
+%  goal, no visible call (`\+` is in is_builtin_goal/1) and no visible
+%  `!` (the cut does not exist until the rewrite runs), so every arm of
+%  the allocate test missed it and the clause came out frameless.
+%
+%  A runtime that keeps the barrier only on the frame then has nothing
+%  to cut back to. WAM-R fell back to "drop the topmost choice point",
+%  which is the WRONG one whenever the negated goal left a choice point
+%  of its own: `\+ g(a)` returned true where g/1 is `g(a). g(b). g(c).`,
+%  because first-argument indexing sends the first key through the
+%  try/retry chain (pushing a CP) while later keys jump straight to a
+%  clause body (pushing none). Hence the tell-tale shape where
+%  `\+ g(a)` was wrong and `\+ g(b)` / `\+ g(c)` were right.
+%
+%  Gated on the hard-cut path actually being taken: with
+%  inline_not_as_failure(false) there is no rewrite, and M17 targets
+%  (ite_use_y_level) get the soft-cut `(G -> fail ; true)` form whose
+%  `cut Yn` carries its own barrier and needs no frame.
+goals_contain_hard_cut_negation(Goals) :-
+    wam_inline_not_enabled,
+    \+ wam_ite_use_y_level_enabled,
+    member(G, Goals),
+    goal_contains_negation(G),
+    !.
+
+%% goal_contains_negation(+Goal)
+%  Walks the control constructs a body goal can nest a `\+` inside.
+goal_contains_negation(Goal) :-
+    nonvar(Goal),
+    (   Goal = \+(_)
+    ;   Goal = not(_)
+    ;   ( Goal = (A, B) ; Goal = (A ; B) ; Goal = (A -> B) ),
+        ( goal_contains_negation(A) -> true ; goal_contains_negation(B) )
     ),
     !.
 
@@ -1303,6 +1536,7 @@ compile_clauses_fragments([Head-Body|Rest], I, N, Pred, Arity, Options,
     (   ( length(ExpandedGoals, NG), NG > 1
         ; goals_contain_call_or_aggregate(Goals)
         ; member(builtin_call('!/0', _), Goals)
+        ; goals_contain_hard_cut_negation(Goals)
         )
     ->  pre_assign_permanent_vars(ExpandedGoals, V0, V0a),
         compile_head_arguments(Args, 1, V0a, V1, HeadCode0),
@@ -2504,6 +2738,7 @@ is_builtin_pred(reverse, 2).  % list reverse -- F#, Python, R, Clojure, Go,
                               % finding a labeled clause may need a
                               % builtin_call handler.
 is_builtin_pred(length, 2).
+is_builtin_pred(atomic, 1).  % ISO type test dispatched directly by supporting runtimes
 is_builtin_pred(functor, 3). % term inspection: name/arity read or construct
 is_builtin_pred(arg, 3).     % term inspection: Nth argument access
 is_builtin_pred((=..), 2).   % term inspection: univ (decompose/compose)
@@ -2611,6 +2846,9 @@ is_builtin_pred(path_join, 3).          % path_join(+Base, +Rel, -Full).
 is_builtin_pred(system_to_atom, 2).     % system_to_atom(+Cmd, -Output) -- capture stdout.
 is_builtin_pred(atom_to_system, 2).     % atom_to_system(+Cmd, +Content) -- write to stdin.
 is_builtin_pred(atom_split, 3).         % atom_split(+Atom, +Sep, -Parts) -- split on single char.
+is_builtin_pred(atom_starts_with, 2).   % atom_starts_with(+Atom, +Prefix).
+is_builtin_pred(atom_ends_with, 2).     % atom_ends_with(+Atom, +Suffix).
+is_builtin_pred(atom_contains, 2).      % atom_contains(+Atom, +Needle).
 is_builtin_pred(sleep, 1).              % sleep(+Seconds).
 is_builtin_pred(gethostname, 1).        % gethostname(-Name).
 is_builtin_pred(cpu_time, 1).           % cpu_time(-Seconds).
@@ -2656,6 +2894,7 @@ is_builtin_pred(string_length, 2).      % alias for atom_length/2.
 is_builtin_pred(number_chars, 2).       % number ↔ list of single-char atoms.
 is_builtin_pred(atom_to_term, 3).       % parse atom + return [] bindings.
 is_builtin_pred(char_code, 2).    % char-atom ↔ integer code.
+is_builtin_pred(code_type, 2).    % ASCII class check (code + type atom).
 is_builtin_pred(between, 3).      % between(+Low, +High, ?X) -- nondet enumeration.
 is_builtin_pred(atom_concat, 3).  % atom_concat(+A1, +A2, -A12) -- forward concat.
 is_builtin_pred(sub_atom, 5).     % sub_atom(+A, +B, +L, ?After, ?Sub) -- deterministic extraction.

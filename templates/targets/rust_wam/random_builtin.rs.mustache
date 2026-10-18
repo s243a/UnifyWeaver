@@ -1,0 +1,112 @@
+{{match part}}{{case helpers}}
+    #[cfg(unix)]
+    fn random_unit_value() -> Option<f64> {
+        extern "C" {
+            fn drand48() -> std::os::raw::c_double;
+        }
+
+        Some(unsafe { drand48() })
+    }
+
+    #[cfg(not(unix))]
+    fn random_unit_value() -> Option<f64> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn random_between_value(low: i64, high: i64) -> Option<i64> {
+        extern "C" {
+            fn lrand48() -> std::os::raw::c_long;
+        }
+
+        if low > high {
+            return None;
+        }
+        let range = i128::from(high) - i128::from(low) + 1;
+        let draw = i128::from(unsafe { lrand48() });
+        Some((i128::from(low) + draw.rem_euclid(range)) as i64)
+    }
+
+    #[cfg(not(unix))]
+    fn random_between_value(_low: i64, _high: i64) -> Option<i64> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn seed_random_value(seed: i64) -> bool {
+        extern "C" {
+            fn srand48(seed: std::os::raw::c_long);
+        }
+
+        unsafe { srand48(seed as std::os::raw::c_long) };
+        true
+    }
+
+    #[cfg(not(unix))]
+    fn seed_random_value(_seed: i64) -> bool {
+        false
+    }
+{{case arms}}
+            "random/1" => {
+                let random = match Self::random_unit_value() {
+                    Some(random) => Value::Float(random),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &random) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "random_between/3" => {
+                let low = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(low)) => low,
+                    _ => return false,
+                };
+                let high = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(high)) => high,
+                    _ => return false,
+                };
+                let random = match Self::random_between_value(low, high) {
+                    Some(random) => Value::Integer(random),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &random) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "set_random/1" => {
+                let option = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(option) => option,
+                    None => return false,
+                };
+                let seed = match option {
+                    Value::Str(functor, args)
+                        if args.len() == 1
+                            && Self::display_functor_name(&functor, 1) == "seed" =>
+                    {
+                        match self.deref_heap(&self.deref_var(&args[0])) {
+                            Value::Integer(seed) => seed,
+                            _ => return false,
+                        }
+                    }
+                    _ => return false,
+                };
+                if Self::seed_random_value(seed) {
+                    self.pc += 1; true
+                } else {
+                    false
+                }
+            }
+{{/match}}

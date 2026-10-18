@@ -1,0 +1,116 @@
+{
+ "stamp": "shadow-exploratory-tier1-not-decision-bearing",
+ "objective": "LOCO simplewiki->pearltrees MRR (phase-1 baseline 0.150; in-domain reference 0.274)",
+ "leakage_guard": "foreign blend rows drawn ONLY from the foreign TRAIN split; first run sampled all foreign queries incl. eval (~40%) \u2014 that run is void",
+ "probe_note": "OBSERVABLE, not optimized; probe floor ~0.543 (same-corpus null)",
+ "P2a_blend_sweep": {
+  "0.0": {
+   "loco_mrr_mean": 0.1495,
+   "loco_mrr_sd": 0.0178,
+   "per_seed": [
+    0.1451,
+    0.154,
+    0.1815,
+    0.1351,
+    0.1319
+   ],
+   "gate_behaviour_probe": 0.7323
+  },
+  "0.1": {
+   "loco_mrr_mean": 0.1747,
+   "loco_mrr_sd": 0.0133,
+   "per_seed": [
+    0.189,
+    0.178,
+    0.1879,
+    0.1619,
+    0.1566
+   ],
+   "gate_behaviour_probe": 0.7112,
+   "delta_vs_m0_CI95": [
+    0.0005,
+    0.0554
+   ]
+  },
+  "0.25": {
+   "loco_mrr_mean": 0.2187,
+   "loco_mrr_sd": 0.0166,
+   "per_seed": [
+    0.2147,
+    0.2114,
+    0.2514,
+    0.2052,
+    0.2107
+   ],
+   "gate_behaviour_probe": 0.6963,
+   "delta_vs_m0_CI95": [
+    0.041,
+    0.0995
+   ]
+  },
+  "0.5": {
+   "loco_mrr_mean": 0.2899,
+   "loco_mrr_sd": 0.013,
+   "per_seed": [
+    0.2865,
+    0.2991,
+    0.3102,
+    0.2771,
+    0.2768
+   ],
+   "gate_behaviour_probe": 0.7381,
+   "delta_vs_m0_CI95": [
+    0.1007,
+    0.1844
+   ]
+  },
+  "0.75": {
+   "loco_mrr_mean": 0.2865,
+   "loco_mrr_sd": 0.0195,
+   "per_seed": [
+    0.2568,
+    0.291,
+    0.3178,
+    0.2826,
+    0.2844
+   ],
+   "gate_behaviour_probe": 0.737,
+   "delta_vs_m0_CI95": [
+    0.0903,
+    0.1833
+   ]
+  }
+ },
+ "P2b_channel_dropout": {
+  "0.0": {
+   "loco_mrr_mean": 0.1495,
+   "per_seed": [
+    0.1451,
+    0.154,
+    0.1815,
+    0.1351,
+    0.1319
+   ]
+  },
+  "0.3": {
+   "loco_mrr_mean": 0.1571,
+   "per_seed": [
+    0.1342,
+    0.1798,
+    0.1636,
+    0.1447,
+    0.1632
+   ]
+  },
+  "0.6": {
+   "loco_mrr_mean": 0.2474,
+   "per_seed": [
+    0.2073,
+    0.2593,
+    0.2679,
+    0.2644,
+    0.2381
+   ]
+  }
+ }
+}

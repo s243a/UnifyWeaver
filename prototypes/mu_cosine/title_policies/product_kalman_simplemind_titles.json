@@ -1,0 +1,97 @@
+{
+  "corpus": "simplemind",
+  "corrections": [
+    {
+      "audited_title": "Buffer Amplifier",
+      "endpoint_id": "title:buffer amplier",
+      "evidence": ["manual lexical review before scoring: unambiguous spelling error"],
+      "raw_titles": ["Buffer Amplier"]
+    },
+    {
+      "audited_title": "Capacitor Impedance",
+      "endpoint_id": "title:capacitor impedence",
+      "evidence": ["manual lexical review before scoring: standard electrical-engineering term"],
+      "raw_titles": ["Capacitor Impedence"]
+    },
+    {
+      "audited_title": "Differential Equation",
+      "endpoint_id": "title:differentail equation",
+      "evidence": ["manual lexical review before scoring: standard mathematical term"],
+      "raw_titles": ["Differentail Equation"]
+    },
+    {
+      "audited_title": "floating steel ball valve",
+      "endpoint_id": "title:floating steel ball valv",
+      "evidence": ["manual lexical review before scoring: visibly truncated final word"],
+      "raw_titles": ["floating steel ball valv"]
+    },
+    {
+      "audited_title": "Inductor Impedance",
+      "endpoint_id": "title:inductor impedence",
+      "evidence": ["manual lexical review before scoring: standard electrical-engineering term"],
+      "raw_titles": ["Inductor Impedence"]
+    },
+    {
+      "audited_title": "Lightning Arrestor",
+      "endpoint_id": "title:ligtning arrestor",
+      "evidence": ["clean selected endpoint title: Lightning Arrestor"],
+      "raw_titles": ["Ligtning Arrestor"]
+    },
+    {
+      "audited_title": "NRTL (US Designation for: National Recognized Test Laboratory)",
+      "endpoint_id": "title:nrtl (us designation for: national recoginized test laboratory)",
+      "evidence": ["manual lexical review before scoring: unambiguous spelling error"],
+      "raw_titles": ["NRTL (US Designation for: National Recoginized Test Laboratory)"]
+    },
+    {
+      "audited_title": "PLC (Programmable Logic Controllers)",
+      "endpoint_id": "title:plc (programable logic controllers)",
+      "evidence": ["manual lexical review before scoring: standard engineering term"],
+      "raw_titles": ["PLC (Programable Logic Controllers)"]
+    },
+    {
+      "audited_title": "Process, Chemical, mechanical & Hydraulic Engineering",
+      "endpoint_id": "title:process, chemical, mechanical & hydrualic engineering",
+      "evidence": ["manual lexical review before scoring: unambiguous spelling error"],
+      "raw_titles": ["Process, Chemical, mechanical & Hydrualic Engineering"]
+    },
+    {
+      "audited_title": "Raspberry Pi",
+      "endpoint_id": "title:rasberri pi",
+      "evidence": ["manual lexical review before scoring: established product name"],
+      "raw_titles": ["Rasberri Pi"]
+    },
+    {
+      "audited_title": "Trunnion Ball Valve",
+      "endpoint_id": "title:turnion ball valve",
+      "evidence": ["manual lexical review before scoring: standard valve type"],
+      "raw_titles": ["Turnion Ball Valve"]
+    },
+    {
+      "audited_title": "UPS (Uninterruptible Power Supply)",
+      "endpoint_id": "title:ups (uninteruptible power supply)",
+      "evidence": ["manual lexical review before scoring: expansion of the UPS acronym"],
+      "raw_titles": ["UPS (Uninteruptible Power Supply)"]
+    },
+    {
+      "audited_title": "Valves",
+      "endpoint_id": "title:values",
+      "evidence": [
+        "Pearltrees slug preserved on the endpoint: valves",
+        "REPORT_two_judge_posterior.md identifies Values as a corrupted Valves title"
+      ],
+      "raw_titles": ["Values"]
+    },
+    {
+      "audited_title": "Worm Drive (worm wheel)",
+      "endpoint_id": "title:worm dive (worm weel)",
+      "evidence": ["manual lexical review before scoring: two unambiguous spelling errors in a standard mechanism name"],
+      "raw_titles": ["Worm Dive (worm weel)"]
+    }
+  ],
+  "frozen_date": "2026-07-09",
+  "review_method": "Manual review of all 174 selected endpoint titles after structural-sentinel cleanup; only unambiguous orthographic errors corrected.",
+  "schema_version": 1,
+  "source_pairs_sha256": "9e53e73493a98d5361282ab1a5f8553a7ef2d0b196ba8ce09c3eee9651ce74e3",
+  "status": "frozen_pre_scoring"
+}

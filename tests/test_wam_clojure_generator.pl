@@ -20,6 +20,7 @@
 :- dynamic user:wam_list_fact/1.
 :- dynamic user:wam_use_struct/1.
 :- dynamic user:wam_use_list/1.
+:- dynamic user:wam_bagof_default/1.
 :- dynamic user:category_parent/2.
 :- dynamic user:wam_parent_lookup/2.
 :- dynamic user:max_depth/1.
@@ -42,6 +43,7 @@ user:wam_struct_fact(f(a)).
 user:wam_list_fact([a,b]).
 user:wam_use_struct(X) :- user:wam_struct_fact(X).
 user:wam_use_list(X) :- user:wam_list_fact(X).
+user:wam_bagof_default(L) :- bagof(X, member(X, [a,b,a]), L).
 user:category_parent(_, _) :- fail.
 user:wam_parent_lookup(X, Y) :- user:category_parent(X, Y).
 user:max_depth(_) :- fail.
@@ -182,6 +184,42 @@ test(numeric_wam_constants_preserve_number_vs_atom_tokens) :-
         wam_clojure_target:wam_op_to_clojure_literal("put_constant", ["'2'", "A1"], _, AtomLiteral),
         assertion(NumericLiteral == '{:op :put-constant :constant 2 :reg "A1"}'),
         assertion(AtomLiteral == '{:op :put-constant :constant "2" :reg "A1"}')
+    )).
+
+test(aggregate_instructions_emit_runtime_ops) :-
+    once((
+        wam_clojure_target:wam_op_to_clojure_literal("begin_aggregate", ["collect", "Y1", "X2"], _, BeginLiteral),
+        wam_clojure_target:wam_op_to_clojure_literal("begin_aggregate", ["bagof", "Y1", "X2", "'Y3;Y4'"], _, BeginWitnessLiteral),
+        wam_clojure_target:wam_op_to_clojure_literal("end_aggregate", ["Y1"], _, EndLiteral),
+        assertion(BeginLiteral == '{:op :begin-aggregate :kind "collect" :template "Y1" :bag "X2" :witnesses []}'),
+        assertion(BeginWitnessLiteral == '{:op :begin-aggregate :kind "bagof" :template "Y1" :bag "X2" :witnesses ["Y3" "Y4"]}'),
+        assertion(EndLiteral == '{:op :end-aggregate :template "Y1"}')
+    )).
+
+test(clojure_defaults_inline_bagof_setof) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_default_bagof', TmpDir),
+        write_wam_clojure_project([user:wam_bagof_default/1],
+                                  [namespace('generated.wam_default_bagof_test')], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_default_bagof_test/core.clj', CorePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :begin-aggregate :kind "bagof"')),
+        assertion(\+ sub_string(CoreCode, _, _, _, '{:op :execute :pred "bagof/3"}')),
+        delete_directory_and_contents(TmpDir)
+    )).
+
+test(clojure_can_opt_out_of_inline_bagof_setof) :-
+    once((
+        unique_tmp_dir('tmp_wam_clojure_no_inline_bagof', TmpDir),
+        write_wam_clojure_project([user:wam_bagof_default/1],
+                                  [ namespace('generated.wam_no_inline_bagof_test'),
+                                    inline_bagof_setof(false)
+                                  ], TmpDir),
+        directory_file_path(TmpDir, 'src/generated/wam_no_inline_bagof_test/core.clj', CorePath),
+        read_file_to_string(CorePath, CoreCode, []),
+        assertion(sub_string(CoreCode, _, _, _, '{:op :execute :pred "bagof/3"}')),
+        assertion(\+ sub_string(CoreCode, _, _, _, '{:op :begin-aggregate :kind "bagof"')),
+        delete_directory_and_contents(TmpDir)
     )).
 
 test(foreign_predicates_emit_call_foreign_stub) :-

@@ -1,0 +1,133 @@
+--- a/build-profiles.json	2026-06-24 11:52:08.897020116 +0000
++++ b/build-profiles.json	2026-06-24 11:52:32.897311759 +0000
+@@ -8,6 +8,9 @@
+     "lua":        { "runtime": "cdn", "timeoutMs": 30000, "sources": [
+                      { "type": "cdn", "url": "https://unpkg.com/fengari-web@0.1.4/dist/fengari-web.js" }
+                    ] },
++    "clojurescript": { "runtime": "cdn", "timeoutMs": 30000, "sources": [
++                     { "type": "cdn", "url": "https://cdn.jsdelivr.net/npm/scittle@0.6.22/dist/scittle.js" }
++                   ] },
+     "prolog":     { "runtime": "cdn", "timeoutMs": 60000, "localUrl": "vendor/swipl/dynamic-import.js", "sources": [] },
+     "python":     { "runtime": "cdn", "timeoutMs": 120000, "localUrl": "vendor/pyodide/pyodide.js", "sources": [
+                      { "type": "cdn", "url": "https://cdn.jsdelivr.net/npm/pyodide@0.27.4/pyodide.js" },
+@@ -17,7 +20,7 @@
+   },
+   "profiles": {
+     "mini":  { "enabled": ["javascript", "bash", "typr", "lua"] },
+-    "light": { "enabled": ["javascript", "bash", "typr", "lua", "prolog", "python"] },
+-    "full":  { "enabled": ["javascript", "bash", "typr", "lua", "prolog", "python", "r"], "bundle": ["prolog", "python"] }
++    "light": { "enabled": ["javascript", "bash", "typr", "lua", "clojurescript", "prolog", "python"] },
++    "full":  { "enabled": ["javascript", "bash", "typr", "lua", "clojurescript", "prolog", "python", "r"], "bundle": ["prolog", "python"] }
+   }
+ }
+--- a/www/js/file_io.js	2026-06-24 11:52:08.906598567 +0000
++++ b/www/js/file_io.js	2026-06-24 11:52:32.898928975 +0000
+@@ -1898,7 +1898,7 @@
+ 
+             // Detect notebook-level language from kernelspec
+             let notebookLang = 'python';
+-            const knownLangs = new Set(['python', 'prolog', 'javascript', 'bash', 'r', 'lua']);
++            const knownLangs = new Set(['python', 'prolog', 'javascript', 'bash', 'r', 'lua', 'clojurescript']);
+             if (nb.metadata && nb.metadata.kernelspec) {
+                 const ks = nb.metadata.kernelspec;
+                 if (ks.language && knownLangs.has(ks.language)) {
+@@ -2011,6 +2011,7 @@
+         { id: 'javascript', label: 'JavaScript',  abbrev: 'JS' },
+         { id: 'lua',        label: 'Lua',         abbrev: 'Lua' },
+         { id: 'typr',       label: 'TypR',        abbrev: 'TyR' },
++        { id: 'clojurescript', label: 'ClojureScript', abbrev: 'CLJS' },
+     ];
+ 
+     /**
+@@ -2027,6 +2028,7 @@
+         javascript: { display_name: 'JavaScript (Browser)', language: 'javascript', name: 'javascript' },
+         lua:        { display_name: 'Lua (Fengari)', language: 'lua', name: 'lua' },
+         typr:       { display_name: 'TypR', language: 'typr', name: 'typr' },
++        clojurescript: { display_name: 'ClojureScript (Scittle)', language: 'clojurescript', name: 'clojurescript' },
+     };
+ 
+     static IPYNB_LANGUAGE_INFO = {
+@@ -2037,6 +2039,7 @@
+         javascript: { name: 'javascript', version: 'ES2022', mimetype: 'text/javascript', file_extension: '.js' },
+         lua:        { name: 'lua', version: '5.3', mimetype: 'text/x-lua', file_extension: '.lua' },
+         typr:       { name: 'typr', version: '0.x', mimetype: 'text/x-typr', file_extension: '.ty' },
++        clojurescript: { name: 'clojurescript', version: '1.x', mimetype: 'text/x-clojure', file_extension: '.cljs' },
+     };
+ 
+     /**
+--- a/www/index.html	2026-06-24 11:52:08.916899999 +0000
++++ b/www/index.html	2026-06-24 11:52:32.899842346 +0000
+@@ -944,6 +944,7 @@
+                 <option value="r">R</option>
+                 <option value="lua">Lua</option>
+                 <option value="typr">TyR</option>
++                <option value="clojurescript">CLJS</option>
+             </select>
+             <button id="cell-type-toggle" class="cell-type-btn" title="Toggle cell type">Code</button>
+         </div>
+@@ -973,6 +974,7 @@
+     <script src="js/kernels/r.js"></script>
+     <script src="js/kernels/lua.js"></script>
+     <script src="js/kernels/typr.js"></script>
++    <script src="js/kernels/clojurescript.js"></script>
+     <script src="js/archive_extractors.js"></script>
+     <script src="js/package_loader.js"></script>
+     <script src="js/package_catalog.js"></script>
+--- a/www/sw.js	2026-06-24 11:52:08.926434485 +0000
++++ b/www/sw.js	2026-06-24 15:05:02.859427454 +0000
+@@ -1,7 +1,7 @@
+ // Service Worker for SciREPL PWA
+ // Caches app shell on install, caches CDN runtimes (Pyodide, swipl-wasm) on first fetch.
+ 
+-const CACHE_VERSION = 'v113';
++const CACHE_VERSION = 'v114';
+ const APP_CACHE = 'scirepl-app-' + CACHE_VERSION;
+ const CDN_CACHE = 'scirepl-cdn-v2';
+ 
+@@ -44,6 +44,7 @@
+   './js/kernels/r.js',
+   './js/kernels/lua.js',
+   './js/kernels/typr.js',
++  './js/kernels/clojurescript.js',
+   './vendor/typr/typr_wasm.js',
+   './vendor/typr/typr_wasm_bg.wasm',
+   './vendor/katex/katex.min.css',
+@@ -59,6 +60,7 @@
+   './workbooks/lua-tables-coroutines.srwb',
+   './workbooks/lua-parsing-coroutines.srwb',
+   './workbooks/prolog-generates-r.srwb',
++  './workbooks/prolog-generates-clojurescript.srwb',
+ ];
+ 
+ // CDN domains to cache (Pyodide ~25MB, swipl-wasm ~10MB, webR ~50MB)
+--- a/www/css/style.css	2026-06-24 11:52:08.938107382 +0000
++++ b/www/css/style.css	2026-06-24 11:52:32.900364720 +0000
+@@ -742,6 +742,15 @@
+     background-position: right 6px center;
+ }
+ 
++#lang-selector.clojurescript-active {
++    color: #63b132;
++    border-color: #63b132;
++    background-color: rgba(99, 177, 50, 0.1);
++    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%2363b132'/%3E%3C/svg%3E");
++    background-repeat: no-repeat;
++    background-position: right 6px center;
++}
++
+ /* Language badge in cell labels */
+ .lang-badge {
+     font-size: 9px;
+@@ -794,6 +803,12 @@
+     border: 1px solid rgba(33, 150, 243, 0.3);
+ }
+ 
++.lang-badge.lang-clojurescript {
++    color: #63b132;
++    background: rgba(99, 177, 50, 0.1);
++    border: 1px solid rgba(99, 177, 50, 0.3);
++}
++
+ /* Cell name label (NotebookVFS) */
+ .cell-name-label {
+     color: #58a6ff;

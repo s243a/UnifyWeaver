@@ -1,0 +1,43 @@
+{
+ "stamp": "shadow-exploratory-tier1-not-decision-bearing",
+ "naming_correction": "phases 1-4 'simplewiki' = data/benchmark/10k (25,228 edges); renamed bench10k. This runner adds enwiki_named (9,914,841 edges).",
+ "catalog_caps": {
+  "enwiki": 2000,
+  "bench10k": 2002,
+  "pearltrees": 132
+ },
+ "mrr_not_comparable_across_catalog_sizes": true,
+ "C1_gate_trust_by_corpus": {
+  "enwiki": {
+   "w_mu": 0.9889,
+   "gate_mrr": 0.8942,
+   "e5_mrr": 0.8951,
+   "gate_minus_e5": -0.0009,
+   "catalog": 2000
+  },
+  "bench10k": {
+   "w_mu": 0.9914,
+   "gate_mrr": 0.2905,
+   "e5_mrr": 0.2309,
+   "gate_minus_e5": 0.0596,
+   "catalog": 2002
+  },
+  "pearltrees": {
+   "w_mu": 0.2221,
+   "gate_mrr": 0.3607,
+   "e5_mrr": 0.3288,
+   "gate_minus_e5": 0.032,
+   "catalog": 132
+  }
+ },
+ "C2_LOCO_into_pearltrees": {
+  "train_enwiki_eval_pearltrees": {
+   "mrr": 0.305,
+   "sd": 0.0248
+  },
+  "train_bench10k_eval_pearltrees": {
+   "mrr": 0.2197,
+   "sd": 0.0133
+  }
+ }
+}

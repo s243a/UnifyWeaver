@@ -1,0 +1,28 @@
+{
+ "stamp": "shadow-exploratory-tier1-not-decision-bearing",
+ "question": "does the identity probe read TOPIC or STRUCTURE?",
+ "A1_within_corpus_topic_probe": {
+  "math_vs_stats": {
+   "acc_mean": 0.6621,
+   "acc_sd": 0.0032,
+   "n_pairs": 40000
+  },
+  "math_vs_cyber": {
+   "acc_mean": 0.6964,
+   "acc_sd": 0.0007,
+   "n_pairs": 40000
+  },
+  "stats_vs_cyber": {
+   "acc_mean": 0.7031,
+   "acc_sd": 0.0049,
+   "n_pairs": 40000
+  }
+ },
+ "A1_positive_control_pearltrees_vs_simplewiki": {
+  "acc_mean": 0.8266,
+  "acc_sd": 0.0007,
+  "n_pairs": 40000
+ },
+ "verdict": "PROBE READS TOPIC \u2014 phase-2 failure mode LIVE, stop before sweep",
+ "max_within_corpus_acc": 0.7031
+}

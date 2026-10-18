@@ -24,15 +24,15 @@ single-token degeneracy (softmax ≡ 1, Q/K dead) that ruled attention out for t
 longer applies.
 
 ```
-tokens = { operator(op), anchor(root), node(X)@gen0, {parents(X)}@gen1, {grandparents}@gen2, …, ⌀@gen≥k }
-          (+ optional judge(j))
+tokens = { operator(op), anchor(root), node(X)@gen0, {parents(X)}@gen1, {grandparents}@gen2, …, ⌀@gen≥k,
+           provenance(corpus,judge) }
 
 node(X)@gen0       = e5(X)      + gen_emb[0]          # the member candidate
 ancestor@gen_d     = e5(anc)    + gen_emb[d]          # X's lineage, tagged by min-hop distance d
 ⌀@gen≥k            = noise + gen_emb[d]               # absent slot: OFF-MANIFOLD noise (no learnable content); gen_emb carries the depth
 anchor(root)       = e5(root)   + role_emb[ANCHOR]    # the domain root — REQUIRED (see "Why keep the anchor")
 operator(op)       = op_emb[op]                       # learned codebook row, no e5 content (an "instruction")
-judge(j)           = judge_emb[j]                     # OPTIONAL, orthogonal axis — see below
+provenance         = corpus_emb[corpus] + judge_emb[judge] + prov_tag   # source of the label; MASKABLE → noise+prov_tag (agnostic). See "Provenance axis"
 
 μ(X | root; op) = sigmoid( W · pool( Attention(tokens) ) )   ∈ [0,1]
 ```
@@ -103,13 +103,48 @@ work from `anchor + node` alone for nodes with sparse/missing ancestry). **No dr
 **not** scale it up (would dominate attention by magnitude) or down (a low-norm vector can be mistaken for
 a real low-confidence embedding) — the "absent" signal must come from *direction*, not size.
 
-## Judge axis — keep it ORTHOGONAL to the operator (recommended)
+## Provenance axis — keep it ORTHOGONAL to the operator (recommended)
 
 Do **not** fold "which model judged it" into the operator codebook. `relation ⊗ judge` is a *product*
 space — you'll want "`WIKI` order *as Sonnet would score it*", which a single mixed axis can't express.
-Add `judge(j)` as a separate optional token. **Start without it** (one implicit judge); add it only once
-multi-judge labels exist (it then also lets you model judge bias / interpolate judges). Attention takes
-an arbitrary number of tokens, so adding it later is free.
+Keep the source of a label on its own token, orthogonal to the relation. Attention takes an arbitrary
+number of tokens, so adding it later is free.
+
+**Generalize the "judge" into PROVENANCE (realized — PART B).** A label's source has *two* independent
+parts, and both belong on this axis:
+
+- **corpus** — which text the graph/embeddings came from (`simplewiki` now; `enwiki`, a domain dump,
+  or a curated set later). Different corpora induce genuinely different μ.
+- **judge** — who produced the label: a *bought LLM judgement* (`haiku` for the `SYM`/`LLM` targets) vs
+  *the graph itself* (`graph` for `WIKI` edges, and for the free μ=0 `SYM` negatives = non-edges).
+
+These form a `corpus ⊗ judge` product, but we don't want two more tokens diluting a 4–6-token set. So
+represent provenance as **one token with a FACTORED embedding**
+
+```
+provenance = corpus_emb[corpus] + judge_emb[judge]   (+ prov_tag marking the slot)
+```
+
+— additive factors keep the product expressible (any corpus with any judge) while presenting as a single
+input. `prov_tag` marks the *slot* in both states so the model can always locate "the provenance input".
+
+**Make it MASKABLE, and mask by default.** Reuse the off-manifold-noise scheme of the absent-ancestor
+slots: with probability `p_mask_prov` (training) — and *always* at the default inference path — replace
+the factored embedding with a unit random vector (and drop the corpus/judge factors), leaving only
+`prov_tag`. A masked provenance token = **provenance-agnostic μ**, i.e. *marginalize over sources* — the
+sensible default when you just want "is X physics?" without committing to who said so. Revealing the
+source (a 5-tuple `(node, root, op, corpus, judge)` at inference) conditions μ on that source; masking
+(a 3-tuple) marginalizes it. So every existing call site stays a 3-tuple and automatically gets the
+agnostic answer.
+
+**Honest scope at first cut.** While the data is single-corpus (`simplewiki`) and the judge is
+operator-correlated (Haiku⇄SYM/LLM, graph⇄WIKI), the token carries little *new* signal — it is near
+constant. That's expected; validate it **structurally**, not by accuracy: (1) the slot + `corpus_emb`/
+`judge_emb` exist and are wired, (2) masking flips the input and the model reads it, (3) an **ablation**
+(`--prov-mask 1.0`, always-masked control) confirms the near-constant token does **not regress** the
+Part-A results. The payoff is later: once `enwiki` labels (or a second judge) arrive, the same token
+already carries the corpus⊗judge structure needed to model corpus shift / judge bias / source
+interpolation — no architecture change, just new codebook entries.
 
 ## Training
 
@@ -132,20 +167,23 @@ an arbitrary number of tokens, so adding it later is free.
 ## Validation (per operator)
 
 **Primary metrics:** held-out directional/pairwise-μ corr, **gate-leak** (probe + large OOD sample),
-decision-flip behaviour, and cold-start coverage. **Do _not_ optimise for lin-agreement** — the control
-baseline (#3294, `REPORT_control_baseline.md`) found pairwise `lin_from_ic` is **96.7% saturated at 1.0**:
-μ-gating prunes ancestor cones, so gated IC is **non-monotone up the DAG** (a common ancestor can out-IC
-the nodes below it ⇒ `2·IC(MICA)/(IC(u)+IC(v))` overshoots 1 and clamps). That's a graph/gating property,
-largely independent of the μ map, so **no** μ map can un-saturate it; only ~3.3% of pairs are gradable
-(control +0.124 there, ≈ noise on 42 pairs). Membership μ — not gated Lin — is the in-domain separator.
-Report lin-agreement only on the **non-saturated** pairs, as a weak secondary signal.
+decision-flip behaviour, and cold-start coverage. **Lin-agreement — revived by #3296, but compute it on
+*node-gated* IC.** The control baseline (#3294) found pairwise `lin_from_ic` **96.7% saturated at 1.0**,
+but that was the *path-gated* IC (`gated_ic`): μ-gating prunes ancestor cones, so gated IC is non-monotone
+up the DAG (a common ancestor can out-IC the nodes below it ⇒ `2·IC(MICA)/(IC(u)+IC(v))` overshoots 1 and
+clamps). **#3296's `gated_ic_node_filtered` (node-gated / downward-closed IC) fixes this** — on the same
+fixture it drops saturation to **0.1%** with 431 distinct Lin values (`node_gated_ic.py`). So feed
+`gated_ic_node_filtered` to `lin/resnik/faith_from_ic` and lin-agreement is a usable **secondary** signal
+again (a taxonomic-structure check). Do **not** use the path-gated `gated_ic` for similarity (it saturates),
+and do **not** validate against node-vs-root Lin (degenerate). Membership μ stays the **primary** in-domain
+separator; node-gated lin-agreement is a complementary check, not the target.
 
 - `WIKI`: held-out edge order-accuracy (does `μ(child|parent) > μ(parent|child)`?); decision-flip on the
   gated cone.
 - `LLM_*`: held-out directional-μ corr vs Haiku.
 - `SYM`: matches relatedness; `μ(X|root) ≈ μ(root|X)`.
 - Every operator's dense map → `check_feeds_rust.py` (100% coverage, IC general→specific, `lin ∈ [0,1]`,
-  gate-leak count).
+  gate-leak count). **Use `gated_ic_node_filtered`** when computing the Lin column.
 - **Control arm:** the MiniLM symmetric encoder (#3287, numbers in `REPORT_control_baseline.md`) is the
   baseline the e5 multi-operator model must **beat on held-out μ corr, `SYM`, and gate-leak** (control:
   held-out +0.726, gate-leak 0/5 probe & 1.1% on 4280 OOD nodes) — otherwise the extra machinery isn't
@@ -178,6 +216,12 @@ bounded `LLM_*` boundary labels (the cutoff band, ~tens of k Haiku tokens, bough
 > operator from a small Haiku boundary set (cutoff band only, ≤82k Haiku tokens, one inline subagent).
 > (4) Validate per operator: WIKI held-out edge order-accuracy, SYM relatedness + symmetry, each dense
 > map through `check_feeds_rust.py`; head-to-head vs the #3287 MiniLM-symmetric **control**
-> (`REPORT_control_baseline.md`) on **held-out μ corr, SYM, and gate-leak** — NOT lin-agreement, which is
-> 96.7% saturated and structurally low-resolution (judge it only on the non-saturated pairs). Do the
+> (`REPORT_control_baseline.md`) on **held-out μ corr, SYM, and gate-leak** (the primary metrics).
+> Lin-agreement is a usable *secondary* check **only when computed on `gated_ic_node_filtered`** (node-gated
+> IC, #3296) — the path-gated `gated_ic` saturates it (96.7%); don't use that one. Do the
 > judge axis later — start with one implicit judge. Report all per-operator numbers in the PR.
+
+**Update (realized).** The judge axis is now built as the **provenance token** (`corpus ⊗ judge`,
+factored + maskable; see "Provenance axis"). Masked = default = provenance-agnostic μ. While the data is
+single-corpus it is validated structurally (slot/embeddings exist, masking works, `--prov-mask 1.0`
+ablation shows no regression), ready to carry real signal once `enwiki`/a second judge arrives.

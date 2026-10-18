@@ -1,4 +1,11 @@
 mu_pairs.tsv
+# unscored candidate pairs are regenerable (gen_mu_pairs.py / gen_more_sym_pairs.py); the EXPENSIVE
+# Haiku-scored sets (mu_pairs_scored*.tsv) are committed — bought once.
+mu_pairs_more.tsv
+mu_pairs_multidomain.tsv
+mu_pairs_4roots.tsv
+mu_pairs_matheng.tsv
+mu_pairs_corephys.tsv
 # generated dense μ maps (regenerate with emit_dense_mu.py / dense_mu_direct.py); the committed
 # dense_mu_e5.sample.tsv is the illustrative sample. *.sample.tsv is kept (negated below).
 dense_mu*.tsv
@@ -10,3 +17,29 @@ boundary_band_e5.tsv
 boundary_pairs_e5.tsv
 !boundary_*.sample.tsv
 *.pt
+mu_pairs_eng.tsv
+mu_pairs_enwiki.tsv
+mu_pairs_mathfields.tsv
+mu_pairs_scored_cumulative.tsv
+mu_pairs_scored_prior.tsv
+mu_pairs_alggeom.tsv
+mu_pairs_boundary.tsv
+mu_pairs_stats.tsv
+mu_pairs_sysinfo.tsv
+mu_pairs_cyber.tsv
+mu_pairs_systheory.tsv
+mu_pairs_pages.tsv
+page_members.tsv
+pt_circuit.tsv
+mu_pairs_pt_circuit.tsv
+data_gaps.tsv
+page_members_gaps.tsv
+mu_pairs_pages_gaps.tsv
+mu_pairs_scored_pages_gaps_*_div.tsv
+.pt_cache/
+*_bridges.tsv
+*_fused_*.tsv
+# inferred-tail Haiku augmentation (score_inferred_tail.py): pearltrees-derived titles = private-tier,
+# kept LOCAL like context/. The expensive Haiku scores persist on disk but are not committed.
+inferred_tail*.tsv
+haiku_scored_tail.tsv

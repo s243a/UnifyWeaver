@@ -38,11 +38,264 @@ t_msort(S) :- msort([banana, apple, cherry, apple], S).
 :- dynamic t_sort/1.
 t_sort(S) :- sort([b, a, b], S).
 
+:- dynamic t_sort4/1.
+t_sort4(S) :-
+    sort(2, '@=<', [row(a, 2), row(b, 1), row(c, 2)], S).
+
 :- dynamic t_concat_split/2.
 t_concat_split(A, B) :- atom_concat(A, B, abc).
 
 :- dynamic t_select/2.
 t_select(X, R) :- select(X, [a, b, c], R).
+
+:- dynamic t_atomic/1.
+t_atomic(X) :- atomic(X).
+
+:- dynamic t_atomic_number/1.
+t_atomic_number(X) :- atomic(X), number(X).
+
+:- dynamic t_string_codes/1.
+t_string_codes(Codes) :- string_codes(hello, Codes).
+
+:- dynamic t_string_chars/1.
+t_string_chars(Chars) :- string_chars(hi, Chars).
+
+:- dynamic t_string_code/1.
+t_string_code(Code) :- string_code(2, hello, Code).
+
+:- dynamic t_output_aliases/0.
+t_output_aliases :- print(alias), writeln(done).
+
+:- dynamic t_tab/0.
+t_tab :- tab(2).
+
+:- dynamic t_output_family/0.
+t_output_family :-
+    put_char(x),
+    put_code(121),
+    write_canonical('two words'),
+    write_canonical(node('has space', 7)).
+
+:- dynamic t_format_capture/3.
+t_format_capture(Atom, String, Codes) :-
+    format(atom(Atom), 'X=~w ~a ~d ~s~n~~',
+           [node(1), hello, 42, [111, 107]]),
+    format(string(String), '~p~t~a', [foo(bar), done]),
+    format(codes(Codes), ab, []).
+
+:- dynamic t_format_output/0.
+t_format_output :-
+    format('F1~~'),
+    format('|~w/~a/~d/~s~n', [node(1), hello, 42, [111, 107]]).
+
+:- dynamic t_filesystem_query/1.
+t_filesystem_query(Files) :-
+    exists_file('Cargo.toml'),
+    exists_directory('src/bin'),
+    directory_files('src/bin', Files).
+
+:- dynamic t_file_metadata/2.
+t_file_metadata(Size, Time) :-
+    size_file('Cargo.toml', Size),
+    time_file('Cargo.toml', Time).
+
+:- dynamic t_system_queries/3.
+t_system_queries(Time, Pid, Path) :-
+    get_time(Time),
+    getpid(Pid),
+    getenv('PATH', Path).
+
+:- dynamic t_process_identity/6.
+t_process_identity(Uid, EUid, Gid, EGid, PPid, PGrp) :-
+    getuid(Uid),
+    geteuid(EUid),
+    getgid(Gid),
+    getegid(EGid),
+    getppid(PPid),
+    getpgrp(PGrp).
+
+:- dynamic t_system_names/3.
+t_system_names(Host, Sysname, Machine) :-
+    gethostname(Host),
+    uname_sysname(Sysname),
+    uname_machine(Machine).
+
+:- dynamic t_runtime_metrics/5.
+t_runtime_metrics(Cpu, Monotonic, MaxRss, User, System) :-
+    cpu_time(Cpu),
+    monotonic_time(Monotonic),
+    process_max_rss(MaxRss),
+    process_user_time(User),
+    process_system_time(System).
+
+:- dynamic t_os_errors/2.
+t_os_errors(Current, MissingMessage) :-
+    errno(Current),
+    strerror(2, MissingMessage).
+
+:- dynamic t_process_resource_queries/3.
+t_process_resource_queries(Priority, FileLimit, CoreLimit) :-
+    getpriority(Priority),
+    getrlimit(1, FileLimit),
+    getrlimit(4, CoreLimit).
+
+:- dynamic t_process_resource_updates/2.
+t_process_resource_updates(Priority, CoreLimit) :-
+    getpriority(Priority),
+    nice(0),
+    setpriority(Priority),
+    getrlimit(4, CoreLimit),
+    setrlimit(4, CoreLimit).
+
+:- dynamic t_process_fs_context/4.
+t_process_fs_context(NewDirectory, NewMask, OldDirectory, OldMask) :-
+    working_directory(OldDirectory, NewDirectory),
+    umask(OldMask, NewMask).
+
+:- dynamic t_stream_lines/5.
+t_stream_lines(Path, First, Empty, Last, Eof) :-
+    stream_open(Path, Handle),
+    read_line(Handle, First),
+    read_line(Handle, Empty),
+    read_line(Handle, Last),
+    read_line(Handle, Eof),
+    stream_close(Handle).
+
+:- dynamic t_login_name/1.
+t_login_name(Name) :- getlogin(Name).
+
+:- dynamic t_time_conversions/3.
+t_time_conversions(DateTime, RoundTrip, Formatted) :-
+    stamp_date_time(1700000000, DateTime, local),
+    date_time_stamp(DateTime, RoundTrip),
+    format_time(Formatted, '%Y-%m-%d %H:%M:%S', 1700000000).
+
+:- dynamic t_random_builtins/4.
+t_random_builtins(First, Repeat, Unit, Singleton) :-
+    set_random(seed(424242)),
+    random_between(1, 1000000, First),
+    set_random(seed(424242)),
+    random_between(1, 1000000, Repeat),
+    random(Unit),
+    random_between(7, 7, Singleton).
+
+:- dynamic t_filesystem_permissions/0.
+t_filesystem_permissions :-
+    access('filesystem_permissions_compiled_fixture.txt', 0),
+    chmod('filesystem_permissions_compiled_fixture.txt', 384),
+    chown('filesystem_permissions_compiled_fixture.txt', -1, -1),
+    mkfifo('filesystem_permissions_compiled_fixture.fifo', 384).
+
+:- dynamic t_os_utilities/2.
+t_os_utilities(Path, Pid) :-
+    getpid(Pid),
+    kill(Pid, 0),
+    tmp_file(uw_rust_compiled, Path).
+
+:- dynamic t_process_commands/2.
+t_process_commands(Status, Output) :-
+    shell('exit 0'),
+    shell('exit 7', Status),
+    system_to_atom('printf compiled-output', Output),
+    atom_to_system('cat > process_command_compiled_fixture.txt',
+                   'compiled-input').
+
+:- dynamic t_sleep/0.
+t_sleep :- sleep(0.001).
+
+:- dynamic t_halt_zero/0.
+t_halt_zero :- halt.
+
+:- dynamic t_halt_code/1.
+t_halt_code(Code) :- halt(Code).
+
+:- dynamic t_halt_sum/0.
+t_halt_sum :-
+    Code is 2 + 3,
+    halt(Code).
+
+:- dynamic t_environment_mutation/1.
+t_environment_mutation(Value) :-
+    setenv('UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19', first),
+    setenv('UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19', second),
+    getenv('UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19', Value),
+    unsetenv('UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19').
+
+:- dynamic t_split_string/1.
+t_split_string(Parts) :-
+    split_string(' alpha, beta ,, gamma ', ',', ' ', Parts).
+
+:- dynamic t_atom_split/1.
+t_atom_split(Parts) :- atom_split('a,,b', ',', Parts).
+
+:- dynamic t_atom_checks/0.
+t_atom_checks :-
+    atom_starts_with('prefix-middle-suffix', prefix),
+    atom_ends_with('prefix-middle-suffix', suffix),
+    atom_contains('prefix-middle-suffix', middle).
+
+:- dynamic t_text_inspection/2.
+t_text_inspection(Sub, After) :-
+    sub_atom(hello, 1, 3, After, Sub),
+    code_type(65, alpha),
+    code_type(65, upper),
+    code_type(95, csym).
+
+:- dynamic t_path_utilities/5.
+t_path_utilities(Base, Dir, Stem, Ext, Full) :-
+    file_base_name('/tmp/archive.tar.gz', Base),
+    file_directory_name('/tmp/archive.tar.gz', Dir),
+    file_name_extension(Stem, Ext, '/tmp/archive.tar.gz'),
+    is_absolute_file_name('/tmp/archive.tar.gz'),
+    path_join('/tmp/base', 'child.txt', Full).
+
+:- dynamic t_filesystem_identity/2.
+t_filesystem_identity(Real, Target) :-
+    realpath('identity_fixture/link.txt', Real),
+    read_link('identity_fixture/link.txt', Target),
+    same_file('identity_fixture/source.txt', 'identity_fixture/hard.txt').
+
+:- dynamic t_filesystem_mutation/0.
+t_filesystem_mutation :-
+    make_directory('mutation_compiled_fixture'),
+    copy_file('Cargo.toml', 'mutation_compiled_fixture/copied.toml'),
+    rename_file('mutation_compiled_fixture/copied.toml',
+                'mutation_compiled_fixture/renamed.toml'),
+    delete_file('mutation_compiled_fixture/renamed.toml'),
+    delete_directory('mutation_compiled_fixture').
+
+:- dynamic t_file_content_io/1.
+t_file_content_io(Content) :-
+    write_atom_to_file('file_content_compiled_fixture.txt', alpha),
+    append_atom_to_file('file_content_compiled_fixture.txt', '-beta'),
+    read_file_to_atom('file_content_compiled_fixture.txt', Content),
+    delete_file('file_content_compiled_fixture.txt').
+
+:- dynamic t_file_links_truncate/1.
+t_file_links_truncate(Content) :-
+    make_directory('file_link_compiled_fixture'),
+    write_atom_to_file('file_link_compiled_fixture/source.txt', abcdef),
+    link('file_link_compiled_fixture/source.txt',
+         'file_link_compiled_fixture/hard.txt'),
+    symlink('source.txt', 'file_link_compiled_fixture/symbolic.txt'),
+    truncate('file_link_compiled_fixture/hard.txt', 3),
+    read_file_to_atom('file_link_compiled_fixture/symbolic.txt', Content),
+    delete_file('file_link_compiled_fixture/symbolic.txt'),
+    delete_file('file_link_compiled_fixture/hard.txt'),
+    delete_file('file_link_compiled_fixture/source.txt'),
+    delete_directory('file_link_compiled_fixture').
+
+:- dynamic t_pairs_project/2.
+t_pairs_project(Keys, Values) :-
+    Pairs = [a-1, b-2],
+    pairs_keys(Pairs, Keys),
+    pairs_values(Pairs, Values).
+
+:- dynamic t_pairs_split/2.
+t_pairs_split(Keys, Values) :- pairs_keys_values([a-1, b-2], Keys, Values).
+
+:- dynamic t_pairs_zip/1.
+t_pairs_zip(Pairs) :- pairs_keys_values(Pairs, [a, b], [1, 2]).
 
 %% catch/throw + succ predicates (ISO meta-builtin Call fallback path).
 :- dynamic t_thrower/0.
@@ -70,6 +323,21 @@ t_catch_failgoal :- catch(fail, _Any, true).
 
 :- dynamic t_catch_nested/1.
 t_catch_nested(R) :- catch(catch(t_thrower, nomatch(_), fail), oops(X), R = X).
+
+:- dynamic t_must_be/3.
+t_must_be(TypeCaught, InstCaught, DomainCaught) :-
+    must_be(atom, hello),
+    must_be(integer, 42),
+    must_be(number, 2.5),
+    must_be(compound, node(x)),
+    must_be(list, [a, b]),
+    must_be(ground, node(a, [1, 2])),
+    catch(must_be(atom, 5),
+          error(type_error(atom, 5), _), TypeCaught = caught),
+    catch(must_be(integer, _),
+          error(instantiation_error, _), InstCaught = caught),
+    catch(must_be(unknown_type, 5),
+          error(domain_error(type, unknown_type), _), DomainCaught = caught).
 
 :- dynamic t_succ_fwd/1.
 t_succ_fwd(Y) :- succ(2, Y).
@@ -122,6 +390,81 @@ cargo_available :-
          process_wait(Pid, exit(0))),
         _, fail).
 
+write_output_probe(TmpDir) :-
+    directory_file_path(TmpDir, 'src/bin', BinDir),
+    make_directory_path(BinDir),
+    directory_file_path(BinDir, 'output_probe.rs', ProbePath),
+    ProbeContent = '
+use builtin_parity_test::state::WamState;
+use builtin_parity_test::{t_format_output_0, t_output_family_0};
+use std::collections::HashMap;
+
+fn main() {
+    let mut vm = WamState::new(vec![], HashMap::new());
+    if !t_output_family_0(&mut vm) {
+        std::process::exit(1);
+    }
+    if !t_format_output_0(&mut vm) {
+        std::process::exit(1);
+    }
+}
+',
+    setup_call_cleanup(
+        open(ProbePath, write, Out, [encoding(utf8)]),
+        write(Out, ProbeContent),
+        close(Out)).
+
+run_output_probe(TmpDir, ExitCode, Output) :-
+    process_create(path(cargo), ['run', '--quiet', '--bin', 'output_probe'],
+                   [cwd(TmpDir), stdout(pipe(Stream)), stderr(null), process(Pid)]),
+    read_string(Stream, _, Output),
+    close(Stream),
+    process_wait(Pid, exit(ExitCode)).
+
+write_halt_probe(TmpDir) :-
+    directory_file_path(TmpDir, 'src/bin', BinDir),
+    make_directory_path(BinDir),
+    directory_file_path(BinDir, 'halt_probe.rs', ProbePath),
+    ProbeContent = '
+use builtin_parity_test::state::WamState;
+use builtin_parity_test::value::Value;
+use builtin_parity_test::{t_halt_code_1, t_halt_sum_0, t_halt_zero_0};
+use std::collections::HashMap;
+
+fn main() {
+    let mode = std::env::args().nth(1).unwrap_or_default();
+    let mut vm = WamState::new(vec![], HashMap::new());
+    let returned = match mode.as_str() {
+        "zero" => t_halt_zero_0(&mut vm),
+        "seven" => t_halt_code_1(&mut vm, Value::Integer(7)),
+        "sum" => t_halt_sum_0(&mut vm),
+        "invalid" => t_halt_code_1(&mut vm, Value::Atom("bad".to_string())),
+        _ => std::process::exit(94),
+    };
+    if mode == "invalid" && !returned {
+        return;
+    }
+    std::process::exit(95);
+}
+',
+    setup_call_cleanup(
+        open(ProbePath, write, Out, [encoding(utf8)]),
+        write(Out, ProbeContent),
+        close(Out)).
+
+run_halt_probe(TmpDir, Mode, ExitCode) :-
+    process_create(path(cargo),
+                   ['run', '--quiet', '--bin', 'halt_probe', '--', Mode],
+                   [cwd(TmpDir), stdout(null), stderr(null), process(Pid)]),
+    process_wait(Pid, exit(ExitCode)).
+
+run_halt_probes(TmpDir, Results) :-
+    findall(Mode-ExitCode,
+            ( member(Mode, [zero, seven, sum, invalid]),
+              run_halt_probe(TmpDir, Mode, ExitCode)
+            ),
+            Results).
+
 test_builtin_parity_execution :-
     Test = 'WAM-Rust builtin parity: end-to-end execution (cargo test)',
     TmpDir = 'output/test_wam_rust_builtin_parity',
@@ -130,12 +473,51 @@ test_builtin_parity_execution :-
         pass(Test)
     ;   (exists_directory(TmpDir) -> delete_directory_and_contents(TmpDir) ; true),
         write_wam_rust_project(
-            [user:t_between/1, user:t_msort/1, user:t_sort/1,
+            [user:t_between/1, user:t_msort/1, user:t_sort/1, user:t_sort4/1,
              user:t_concat_split/2, user:t_select/2,
+             user:t_atomic/1, user:t_atomic_number/1,
+             user:t_string_codes/1, user:t_string_chars/1,
+             user:t_string_code/1,
+             user:t_output_aliases/0,
+             user:t_tab/0,
+             user:t_output_family/0,
+             user:t_format_capture/3,
+             user:t_format_output/0,
+             user:t_filesystem_query/1,
+             user:t_file_metadata/2,
+             user:t_system_queries/3,
+             user:t_process_identity/6,
+             user:t_system_names/3,
+             user:t_runtime_metrics/5,
+             user:t_os_errors/2,
+             user:t_process_resource_queries/3,
+             user:t_process_resource_updates/2,
+             user:t_process_fs_context/4,
+             user:t_stream_lines/5,
+             user:t_login_name/1,
+             user:t_time_conversions/3,
+             user:t_random_builtins/4,
+             user:t_filesystem_permissions/0,
+             user:t_os_utilities/2,
+             user:t_process_commands/2,
+             user:t_sleep/0,
+             user:t_halt_zero/0,
+             user:t_halt_code/1,
+             user:t_halt_sum/0,
+             user:t_environment_mutation/1,
+             user:t_split_string/1, user:t_atom_split/1, user:t_atom_checks/0,
+             user:t_text_inspection/2,
+             user:t_path_utilities/5,
+             user:t_filesystem_identity/2,
+             user:t_filesystem_mutation/0,
+             user:t_file_content_io/1,
+             user:t_file_links_truncate/1,
+             user:t_pairs_project/2, user:t_pairs_split/2, user:t_pairs_zip/1,
              user:t_thrower/0, user:t_deep/0, user:t_mid/0,
              user:t_catch_match/1, user:t_catch_deep/1,
              user:t_catch_nomatch/0, user:t_catch_nothrow/1,
              user:t_catch_failgoal/0, user:t_catch_nested/1,
+             user:t_must_be/3,
              user:t_succ_fwd/1, user:t_succ_rev/1,
              user:double/2, user:pos/1, user:acc_add/3,
              user:t_maplist/1, user:t_maplist_check/0, user:t_maplist_fail/0,
@@ -143,15 +525,51 @@ test_builtin_parity_execution :-
              user:t_foldl/1, user:t_alc_join/1, user:t_alc_split/1],
             [module_name('builtin_parity_test'), wam_fallback(true)],
             TmpDir),
+        write_output_probe(TmpDir),
         directory_file_path(TmpDir, 'tests', TestsDir),
         make_directory_path(TestsDir),
         directory_file_path(TestsDir, 'integration_test.rs', TestPath),
         TestContent = '
 use builtin_parity_test::state::WamState;
 use builtin_parity_test::value::Value;
-use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_concat_split_2, t_select_2,
+use builtin_parity_test::{t_between_1, t_msort_1, t_sort_1, t_sort4_1, t_concat_split_2, t_select_2,
+    t_atomic_1, t_atomic_number_1,
+    t_string_codes_1, t_string_chars_1,
+    t_string_code_1,
+    t_output_aliases_0,
+    t_tab_0,
+    t_output_family_0,
+    t_format_capture_3,
+    t_filesystem_query_1,
+    t_file_metadata_2,
+    t_system_queries_3,
+    t_process_identity_6,
+    t_system_names_3,
+    t_runtime_metrics_5,
+    t_os_errors_2,
+    t_process_resource_queries_3,
+    t_process_resource_updates_2,
+    t_process_fs_context_4,
+    t_stream_lines_5,
+    t_login_name_1,
+    t_time_conversions_3,
+    t_random_builtins_4,
+    t_filesystem_permissions_0,
+    t_os_utilities_2,
+    t_process_commands_2,
+    t_sleep_0,
+    t_environment_mutation_1,
+    t_split_string_1, t_atom_split_1, t_atom_checks_0,
+    t_text_inspection_2,
+    t_path_utilities_5,
+    t_filesystem_identity_2,
+    t_filesystem_mutation_0,
+    t_file_content_io_1,
+    t_file_links_truncate_1,
+    t_pairs_project_2, t_pairs_split_2, t_pairs_zip_1,
     t_catch_match_1, t_catch_deep_1, t_catch_nomatch_0, t_catch_nothrow_1,
-    t_catch_failgoal_0, t_catch_nested_1, t_succ_fwd_1, t_succ_rev_1,
+    t_catch_failgoal_0, t_catch_nested_1, t_must_be_3,
+    t_succ_fwd_1, t_succ_rev_1,
     t_maplist_1, t_maplist_check_0, t_maplist_fail_0, t_include_1, t_exclude_1,
     t_partition_2, t_foldl_1, t_alc_join_1, t_alc_split_1};
 use std::collections::HashMap;
@@ -164,10 +582,110 @@ fn a(s: &str) -> Value { Value::Atom(s.to_string()) }
 fn i(n: i64) -> Value { Value::Integer(n) }
 fn ub(n: &str) -> Value { Value::Unbound(n.to_string()) }
 
+#[cfg(unix)]
+fn native_process_identity() -> [i64; 6] {
+    extern "C" {
+        fn getuid() -> std::os::raw::c_uint;
+        fn geteuid() -> std::os::raw::c_uint;
+        fn getgid() -> std::os::raw::c_uint;
+        fn getegid() -> std::os::raw::c_uint;
+        fn getppid() -> std::os::raw::c_int;
+        fn getpgrp() -> std::os::raw::c_int;
+    }
+
+    unsafe {
+        [
+            i64::from(getuid()),
+            i64::from(geteuid()),
+            i64::from(getgid()),
+            i64::from(getegid()),
+            i64::from(getppid()),
+            i64::from(getpgrp()),
+        ]
+    }
+}
+
+#[cfg(unix)]
+fn native_process_umask() -> i64 {
+    let output = std::process::Command::new("sh")
+        .args(["-c", "umask"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    i64::from_str_radix(text.trim(), 8).unwrap()
+}
+
+#[cfg(unix)]
+fn native_host_name() -> String {
+    extern "C" {
+        fn gethostname(
+            name: *mut std::os::raw::c_char,
+            len: usize,
+        ) -> std::os::raw::c_int;
+    }
+
+    let mut buffer = [0u8; 256];
+    assert_eq!(unsafe { gethostname(buffer.as_mut_ptr().cast(), buffer.len()) }, 0);
+    let end = buffer.iter().position(|byte| *byte == 0).unwrap();
+    String::from_utf8(buffer[..end].to_vec()).unwrap()
+}
+
+#[cfg(unix)]
+fn native_uname(flag: &str) -> String {
+    let output = std::process::Command::new("uname").arg(flag).output().unwrap();
+    assert!(output.status.success());
+    let mut value = String::from_utf8(output.stdout).unwrap();
+    while value.ends_with(char::from(10)) || value.ends_with(char::from(13)) {
+        value.pop();
+    }
+    assert!(!value.is_empty());
+    value
+}
+
 fn read_var(vm: &WamState, name: &str) -> Value {
     match vm.bindings.get(name) {
         Some(v) => vm.deref_heap(&vm.deref_var(v)),
         None => Value::Unbound(name.to_string()),
+    }
+}
+
+fn float_var(vm: &WamState, name: &str) -> f64 {
+    match read_var(vm, name) {
+        Value::Float(value) => value,
+        other => panic!("expected float {name}, got {:?}", other),
+    }
+}
+
+fn integer_var(vm: &WamState, name: &str) -> i64 {
+    match read_var(vm, name) {
+        Value::Integer(value) => value,
+        other => panic!("expected integer {name}, got {:?}", other),
+    }
+}
+
+fn integer_value(value: &Value) -> i64 {
+    match value {
+        Value::Integer(value) => *value,
+        other => panic!("expected integer value, got {:?}", other),
+    }
+}
+
+fn date_args(value: Value) -> Vec<Value> {
+    match value {
+        Value::Str(functor, args) if functor == "date" && args.len() == 9 => args.to_vec(),
+        other => panic!("expected date/9 value, got {:?}", other),
+    }
+}
+
+fn thrown_formal(vm: &WamState) -> Value {
+    match vm.thrown_ball.as_ref() {
+        Some(Value::Str(name, args)) if name == "error" && args.len() == 2 => {
+            assert!(matches!(&args[1], Value::Unbound(_)),
+                "error context must be a fresh variable");
+            args[0].clone()
+        }
+        other => panic!("expected error/2 ball, got {:?}", other),
     }
 }
 
@@ -193,12 +711,20 @@ fn test_msort_sort_compiled() {
     let mut vm = vmnew();
     assert!(t_msort_1(&mut vm, ub("S")));
     assert_eq!(read_var(&vm, "S"),
-        Value::List(vec![a("apple"), a("apple"), a("banana"), a("cherry")]),
+        Value::list(vec![a("apple"), a("apple"), a("banana"), a("cherry")]),
         "msort keeps duplicates in standard order");
     let mut vm2 = vmnew();
     assert!(t_sort_1(&mut vm2, ub("S")));
-    assert_eq!(read_var(&vm2, "S"), Value::List(vec![a("a"), a("b")]),
+    assert_eq!(read_var(&vm2, "S"), Value::list(vec![a("a"), a("b")]),
         "sort dedupes");
+
+    let mut vm3 = vmnew();
+    assert!(t_sort4_1(&mut vm3, ub("S")));
+    assert_eq!(read_var(&vm3, "S"), Value::list(vec![
+        Value::strv("row".to_string(), vec![a("b"), i(1)]),
+        Value::strv("row".to_string(), vec![a("a"), i(2)]),
+        Value::strv("row".to_string(), vec![a("c"), i(2)]),
+    ]), "sort/4 keeps equal keys stable for @=<");
 }
 
 #[test]
@@ -244,12 +770,716 @@ fn test_select_enumeration_compiled() {
 }
 
 #[test]
+fn test_atomic_compiled() {
+    let mut atom_vm = vmnew();
+    assert!(t_atomic_1(&mut atom_vm, a("x")));
+    let mut number_vm = vmnew();
+    assert!(t_atomic_1(&mut number_vm, i(42)));
+    let mut compound_vm = vmnew();
+    assert!(!t_atomic_1(&mut compound_vm,
+        Value::strv("f".to_string(), vec![a("x")])));
+    let mut var_vm = vmnew();
+    assert!(!t_atomic_1(&mut var_vm, ub("X")));
+
+    let mut non_tail_ok_vm = vmnew();
+    assert!(t_atomic_number_1(&mut non_tail_ok_vm, i(42)));
+    let mut non_tail_fail_vm = vmnew();
+    assert!(!t_atomic_number_1(&mut non_tail_fail_vm, a("x")));
+}
+
+#[test]
+fn test_string_codes_chars_compiled() {
+    let mut codes_vm = vmnew();
+    assert!(t_string_codes_1(&mut codes_vm, ub("Codes")));
+    assert_eq!(read_var(&codes_vm, "Codes"),
+        Value::list(vec![i(104), i(101), i(108), i(108), i(111)]));
+
+    let mut chars_vm = vmnew();
+    assert!(t_string_chars_1(&mut chars_vm, ub("Chars")));
+    assert_eq!(read_var(&chars_vm, "Chars"), Value::list(vec![a("h"), a("i")]));
+
+    let mut code_vm = vmnew();
+    assert!(t_string_code_1(&mut code_vm, ub("Code")));
+    assert_eq!(read_var(&code_vm, "Code"), i(101));
+}
+
+#[test]
+fn test_output_aliases_compiled() {
+    let mut vm = vmnew();
+    assert!(t_output_aliases_0(&mut vm));
+
+    let mut tab_vm = vmnew();
+    assert!(t_tab_0(&mut tab_vm));
+
+    let mut output_vm = vmnew();
+    assert!(t_output_family_0(&mut output_vm));
+}
+
+#[test]
+fn test_format_capture_compiled() {
+    let mut vm = vmnew();
+    assert!(t_format_capture_3(&mut vm, ub("Atom"), ub("String"), ub("Codes")));
+    assert_eq!(read_var(&vm, "Atom"),
+        a(&format!("X=node(1) hello 42 ok{}~", char::from(10))));
+    assert_eq!(read_var(&vm, "String"),
+        a(&format!("foo(bar){}done", char::from(9))));
+    assert_eq!(read_var(&vm, "Codes"), Value::list(vec![i(97), i(98)]));
+}
+
+#[test]
+fn test_filesystem_query_compiled() {
+    let mut vm = vmnew();
+    assert!(t_filesystem_query_1(&mut vm, ub("Files")));
+    assert_eq!(read_var(&vm, "Files"), Value::list(vec![
+        a("."), a(".."), a("output_probe.rs")
+    ]));
+}
+
+#[test]
+fn test_file_metadata_compiled() {
+    let mut vm = vmnew();
+    assert!(t_file_metadata_2(&mut vm, ub("Size"), ub("Time")));
+    match read_var(&vm, "Size") {
+        Value::Integer(size) => assert!(size > 0),
+        other => panic!("expected integer file size, got {:?}", other),
+    }
+    match read_var(&vm, "Time") {
+        Value::Float(time) => assert!(time.is_finite() && time > 0.0),
+        other => panic!("expected float modification time, got {:?}", other),
+    }
+}
+
+#[test]
+fn test_system_queries_compiled() {
+    let mut vm = vmnew();
+    assert!(t_system_queries_3(&mut vm, ub("Time"), ub("Pid"), ub("Path")));
+    match read_var(&vm, "Time") {
+        Value::Float(time) => assert!(time.is_finite() && time > 0.0),
+        other => panic!("expected float wall time, got {:?}", other),
+    }
+    assert_eq!(read_var(&vm, "Pid"), i(i64::from(std::process::id())));
+    assert_eq!(read_var(&vm, "Path"),
+        a(&std::env::var("PATH").expect("PATH must be available to cargo test")));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_identity_compiled() {
+    let expected = native_process_identity();
+    let mut vm = vmnew();
+    assert!(t_process_identity_6(
+        &mut vm,
+        ub("Uid"), ub("EUid"), ub("Gid"),
+        ub("EGid"), ub("PPid"), ub("PGrp")));
+
+    for (name, value) in [
+        ("Uid", expected[0]),
+        ("EUid", expected[1]),
+        ("Gid", expected[2]),
+        ("EGid", expected[3]),
+        ("PPid", expected[4]),
+        ("PGrp", expected[5]),
+    ] {
+        assert_eq!(read_var(&vm, name), i(value), "unexpected {name}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_system_names_compiled() {
+    let expected = [native_host_name(), native_uname("-s"), native_uname("-m")];
+    let mut vm = vmnew();
+    assert!(t_system_names_3(
+        &mut vm, ub("Host"), ub("Sysname"), ub("Machine")));
+
+    for (name, value) in [
+        ("Host", &expected[0]),
+        ("Sysname", &expected[1]),
+        ("Machine", &expected[2]),
+    ] {
+        assert_eq!(read_var(&vm, name), a(value), "unexpected {name}");
+    }
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_runtime_metrics_compiled() {
+    let mut vm = vmnew();
+    assert!(t_runtime_metrics_5(
+        &mut vm,
+        ub("Cpu"), ub("Monotonic"), ub("MaxRss"), ub("User"), ub("System")));
+
+    for name in ["Cpu", "Monotonic", "User", "System"] {
+        let value = float_var(&vm, name);
+        assert!(value.is_finite() && value >= 0.0, "unexpected {name}: {value}");
+    }
+    assert!(integer_var(&vm, "MaxRss") > 0);
+}
+
+#[test]
+fn test_os_errors_compiled() {
+    let mut vm = vmnew();
+    assert!(t_os_errors_2(&mut vm, ub("Current"), ub("MissingMessage")));
+    let _ = integer_var(&vm, "Current");
+    match read_var(&vm, "MissingMessage") {
+        Value::Atom(message) => assert!(!message.is_empty()),
+        other => panic!("expected error message atom, got {:?}", other),
+    }
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_process_resource_queries_compiled() {
+    let mut vm = vmnew();
+    assert!(t_process_resource_queries_3(
+        &mut vm, ub("Priority"), ub("FileLimit"), ub("CoreLimit")));
+    let priority = integer_var(&vm, "Priority");
+    assert!((-20..=19).contains(&priority));
+    let _ = integer_var(&vm, "FileLimit");
+    let _ = integer_var(&vm, "CoreLimit");
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_process_resource_updates_compiled() {
+    let mut vm = vmnew();
+    assert!(t_process_resource_updates_2(
+        &mut vm, ub("Priority"), ub("CoreLimit")));
+    assert!((-20..=19).contains(&integer_var(&vm, "Priority")));
+    let _ = integer_var(&vm, "CoreLimit");
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_fs_context_compiled() {
+    let directory = std::env::current_dir().unwrap();
+    let directory_text = directory.to_string_lossy().into_owned();
+    let mask = native_process_umask();
+    let mut vm = vmnew();
+    assert!(t_process_fs_context_4(
+        &mut vm, a(&directory_text), i(mask),
+        ub("OldDirectory"), ub("OldMask")));
+    assert_eq!(read_var(&vm, "OldDirectory"), a(&directory_text));
+    assert_eq!(read_var(&vm, "OldMask"), i(mask));
+    assert_eq!(std::env::current_dir().unwrap(), directory);
+    assert_eq!(native_process_umask(), mask);
+}
+
+#[test]
+fn test_stream_builtins_compiled() {
+    let path = "stream_builtins_compiled_fixture.txt";
+    std::fs::write(
+        path,
+        [97, 108, 112, 104, 97, 10, 10, 111, 109, 101, 103, 97, 13, 10],
+    ).unwrap();
+
+    let mut vm = vmnew();
+    assert!(t_stream_lines_5(
+        &mut vm, a(path), ub("First"), ub("Empty"), ub("Last"), ub("Eof")));
+    assert_eq!(read_var(&vm, "First"), a("alpha"));
+    assert_eq!(read_var(&vm, "Empty"), a(""));
+    assert_eq!(read_var(&vm, "Last"), a("omega"));
+    assert_eq!(read_var(&vm, "Eof"), a("end_of_file"));
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
+fn test_login_name_compiled() {
+    let mut vm = vmnew();
+    if t_login_name_1(&mut vm, ub("Name")) {
+        match read_var(&vm, "Name") {
+            Value::Atom(name) => assert!(!name.is_empty()),
+            other => panic!("expected login-name atom, got {:?}", other),
+        }
+    }
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_time_conversions_compiled() {
+    let mut vm = vmnew();
+    assert!(t_time_conversions_3(
+        &mut vm, ub("DateTime"), ub("RoundTrip"), ub("Formatted")));
+
+    let args = date_args(read_var(&vm, "DateTime"));
+    assert!((1970..3000).contains(&integer_value(&args[0])));
+    assert!((1..=12).contains(&integer_value(&args[1])));
+    assert_eq!(args[7], a("local"));
+    assert_eq!(float_var(&vm, "RoundTrip"), 1700000000.0);
+    match read_var(&vm, "Formatted") {
+        Value::Atom(formatted) => assert_eq!(formatted.len(), 19),
+        other => panic!("expected formatted atom, got {:?}", other),
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_random_builtins_compiled_and_direct() {
+    let mut vm = vmnew();
+    assert!(t_random_builtins_4(
+        &mut vm, ub("First"), ub("Repeat"), ub("Unit"), ub("Singleton")));
+    assert_eq!(integer_var(&vm, "First"), integer_var(&vm, "Repeat"));
+    let unit = float_var(&vm, "Unit");
+    assert!((0.0..1.0).contains(&unit));
+    assert_eq!(integer_var(&vm, "Singleton"), 7);
+
+    assert!(call3("random_between/3", i(7), i(7), i(7)).0);
+    assert!(!call3("random_between/3", i(7), i(7), i(8)).0);
+    assert!(!call3("random_between/3", i(8), i(7), ub("Random")).0);
+    assert!(!call3("random_between/3", a("low"), i(7), ub("Random")).0);
+    assert!(!call3("random_between/3", i(1), a("high"), ub("Random")).0);
+    let (wide_ok, wide_vm) = call3(
+        "random_between/3", i(i64::MIN), i(i64::MAX), ub("Wide"));
+    assert!(wide_ok);
+    let _ = integer_var(&wide_vm, "Wide");
+    assert!(!vmnew().execute_builtin("random_between/3", 3));
+
+    let seed = Value::strv("seed".to_string(), vec![i(7)]);
+    assert!(call1("set_random/1", seed.clone()).0);
+    let (first_ok, first_vm) = call1("random/1", ub("Random"));
+    assert!(first_ok);
+    let first = float_var(&first_vm, "Random");
+    assert!(call1("set_random/1", seed).0);
+    assert!(call1("random/1", Value::Float(first)).0);
+    assert!(!call1(
+        "set_random/1", Value::strv("other".to_string(), vec![i(7)])).0);
+    assert!(!call1(
+        "set_random/1", Value::strv("seed".to_string(), vec![a("random")])).0);
+    assert!(!call1("set_random/1", i(7)).0);
+    assert!(!call1("set_random/1", ub("Option")).0);
+    assert!(!vmnew().execute_builtin("random/1", 1));
+    assert!(!vmnew().execute_builtin("set_random/1", 1));
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_random_builtins_unavailable_direct() {
+    assert!(!call1("random/1", ub("Random")).0);
+    assert!(!call3("random_between/3", i(1), i(2), ub("Random")).0);
+    assert!(!call1(
+        "set_random/1", Value::strv("seed".to_string(), vec![i(7)])).0);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_filesystem_permissions_compiled_and_direct() {
+    use std::os::unix::fs::{FileTypeExt, PermissionsExt};
+
+    let compiled_file = std::path::Path::new(
+        "filesystem_permissions_compiled_fixture.txt");
+    let compiled_fifo = std::path::Path::new(
+        "filesystem_permissions_compiled_fixture.fifo");
+    let _ = std::fs::remove_file(compiled_file);
+    let _ = std::fs::remove_file(compiled_fifo);
+    std::fs::write(compiled_file, b"compiled").unwrap();
+
+    let mut vm = vmnew();
+    assert!(t_filesystem_permissions_0(&mut vm));
+    assert_eq!(
+        std::fs::metadata(compiled_file).unwrap().permissions().mode() & 0o777,
+        0o600);
+    assert!(std::fs::metadata(compiled_fifo).unwrap().file_type().is_fifo());
+
+    let direct_file = std::path::Path::new(
+        "filesystem_permissions_direct_fixture.txt");
+    let direct_fifo = std::path::Path::new(
+        "filesystem_permissions_direct_fixture.fifo");
+    let _ = std::fs::remove_file(direct_file);
+    let _ = std::fs::remove_file(direct_fifo);
+    std::fs::write(direct_file, b"direct").unwrap();
+
+    assert!(call2("access/2", a(direct_file.to_str().unwrap()), i(0)).0);
+    assert!(!call2("access/2", a("missing-permission-path"), i(0)).0);
+    assert!(!call2("access/2", i(7), i(0)).0);
+    assert!(!call2("access/2", a(direct_file.to_str().unwrap()), a("mode")).0);
+
+    assert!(call2("chmod/2", a(direct_file.to_str().unwrap()), i(0o400)).0);
+    assert_eq!(
+        std::fs::metadata(direct_file).unwrap().permissions().mode() & 0o777,
+        0o400);
+    assert!(!call2("chmod/2", a("missing-permission-path"), i(0o600)).0);
+    assert!(!call2("chmod/2", i(7), i(0o600)).0);
+    assert!(!call2("chmod/2", a(direct_file.to_str().unwrap()), a("mode")).0);
+
+    assert!(call3(
+        "chown/3", a(direct_file.to_str().unwrap()), i(-1), i(-1)).0);
+    assert!(!call3("chown/3", a("missing-permission-path"), i(-1), i(-1)).0);
+    assert!(!call3("chown/3", i(7), i(-1), i(-1)).0);
+    assert!(!call3(
+        "chown/3", a(direct_file.to_str().unwrap()), a("uid"), i(-1)).0);
+    assert!(!call3(
+        "chown/3", a(direct_file.to_str().unwrap()), i(-1), a("gid")).0);
+
+    assert!(call2("mkfifo/2", a(direct_fifo.to_str().unwrap()), i(0o600)).0);
+    assert!(std::fs::metadata(direct_fifo).unwrap().file_type().is_fifo());
+    assert!(!call2("mkfifo/2", a(direct_fifo.to_str().unwrap()), i(0o600)).0);
+    assert!(!call2("mkfifo/2", i(7), i(0o600)).0);
+    assert!(!call2("mkfifo/2", a("unused-fifo"), a("mode")).0);
+
+    let nul_path = String::from_utf8(vec![98, 97, 100, 0, 112, 97, 116, 104]).unwrap();
+    assert!(!call2("access/2", a(&nul_path), i(0)).0);
+    assert!(!vmnew().execute_builtin("access/2", 2));
+    assert!(!vmnew().execute_builtin("chmod/2", 2));
+    assert!(!vmnew().execute_builtin("chown/3", 3));
+    assert!(!vmnew().execute_builtin("mkfifo/2", 2));
+
+    std::fs::remove_file(compiled_fifo).unwrap();
+    std::fs::remove_file(compiled_file).unwrap();
+    std::fs::remove_file(direct_fifo).unwrap();
+    std::fs::remove_file(direct_file).unwrap();
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_filesystem_permissions_unavailable_direct() {
+    assert!(!call2("access/2", a("path"), i(0)).0);
+    assert!(!call2("chmod/2", a("path"), i(0o600)).0);
+    assert!(!call3("chown/3", a("path"), i(-1), i(-1)).0);
+    assert!(!call2("mkfifo/2", a("path"), i(0o600)).0);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_os_utilities_compiled_and_direct() {
+    let mut vm = vmnew();
+    assert!(t_os_utilities_2(&mut vm, ub("Path"), ub("Pid")));
+    assert_eq!(integer_var(&vm, "Pid"), i64::from(std::process::id()));
+    let compiled_path = match read_var(&vm, "Path") {
+        Value::Atom(path) => path,
+        other => panic!("expected temporary-path atom, got {:?}", other),
+    };
+    assert!(compiled_path.starts_with("/tmp/uw_rust_compiled_"));
+    assert_eq!(std::fs::metadata(&compiled_path).unwrap().len(), 0);
+
+    let pid = i64::from(std::process::id());
+    assert!(call2("kill/2", i(pid), i(0)).0);
+    assert!(!call2("kill/2", i(i64::from(i32::MAX)), i(0)).0);
+    assert!(!call2("kill/2", a("pid"), i(0)).0);
+    assert!(!call2("kill/2", i(pid), a("signal")).0);
+    assert!(!vmnew().execute_builtin("kill/2", 2));
+
+    let (first_ok, first_vm) = call2(
+        "tmp_file/2", a("uw_rust_direct"), ub("First"));
+    let (second_ok, second_vm) = call2(
+        "tmp_file/2", a("uw_rust_direct"), ub("Second"));
+    assert!(first_ok && second_ok);
+    let first_path = match read_var(&first_vm, "First") {
+        Value::Atom(path) => path,
+        other => panic!("expected first temporary-path atom, got {:?}", other),
+    };
+    let second_path = match read_var(&second_vm, "Second") {
+        Value::Atom(path) => path,
+        other => panic!("expected second temporary-path atom, got {:?}", other),
+    };
+    assert_ne!(first_path, second_path);
+    for path in [&first_path, &second_path] {
+        assert!(path.starts_with("/tmp/uw_rust_direct_"));
+        assert_eq!(std::fs::metadata(path).unwrap().len(), 0);
+    }
+
+    let nul_base = String::from_utf8(vec![98, 97, 115, 101, 0, 120]).unwrap();
+    assert!(!call2("tmp_file/2", i(7), ub("Path")).0);
+    assert!(!call2("tmp_file/2", a(&nul_base), ub("Path")).0);
+    assert!(!call2("tmp_file/2", a(&"x".repeat(4096)), ub("Path")).0);
+    assert!(!vmnew().execute_builtin("tmp_file/2", 2));
+
+    std::fs::remove_file(compiled_path).unwrap();
+    std::fs::remove_file(first_path).unwrap();
+    std::fs::remove_file(second_path).unwrap();
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_os_utilities_unavailable_direct() {
+    assert!(!call2("kill/2", i(1), i(0)).0);
+    assert!(!call2("tmp_file/2", a("base"), ub("Path")).0);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_commands_compiled() {
+    let fixture = std::path::Path::new("process_command_compiled_fixture.txt");
+    let _ = std::fs::remove_file(fixture);
+
+    let mut vm = vmnew();
+    assert!(t_process_commands_2(&mut vm, ub("Status"), ub("Output")));
+    assert_eq!(read_var(&vm, "Status"), i(7));
+    assert_eq!(read_var(&vm, "Output"), a("compiled-output"));
+    assert_eq!(std::fs::read_to_string(fixture).unwrap(), "compiled-input");
+
+    std::fs::remove_file(fixture).unwrap();
+}
+
+#[test]
+fn test_sleep_compiled() {
+    let mut vm = vmnew();
+    assert!(t_sleep_0(&mut vm));
+}
+
+#[test]
+fn test_environment_mutation_compiled() {
+    let key = "UNIFYWEAVER_RUST_WAM_COMPILED_ENV_8C19";
+    std::env::remove_var(key);
+
+    let mut vm = vmnew();
+    assert!(t_environment_mutation_1(&mut vm, ub("Value")));
+    assert_eq!(read_var(&vm, "Value"), a("second"));
+    assert!(std::env::var_os(key).is_none());
+}
+
+#[test]
+fn test_text_utility_family_compiled() {
+    let mut split_vm = vmnew();
+    assert!(t_split_string_1(&mut split_vm, ub("Parts")));
+    assert_eq!(read_var(&split_vm, "Parts"), Value::list(vec![
+        a("alpha"), a("beta"), a(""), a("gamma")
+    ]));
+
+    let mut atom_split_vm = vmnew();
+    assert!(t_atom_split_1(&mut atom_split_vm, ub("Parts")));
+    assert_eq!(read_var(&atom_split_vm, "Parts"), Value::list(vec![
+        a("a"), a(""), a("b")
+    ]));
+
+    let mut checks_vm = vmnew();
+    assert!(t_atom_checks_0(&mut checks_vm));
+
+    let mut inspection_vm = vmnew();
+    assert!(t_text_inspection_2(&mut inspection_vm, ub("Sub"), ub("After")));
+    assert_eq!(read_var(&inspection_vm, "Sub"), a("ell"));
+    assert_eq!(read_var(&inspection_vm, "After"), i(1));
+}
+
+#[test]
+fn test_path_utility_family_compiled() {
+    let mut vm = vmnew();
+    assert!(t_path_utilities_5(
+        &mut vm, ub("Base"), ub("Dir"), ub("Stem"), ub("Ext"), ub("Full")));
+    assert_eq!(read_var(&vm, "Base"), a("archive.tar.gz"));
+    assert_eq!(read_var(&vm, "Dir"), a("/tmp"));
+    assert_eq!(read_var(&vm, "Stem"), a("/tmp/archive.tar"));
+    assert_eq!(read_var(&vm, "Ext"), a("gz"));
+    assert_eq!(read_var(&vm, "Full"), a("/tmp/base/child.txt"));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_filesystem_identity_compiled_and_direct() {
+    let fixture = std::path::Path::new("identity_fixture");
+    let _ = std::fs::remove_dir_all(fixture);
+    std::fs::create_dir(fixture).unwrap();
+    std::fs::write(fixture.join("source.txt"), b"identity").unwrap();
+    std::fs::hard_link(fixture.join("source.txt"), fixture.join("hard.txt")).unwrap();
+    std::os::unix::fs::symlink("source.txt", fixture.join("link.txt")).unwrap();
+
+    let expected_real = std::fs::canonicalize(fixture.join("link.txt"))
+        .unwrap().into_os_string().into_string().unwrap();
+    let mut vm = vmnew();
+    assert!(t_filesystem_identity_2(&mut vm, ub("Real"), ub("Target")));
+    assert_eq!(read_var(&vm, "Real"), a(&expected_real));
+    assert_eq!(read_var(&vm, "Target"), a("source.txt"));
+
+    let source = fixture.join("source.txt").to_str().unwrap().to_string();
+    let hard = fixture.join("hard.txt").to_str().unwrap().to_string();
+    let link = fixture.join("link.txt").to_str().unwrap().to_string();
+    assert!(call2("same_file/2", a(&source), a(&hard)).0);
+    assert!(call2("same_file/2", a(&source), a(&link)).0,
+        "metadata follows symlinks");
+    std::fs::write(fixture.join("other.txt"), b"other").unwrap();
+    let other = fixture.join("other.txt").to_str().unwrap().to_string();
+    assert!(!call2("same_file/2", a(&source), a(&other)).0);
+
+    let (real_ok, real_vm) = call2("realpath/2", a(&link), ub("Real"));
+    assert!(real_ok);
+    assert_eq!(read_var(&real_vm, "Real"), a(&expected_real));
+    let (link_ok, link_vm) = call2("read_link/2", a(&link), ub("Target"));
+    assert!(link_ok);
+    assert_eq!(read_var(&link_vm, "Target"), a("source.txt"));
+
+    std::fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn test_filesystem_identity_validation() {
+    assert!(!call2("realpath/2", a("missing-identity-path"), ub("Real")).0);
+    assert!(!call2("read_link/2", a("missing-identity-link"), ub("Target")).0);
+    assert!(!call2("same_file/2", a("missing-a"), a("missing-b")).0);
+    assert!(!call2("realpath/2", i(1), ub("Real")).0);
+    assert!(!call2("read_link/2", ub("Path"), ub("Target")).0);
+    assert!(!call2("same_file/2", a("path"), i(2)).0);
+}
+
+#[test]
+fn test_filesystem_mutation_compiled() {
+    let fixture = std::path::Path::new("mutation_compiled_fixture");
+    let _ = std::fs::remove_dir_all(fixture);
+
+    let mut vm = vmnew();
+    assert!(t_filesystem_mutation_0(&mut vm));
+    assert!(!fixture.exists());
+}
+
+#[test]
+fn test_filesystem_mutation_direct() {
+    let fixture = std::path::Path::new("mutation_direct_fixture");
+    let _ = std::fs::remove_dir_all(fixture);
+    let fixture_text = fixture.to_str().unwrap();
+
+    assert!(call1("make_directory/1", a(fixture_text)).0);
+    assert!(fixture.is_dir());
+    assert!(!call1("make_directory/1", a(fixture_text)).0);
+
+    let copied = fixture.join("copied.toml");
+    let copied_text = copied.to_str().unwrap();
+    assert!(call2("copy_file/2", a("Cargo.toml"), a(copied_text)).0);
+    assert_eq!(std::fs::read(&copied).unwrap(), std::fs::read("Cargo.toml").unwrap());
+
+    let renamed = fixture.join("renamed.toml");
+    let renamed_text = renamed.to_str().unwrap();
+    assert!(call2("rename_file/2", a(copied_text), a(renamed_text)).0);
+    assert!(!copied.exists());
+    assert!(renamed.is_file());
+
+    assert!(!call1("delete_directory/1", a(fixture_text)).0,
+        "delete_directory/1 must reject a nonempty directory");
+    assert!(call1("delete_file/1", a(renamed_text)).0);
+    assert!(!call1("delete_file/1", a(renamed_text)).0);
+    assert!(call1("delete_directory/1", a(fixture_text)).0);
+    assert!(!call1("delete_directory/1", a(fixture_text)).0);
+
+    assert!(!call1("make_directory/1", ub("Path")).0);
+    assert!(!call1("delete_file/1", i(7)).0);
+    assert!(!call2("copy_file/2", a("missing-mutation-source"), a("unused")).0);
+    assert!(!call2("copy_file/2", a("Cargo.toml"), ub("Destination")).0);
+    assert!(!call2("rename_file/2", ub("Source"), a("unused")).0);
+}
+
+#[test]
+fn test_file_content_io_compiled() {
+    let fixture = std::path::Path::new("file_content_compiled_fixture.txt");
+    let _ = std::fs::remove_file(fixture);
+
+    let mut vm = vmnew();
+    assert!(t_file_content_io_1(&mut vm, ub("Content")));
+    assert_eq!(read_var(&vm, "Content"), a("alpha-beta"));
+    assert!(!fixture.exists());
+}
+
+#[test]
+fn test_file_content_io_direct() {
+    let path = "file_content_direct_fixture.txt";
+    let _ = std::fs::remove_file(path);
+
+    assert!(call2("write_atom_to_file/2", a(path), a("longer content")).0);
+    assert!(call2("write_atom_to_file/2", a(path), a("short")).0);
+    assert_eq!(std::fs::read(path).unwrap(), b"short");
+    assert!(call2("append_atom_to_file/2", a(path), a("-tail")).0);
+    assert_eq!(std::fs::read(path).unwrap(), b"short-tail");
+
+    let (read_ok, read_vm) = call2("read_file_to_atom/2", a(path), ub("Content"));
+    assert!(read_ok);
+    assert_eq!(read_var(&read_vm, "Content"), a("short-tail"));
+    assert!(call2("read_file_to_atom/2", a(path), a("short-tail")).0);
+    assert!(!call2("read_file_to_atom/2", a(path), a("wrong")).0);
+
+    std::fs::remove_file(path).unwrap();
+    assert!(call2("append_atom_to_file/2", a(path), a("created")).0,
+        "append_atom_to_file/2 creates a missing file");
+    assert_eq!(std::fs::read(path).unwrap(), b"created");
+
+    std::fs::write(path, [0xff]).unwrap();
+    assert!(!call2("read_file_to_atom/2", a(path), ub("Content")).0,
+        "Rust atoms require UTF-8 file content");
+    assert!(!call2("read_file_to_atom/2", a("missing-file-content"), ub("Content")).0);
+    assert!(!call2("read_file_to_atom/2", i(7), ub("Content")).0);
+    assert!(!call2("write_atom_to_file/2", a(path), i(7)).0);
+    assert!(!call2("append_atom_to_file/2", ub("Path"), a("content")).0);
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn test_file_links_truncate_compiled() {
+    let fixture = std::path::Path::new("file_link_compiled_fixture");
+    let _ = std::fs::remove_dir_all(fixture);
+
+    let mut vm = vmnew();
+    assert!(t_file_links_truncate_1(&mut vm, ub("Content")));
+    assert_eq!(read_var(&vm, "Content"), a("abc"));
+    assert!(!fixture.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn test_file_links_truncate_direct() {
+    let fixture = std::path::Path::new("file_link_direct_fixture");
+    let _ = std::fs::remove_dir_all(fixture);
+    std::fs::create_dir(fixture).unwrap();
+
+    let source = fixture.join("source.txt");
+    let hard = fixture.join("hard.txt");
+    let symbolic = fixture.join("symbolic.txt");
+    let dangling = fixture.join("dangling.txt");
+    std::fs::write(&source, b"abcdef").unwrap();
+    let source_text = source.to_str().unwrap();
+    let hard_text = hard.to_str().unwrap();
+    let symbolic_text = symbolic.to_str().unwrap();
+    let dangling_text = dangling.to_str().unwrap();
+
+    assert!(call2("link/2", a(source_text), a(hard_text)).0);
+    assert!(call2("same_file/2", a(source_text), a(hard_text)).0);
+    assert!(!call2("link/2", a(source_text), a(hard_text)).0);
+
+    assert!(call2("symlink/2", a("source.txt"), a(symbolic_text)).0);
+    assert_eq!(std::fs::read(&symbolic).unwrap(), b"abcdef");
+    assert!(!call2("symlink/2", a("source.txt"), a(symbolic_text)).0);
+    assert!(call2("symlink/2", a("missing.txt"), a(dangling_text)).0);
+    assert!(std::fs::symlink_metadata(&dangling).unwrap().file_type().is_symlink());
+
+    assert!(call2("truncate/2", a(hard_text), i(3)).0);
+    assert_eq!(std::fs::read(&source).unwrap(), b"abc");
+    assert!(call2("truncate/2", a(source_text), i(6)).0);
+    assert_eq!(std::fs::read(&source).unwrap(), vec![97, 98, 99, 0, 0, 0]);
+
+    assert!(!call2("link/2", a("missing-link-source"), a("unused-link")).0);
+    assert!(!call2("link/2", i(1), a("unused-link")).0);
+    assert!(!call2("symlink/2", a("target"), i(2)).0);
+    assert!(!call2("truncate/2", a("missing-truncate-path"), i(1)).0);
+    assert!(!call2("truncate/2", a(source_text), i(-1)).0);
+    assert!(!call2("truncate/2", a(source_text), a("3")).0);
+
+    std::fs::remove_dir_all(fixture).unwrap();
+}
+
+#[test]
+fn test_pairs_family_compiled() {
+    let mut project_vm = vmnew();
+    assert!(t_pairs_project_2(&mut project_vm, ub("Keys"), ub("Values")));
+    assert_eq!(read_var(&project_vm, "Keys"), Value::list(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&project_vm, "Values"), Value::list(vec![i(1), i(2)]));
+
+    let mut split_vm = vmnew();
+    assert!(t_pairs_split_2(&mut split_vm, ub("Keys"), ub("Values")));
+    assert_eq!(read_var(&split_vm, "Keys"), Value::list(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&split_vm, "Values"), Value::list(vec![i(1), i(2)]));
+
+    let mut zip_vm = vmnew();
+    assert!(t_pairs_zip_1(&mut zip_vm, ub("Pairs")));
+    assert_eq!(read_var(&zip_vm, "Pairs"), Value::list(vec![
+        Value::strv("-".to_string(), vec![a("a"), i(1)]),
+        Value::strv("-".to_string(), vec![a("b"), i(2)]),
+    ]));
+}
+
+#[test]
 fn test_catch_matching_catcher_runs_recovery() {
     let mut vm = vmnew();
     assert!(t_catch_match_1(&mut vm, ub("R")),
         "catch(throw(oops(42)), oops(X), R = caught(X)) must succeed");
     assert_eq!(read_var(&vm, "R"),
-        Value::Str("caught".to_string(), vec![i(42)]));
+        Value::strv("caught".to_string(), vec![i(42)]));
     assert!(vm.thrown_ball.is_none(), "ball consumed");
 }
 
@@ -294,6 +1524,17 @@ fn test_catch_nested_inner_rethrows_outer_catches() {
 }
 
 #[test]
+fn test_must_be_compiled_success_and_errors() {
+    let mut vm = vmnew();
+    assert!(t_must_be_3(
+        &mut vm, ub("TypeCaught"), ub("InstCaught"), ub("DomainCaught")));
+    assert_eq!(read_var(&vm, "TypeCaught"), a("caught"));
+    assert_eq!(read_var(&vm, "InstCaught"), a("caught"));
+    assert_eq!(read_var(&vm, "DomainCaught"), a("caught"));
+    assert!(vm.thrown_ball.is_none(), "all errors were caught");
+}
+
+#[test]
 fn test_succ_both_modes_compiled() {
     let mut vm = vmnew();
     assert!(t_succ_fwd_1(&mut vm, ub("Y")));
@@ -319,7 +1560,7 @@ fn test_maplist_transform_compiled() {
     let mut vm = vmnew();
     assert!(t_maplist_1(&mut vm, ub("L")),
         "maplist(double, [1,2,3], L) must succeed");
-    assert_eq!(read_var(&vm, "L"), Value::List(vec![i(2), i(4), i(6)]));
+    assert_eq!(read_var(&vm, "L"), Value::list(vec![i(2), i(4), i(6)]));
 }
 
 #[test]
@@ -334,14 +1575,14 @@ fn test_maplist_check_and_fail_compiled() {
 fn test_include_exclude_partition_compiled() {
     let mut vm = vmnew();
     assert!(t_include_1(&mut vm, ub("I")));
-    assert_eq!(read_var(&vm, "I"), Value::List(vec![i(1), i(3)]));
+    assert_eq!(read_var(&vm, "I"), Value::list(vec![i(1), i(3)]));
     let mut vm2 = vmnew();
     assert!(t_exclude_1(&mut vm2, ub("E")));
-    assert_eq!(read_var(&vm2, "E"), Value::List(vec![i(-2)]));
+    assert_eq!(read_var(&vm2, "E"), Value::list(vec![i(-2)]));
     let mut vm3 = vmnew();
     assert!(t_partition_2(&mut vm3, ub("I"), ub("E")));
-    assert_eq!(read_var(&vm3, "I"), Value::List(vec![i(1), i(3)]));
-    assert_eq!(read_var(&vm3, "E"), Value::List(vec![i(-2)]));
+    assert_eq!(read_var(&vm3, "I"), Value::list(vec![i(1), i(3)]));
+    assert_eq!(read_var(&vm3, "E"), Value::list(vec![i(-2)]));
 }
 
 #[test]
@@ -359,19 +1600,19 @@ fn test_atomic_list_concat_compiled() {
     assert_eq!(read_var(&vm, "A"), a("a-b-c"));
     let mut vm2 = vmnew();
     assert!(t_alc_split_1(&mut vm2, ub("L")));
-    assert_eq!(read_var(&vm2, "L"), Value::List(vec![a("x"), a("y"), a("z")]));
+    assert_eq!(read_var(&vm2, "L"), Value::list(vec![a("x"), a("y"), a("z")]));
 }
 
 #[test]
 fn test_atomic_list_concat_direct() {
     let (ok, vm) = call2("atomic_list_concat/2",
-        Value::List(vec![a("foo"), i(7), a("bar")]), ub("A"));
+        Value::list(vec![a("foo"), i(7), a("bar")]), ub("A"));
     assert!(ok);
     assert_eq!(read_var(&vm, "A"), a("foo7bar"));
     assert!(call3("atomic_list_concat/3",
-        Value::List(vec![a("x"), a("y")]), a(","), a("x,y")).0);
+        Value::list(vec![a("x"), a("y")]), a(","), a("x,y")).0);
     assert!(!call3("atomic_list_concat/3",
-        Value::List(vec![a("x"), a("y")]), a(","), a("x;y")).0);
+        Value::list(vec![a("x"), a("y")]), a(","), a("x;y")).0);
     // Split with empty separator must fail (would not terminate).
     assert!(!call3("atomic_list_concat/3", ub("L"), a(""), a("xyz")).0);
 }
@@ -387,19 +1628,128 @@ fn test_char_type_direct() {
     assert!(call2("char_type/2", a("A"), a("upper")).0);
     assert!(!call2("char_type/2", a("a"), a("upper")).0);
     let (ok, vm) = call2("char_type/2", a("7"),
-        Value::Str("digit/1".to_string(), vec![ub("W")]));
+        Value::strv("digit/1".to_string(), vec![ub("W")]));
     assert!(ok);
     assert_eq!(read_var(&vm, "W"), i(7));
     let (ok2, vm2) = call2("char_type/2", a("B"),
-        Value::Str("to_lower/1".to_string(), vec![ub("L")]));
+        Value::strv("to_lower/1".to_string(), vec![ub("L")]));
     assert!(ok2);
     assert_eq!(read_var(&vm2, "L"), a("b"));
     let (ok3, vm3) = call2("char_type/2", a("Q"),
-        Value::Str("upper/1".to_string(), vec![ub("L")]));
+        Value::strv("upper/1".to_string(), vec![ub("L")]));
     assert!(ok3);
     assert_eq!(read_var(&vm3, "L"), a("q"));
     assert!(!call2("char_type/2", a("q"),
-        Value::Str("upper/1".to_string(), vec![ub("L")])).0);
+        Value::strv("upper/1".to_string(), vec![ub("L")])).0);
+}
+
+#[test]
+fn test_code_type_direct() {
+    assert!(call2("code_type/2", i(65), a("alpha")).0);
+    assert!(call2("code_type/2", i(65), a("upper")).0);
+    assert!(call2("code_type/2", i(97), a("lower")).0);
+    assert!(call2("code_type/2", i(48), a("digit")).0);
+    assert!(call2("code_type/2", i(95), a("csym")).0);
+    assert!(call2("code_type/2", i(95), a("csymf")).0);
+    assert!(call2("code_type/2", i(10), a("space")).0);
+    assert!(call2("code_type/2", i(9), a("white")).0);
+    assert!(call2("code_type/2", i(33), a("punct")).0);
+    assert!(call2("code_type/2", i(33), a("graph")).0);
+    assert!(call2("code_type/2", i(127), a("ascii")).0);
+    assert!(!call2("code_type/2", i(128), a("ascii")).0);
+    assert!(call2("code_type/2", i(10), a("newline")).0);
+    assert!(call2("code_type/2", i(13), a("end_of_line")).0);
+    assert!(!call2("code_type/2", i(-1), a("ascii")).0);
+    assert!(!call2("code_type/2", i(256), a("ascii")).0);
+    assert!(!call2("code_type/2", a("A"), a("alpha")).0);
+    assert!(!call2("code_type/2", ub("Code"), a("alpha")).0);
+    assert!(!call2("code_type/2", i(65), ub("Type")).0);
+    assert!(!call2("code_type/2", i(65), a("unknown")).0);
+}
+
+#[test]
+fn test_sub_atom_direct() {
+    let (ok, vm) = call5("sub_atom/5",
+        a("hello"), i(1), i(3), ub("After"), ub("Sub"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "After"), i(1));
+    assert_eq!(read_var(&vm, "Sub"), a("ell"));
+
+    assert!(call5("sub_atom/5", a("hello"), i(0), i(5), i(0), a("hello")).0);
+    let (empty_ok, empty_vm) = call5("sub_atom/5",
+        a("hello"), i(2), i(0), ub("After"), ub("Sub"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "After"), i(3));
+    assert_eq!(read_var(&empty_vm, "Sub"), a(""));
+
+    assert!(!call5("sub_atom/5", a("hello"), i(1), i(3), i(2), a("ell")).0);
+    let (rollback_ok, rollback_vm) = call5("sub_atom/5",
+        a("hello"), i(1), i(3), ub("After"), a("wrong"));
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "After"), ub("After"),
+        "failed Sub unification must roll back the After binding");
+
+    assert!(!call5("sub_atom/5", i(42), i(0), i(1), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", ub("Atom"), i(0), i(1), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), ub("Before"), i(1), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), i(0), ub("Length"), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), i(-1), i(1), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), i(1), i(-1), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), i(4), i(2), ub("After"), ub("Sub")).0);
+    assert!(!call5("sub_atom/5", a("hello"), i(i64::MAX), i(i64::MAX),
+        ub("After"), ub("Sub")).0);
+}
+
+#[test]
+fn test_must_be_direct() {
+    assert!(call2("must_be/2", a("atom"), a("hello")).0);
+    assert!(call2("must_be/2", a("integer"), i(7)).0);
+    assert!(call2("must_be/2", a("float"), Value::Float(2.5)).0);
+    assert!(call2("must_be/2", a("number"), i(7)).0);
+    assert!(call2("must_be/2", a("compound"),
+        Value::strv("node".to_string(), vec![i(1)])).0);
+    assert!(call2("must_be/2", a("compound"), Value::list(vec![i(1)])).0);
+    assert!(call2("must_be/2", a("atomic"), Value::list(vec![])).0);
+    assert!(call2("must_be/2", a("callable"), Value::list(vec![i(1)])).0);
+    assert!(call2("must_be/2", a("boolean"), Value::Bool(true)).0);
+    assert!(call2("must_be/2", a("list"), Value::list(vec![a("x")])).0);
+    assert!(call2("must_be/2", a("ground"),
+        Value::strv("node".to_string(), vec![a("x"), i(1)])).0);
+    assert!(call2("must_be/2", a("var"), ub("X")).0);
+    assert!(call2("must_be/2", a("nonvar"), i(1)).0);
+
+    let (type_ok, type_vm) = call2("must_be/2", a("atom"), i(5));
+    assert!(!type_ok);
+    assert_eq!(thrown_formal(&type_vm), Value::strv(
+        "type_error".to_string(), vec![a("atom"), i(5)]));
+
+    let (inst_ok, inst_vm) = call2("must_be/2", a("integer"), ub("X"));
+    assert!(!inst_ok);
+    assert_eq!(thrown_formal(&inst_vm), a("instantiation_error"));
+
+    let nested = Value::strv("node".to_string(), vec![ub("X"), i(2)]);
+    let (ground_ok, ground_vm) = call2("must_be/2", a("ground"), nested);
+    assert!(!ground_ok);
+    assert_eq!(thrown_formal(&ground_vm), a("instantiation_error"));
+
+    let (domain_ok, domain_vm) = call2("must_be/2", a("unknown_type"), i(5));
+    assert!(!domain_ok);
+    assert_eq!(thrown_formal(&domain_vm), Value::strv(
+        "domain_error".to_string(), vec![a("type"), a("unknown_type")]));
+
+    let (type_inst_ok, type_inst_vm) = call2("must_be/2", ub("Type"), i(5));
+    assert!(!type_inst_ok);
+    assert_eq!(thrown_formal(&type_inst_vm), a("instantiation_error"));
+
+    let (type_atom_ok, type_atom_vm) = call2("must_be/2", i(7), i(5));
+    assert!(!type_atom_ok);
+    assert_eq!(thrown_formal(&type_atom_vm), Value::strv(
+        "type_error".to_string(), vec![a("atom"), i(7)]));
+
+    let (nonvar_ok, nonvar_vm) = call2("must_be/2", a("nonvar"), ub("X"));
+    assert!(!nonvar_ok);
+    assert_eq!(thrown_formal(&nonvar_vm), Value::strv(
+        "type_error".to_string(), vec![a("nonvar"), ub("X")]));
 }
 
 // ---- layer 2: direct execute_builtin coverage ------------------------
@@ -428,6 +1778,27 @@ fn call3(op: &str, a1: Value, a2: Value, a3: Value) -> (bool, WamState) {
     (ok, vm)
 }
 
+fn call4(op: &str, a1: Value, a2: Value, a3: Value, a4: Value) -> (bool, WamState) {
+    let mut vm = vmnew();
+    vm.set_reg("A1", a1);
+    vm.set_reg("A2", a2);
+    vm.set_reg("A3", a3);
+    vm.set_reg("A4", a4);
+    let ok = vm.execute_builtin(op, 4);
+    (ok, vm)
+}
+
+fn call5(op: &str, a1: Value, a2: Value, a3: Value, a4: Value, a5: Value) -> (bool, WamState) {
+    let mut vm = vmnew();
+    vm.set_reg("A1", a1);
+    vm.set_reg("A2", a2);
+    vm.set_reg("A3", a3);
+    vm.set_reg("A4", a4);
+    vm.set_reg("A5", a5);
+    let ok = vm.execute_builtin(op, 5);
+    (ok, vm)
+}
+
 #[test]
 fn test_not_unify_and_not_equal() {
     assert!(call2("\\\\=/2", a("x"), a("y")).0);
@@ -439,14 +1810,470 @@ fn test_not_unify_and_not_equal() {
 }
 
 #[test]
+fn test_arithmetic_evaluation_direct() {
+    let bin = |op: &str, left: Value, right: Value| {
+        Value::strv(format!("{op}/2"), vec![left, right])
+    };
+
+    let nested = bin("*", bin("+", i(2), i(3)), i(4));
+    let (nested_ok, nested_vm) = call2("is/2", ub("Result"), nested);
+    assert!(nested_ok);
+    assert_eq!(read_var(&nested_vm, "Result"), i(20));
+
+    let (division_ok, division_vm) = call2("is/2", ub("Result"), bin("/", i(7), i(2)));
+    assert!(division_ok);
+    assert_eq!(read_var(&division_vm, "Result"), Value::Float(3.5));
+
+    let (quotient_ok, quotient_vm) = call2("is/2", ub("Result"), bin("//", i(-3), i(2)));
+    assert!(quotient_ok);
+    assert_eq!(read_var(&quotient_vm, "Result"), i(-1));
+
+    let (positive_mod_ok, positive_mod_vm) =
+        call2("is/2", ub("Result"), bin("mod", i(-3), i(2)));
+    assert!(positive_mod_ok);
+    assert_eq!(read_var(&positive_mod_vm, "Result"), i(1));
+
+    let (negative_mod_ok, negative_mod_vm) =
+        call2("is/2", ub("Result"), bin("mod", i(3), i(-2)));
+    assert!(negative_mod_ok);
+    assert_eq!(read_var(&negative_mod_vm, "Result"), i(-1));
+
+    assert!(call2("is/2", i(5), bin("+", i(2), i(3))).0);
+    assert!(!call2("is/2", i(6), bin("+", i(2), i(3))).0);
+
+    let mut bound_expr = vmnew();
+    assert!(bound_expr.unify(&ub("Expr"), &bin("+", i(8), i(1))));
+    bound_expr.set_reg("A1", ub("Result"));
+    bound_expr.set_reg("A2", ub("Expr"));
+    assert!(bound_expr.execute_builtin("is/2", 2));
+    assert_eq!(read_var(&bound_expr, "Result"), i(9));
+
+    assert!(!call2("is/2", ub("Result"), bin("/", i(1), i(0))).0);
+    assert!(!call2("is/2", ub("Result"), bin("unknown", i(1), i(2))).0);
+    assert!(!call2("is/2", ub("Result"), ub("Expr")).0);
+
+    let mut missing_expr = vmnew();
+    missing_expr.set_reg("A1", ub("Result"));
+    assert!(!missing_expr.execute_builtin("is/2", 2));
+    assert_eq!(read_var(&missing_expr, "Result"), ub("Result"));
+
+    let mut missing_result = vmnew();
+    missing_result.set_reg("A2", bin("+", i(1), i(2)));
+    assert!(!missing_result.execute_builtin("is/2", 2));
+}
+
+#[test]
+fn test_arithmetic_comparisons_direct() {
+    let bin = |op: &str, left: Value, right: Value| {
+        Value::strv(format!("{op}/2"), vec![left, right])
+    };
+
+    assert!(call2(">/2", i(4), i(3)).0);
+    assert!(call2("</2", i(3), Value::Float(3.5)).0);
+    assert!(call2(">=/2", i(4), i(4)).0);
+    assert!(call2("=</2", bin("+", i(1), i(2)), i(3)).0);
+    assert!(call2("=:=/2", bin("*", i(3), i(4)), i(12)).0);
+    assert!(call2("=:=/2", i(1), Value::Float(1.0)).0);
+    assert!(call2("=\\\\=/2", i(1), Value::Float(1.5)).0);
+
+    let inexact_sum = bin("+", Value::Float(0.1), Value::Float(0.2));
+    assert!(!call2("=:=/2", inexact_sum.clone(), Value::Float(0.3)).0);
+    assert!(call2("=\\\\=/2", inexact_sum, Value::Float(0.3)).0);
+
+    assert!(!call2(">/2", ub("Left"), i(1)).0);
+    assert!(!call2("=:=/2", a("not_a_number"), i(1)).0);
+
+    let mut missing_left = vmnew();
+    missing_left.set_reg("A2", i(1));
+    assert!(!missing_left.execute_builtin("</2", 2));
+
+    let mut missing_right = vmnew();
+    missing_right.set_reg("A1", i(1));
+    assert!(!missing_right.execute_builtin("</2", 2));
+}
+
+#[test]
+fn test_length_direct_modes() {
+    let (measure_ok, measure_vm) =
+        call2("length/2", Value::list(vec![a("a"), a("b"), a("c")]), ub("N"));
+    assert!(measure_ok);
+    assert_eq!(read_var(&measure_vm, "N"), i(3));
+
+    assert!(call2("length/2", Value::list(vec![a("a"), a("b")]), i(2)).0);
+    assert!(!call2("length/2", Value::list(vec![a("a"), a("b")]), i(3)).0);
+    assert!(call2("length/2", a("[]"), i(0)).0);
+
+    let (construct_ok, construct_vm) = call2("length/2", ub("List"), i(3));
+    assert!(construct_ok);
+    match read_var(&construct_vm, "List") {
+        Value::List(items) => {
+            assert_eq!(items.len(), 3);
+            assert!(items.iter().all(Value::is_unbound));
+            assert_ne!(items[0], items[1]);
+            assert_ne!(items[1], items[2]);
+            assert_ne!(items[0], items[2]);
+        }
+        other => panic!("expected constructed list, got {other:?}"),
+    }
+
+    let (empty_ok, empty_vm) = call2("length/2", ub("List"), i(0));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "List"), Value::list(vec![]));
+
+    let mut aliased_length = vmnew();
+    assert!(aliased_length.unify(&ub("N"), &i(2)));
+    aliased_length.set_reg("A1", ub("List"));
+    aliased_length.set_reg("A2", ub("N"));
+    assert!(aliased_length.execute_builtin("length/2", 2));
+    assert_eq!(read_var(&aliased_length, "N"), i(2));
+    assert!(matches!(read_var(&aliased_length, "List"), Value::List(items) if items.len() == 2));
+
+    let (shared_ok, shared_vm) =
+        call2("length/2", Value::list(vec![ub("X")]), ub("X"));
+    assert!(shared_ok);
+    assert_eq!(read_var(&shared_vm, "X"), i(1));
+
+    assert!(!call2("length/2", ub("List"), i(-1)).0);
+    assert!(!call2("length/2", ub("List"), i(i64::MAX)).0);
+    assert!(!call2("length/2", ub("List"), Value::Float(2.0)).0);
+    assert!(!call2("length/2", a("not_a_list"), ub("N")).0);
+
+    let mut missing_list = vmnew();
+    missing_list.set_reg("A2", i(0));
+    assert!(!missing_list.execute_builtin("length/2", 2));
+
+    let mut missing_length = vmnew();
+    missing_length.set_reg("A1", Value::list(vec![]));
+    assert!(!missing_length.execute_builtin("length/2", 2));
+}
+
+#[test]
+fn test_append_direct_modes_and_rollback() {
+    let (forward_ok, forward_vm) = call3(
+        "append/3",
+        Value::list(vec![a("a"), a("b")]),
+        Value::list(vec![a("c"), a("d")]),
+        ub("Whole"),
+    );
+    assert!(forward_ok);
+    assert_eq!(
+        read_var(&forward_vm, "Whole"),
+        Value::list(vec![a("a"), a("b"), a("c"), a("d")]),
+    );
+
+    let (suffix_ok, suffix_vm) = call3(
+        "append/3",
+        Value::list(vec![a("a"), a("b")]),
+        ub("Suffix"),
+        Value::list(vec![a("a"), a("b"), a("c")]),
+    );
+    assert!(suffix_ok);
+    assert_eq!(read_var(&suffix_vm, "Suffix"), Value::list(vec![a("c")]));
+
+    let (prefix_ok, prefix_vm) = call3(
+        "append/3",
+        ub("Prefix"),
+        Value::list(vec![a("c"), a("d")]),
+        Value::list(vec![a("a"), a("b"), a("c"), a("d")]),
+    );
+    assert!(prefix_ok);
+    assert_eq!(read_var(&prefix_vm, "Prefix"), Value::list(vec![a("a"), a("b")]));
+
+    let (alias_ok, alias_vm) = call3(
+        "append/3",
+        Value::list(vec![ub("X")]),
+        Value::list(vec![a("b")]),
+        Value::list(vec![a("a"), a("b")]),
+    );
+    assert!(alias_ok);
+    assert_eq!(read_var(&alias_vm, "X"), a("a"));
+
+    assert!(call3("append/3", a("[]"), ub("Tail"), Value::list(vec![a("a")])).0);
+    assert!(!call3(
+        "append/3",
+        Value::list(vec![a("a"), a("b")]),
+        ub("Tail"),
+        Value::list(vec![a("a"), a("c")]),
+    ).0);
+    assert!(!call3("append/3", a("not_a_list"), a("[]"), ub("Whole")).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "append/3",
+        Value::list(vec![a("a"), a("b")]),
+        Value::list(vec![a("c")]),
+        Value::list(vec![a("a"), ub("X"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", Value::list(vec![]));
+    missing_output.set_reg("A2", Value::list(vec![]));
+    assert!(!missing_output.execute_builtin("append/3", 3));
+}
+
+#[test]
+fn test_functor_direct_modes_and_rollback() {
+    let compound = Value::strv("pair/2".to_string(), vec![a("left"), i(7)]);
+    let (read_ok, read_vm) = call3("functor/3", compound, ub("Name"), ub("Arity"));
+    assert!(read_ok);
+    assert_eq!(read_var(&read_vm, "Name"), a("pair"));
+    assert_eq!(read_var(&read_vm, "Arity"), i(2));
+
+    let (construct_ok, construct_vm) = call3("functor/3", ub("Term"), a("node"), i(2));
+    assert!(construct_ok);
+    match read_var(&construct_vm, "Term") {
+        Value::Str(name, args) => {
+            assert_eq!(name, "node");
+            assert_eq!(args.len(), 2);
+            assert!(args.iter().all(Value::is_unbound));
+            assert_ne!(args[0], args[1]);
+        }
+        other => panic!("expected constructed compound, got {other:?}"),
+    }
+
+    let (atom_ok, atom_vm) = call3("functor/3", ub("Term"), a("atom"), i(0));
+    assert!(atom_ok);
+    assert_eq!(read_var(&atom_vm, "Term"), a("atom"));
+
+    let (number_ok, number_vm) = call3("functor/3", ub("Term"), i(42), i(0));
+    assert!(number_ok);
+    assert_eq!(read_var(&number_vm, "Term"), i(42));
+
+    let (empty_list_ok, empty_list_vm) = call3("functor/3", ub("Term"), a("[]"), i(0));
+    assert!(empty_list_ok);
+    assert_eq!(read_var(&empty_list_vm, "Term"), a("[]"));
+
+    assert!(!call3("functor/3", ub("Term"), i(42), i(1)).0);
+    assert!(!call3("functor/3", ub("Term"), ub("Name"), i(0)).0);
+    assert!(!call3("functor/3", ub("Term"), a("f"), i(-1)).0);
+    assert!(!call3("functor/3", ub("Term"), a("f"), i(i64::MAX)).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "functor/3",
+        Value::strv("f/2".to_string(), vec![a("a"), a("b")]),
+        ub("Name"),
+        i(1),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Name"), ub("Name"));
+
+    let mut missing_name = vmnew();
+    missing_name.set_reg("A1", a("atom"));
+    missing_name.set_reg("A3", i(0));
+    assert!(!missing_name.execute_builtin("functor/3", 3));
+
+    let mut missing_arity = vmnew();
+    missing_arity.set_reg("A1", a("atom"));
+    missing_arity.set_reg("A2", ub("Name"));
+    assert!(!missing_arity.execute_builtin("functor/3", 3));
+}
+
+#[test]
+fn test_arg_direct_modes_and_rollback() {
+    let term = Value::strv("pair/2".to_string(), vec![a("left"), i(7)]);
+    let (first_ok, first_vm) = call3("arg/3", i(1), term.clone(), ub("Arg"));
+    assert!(first_ok);
+    assert_eq!(read_var(&first_vm, "Arg"), a("left"));
+
+    let (second_ok, second_vm) = call3("arg/3", i(2), term, ub("Arg"));
+    assert!(second_ok);
+    assert_eq!(read_var(&second_vm, "Arg"), i(7));
+
+    let list = Value::list(vec![a("head"), a("middle"), a("tail")]);
+    let (head_ok, head_vm) = call3("arg/3", i(1), list.clone(), ub("Arg"));
+    assert!(head_ok);
+    assert_eq!(read_var(&head_vm, "Arg"), a("head"));
+    let (tail_ok, tail_vm) = call3("arg/3", i(2), list, ub("Arg"));
+    assert!(tail_ok);
+    assert_eq!(
+        read_var(&tail_vm, "Arg"),
+        Value::list(vec![a("middle"), a("tail")]),
+    );
+
+    assert!(!call3("arg/3", i(0), a("atom"), ub("Arg")).0);
+    assert!(!call3("arg/3", i(-1), a("atom"), ub("Arg")).0);
+    assert!(!call3("arg/3", i(3), Value::strv("f/2".to_string(), vec![a("a"), a("b")]), ub("Arg")).0);
+    assert!(!call3("arg/3", i(i64::MAX), Value::list(vec![a("a")]), ub("Arg")).0);
+    assert!(!call3("arg/3", i(1), Value::list(vec![]), ub("Arg")).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "arg/3",
+        i(1),
+        Value::strv(
+            "wrapper/1".to_string(),
+            vec![Value::strv("pair/2".to_string(), vec![a("a"), a("b")])],
+        ),
+        Value::strv("pair/2".to_string(), vec![ub("X"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
+
+    let mut bound_term = vmnew();
+    assert!(bound_term.unify(&ub("Term"), &Value::strv("one/1".to_string(), vec![a("value")])));
+    bound_term.set_reg("A1", i(1));
+    bound_term.set_reg("A2", ub("Term"));
+    bound_term.set_reg("A3", ub("Arg"));
+    assert!(bound_term.execute_builtin("arg/3", 3));
+    assert_eq!(read_var(&bound_term, "Arg"), a("value"));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", i(1));
+    missing_output.set_reg("A2", Value::strv("one/1".to_string(), vec![a("value")]));
+    assert!(!missing_output.execute_builtin("arg/3", 3));
+}
+
+#[test]
+fn test_univ_direct_modes_and_rollback() {
+    let compound = Value::strv("pair/2".to_string(), vec![a("left"), i(7)]);
+    let (decompose_ok, decompose_vm) = call2("=../2", compound, ub("Parts"));
+    assert!(decompose_ok);
+    assert_eq!(read_var(&decompose_vm, "Parts"),
+        Value::list(vec![a("pair"), a("left"), i(7)]));
+
+    let (compose_ok, compose_vm) = call2(
+        "=../2", ub("Term"), Value::list(vec![a("node"), a("a"), i(7)]));
+    assert!(compose_ok);
+    assert_eq!(read_var(&compose_vm, "Term"),
+        Value::strv("node".to_string(), vec![a("a"), i(7)]));
+
+    let (atom_ok, atom_vm) = call2("=../2", a("atom"), ub("Parts"));
+    assert!(atom_ok);
+    assert_eq!(read_var(&atom_vm, "Parts"), Value::list(vec![a("atom")]));
+
+    let (number_ok, number_vm) = call2("=../2", ub("Term"), Value::list(vec![i(42)]));
+    assert!(number_ok);
+    assert_eq!(read_var(&number_vm, "Term"), i(42));
+
+    let (empty_ok, empty_vm) = call2("=../2", Value::list(vec![]), ub("Parts"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Parts"), Value::list(vec![a("[]")]));
+
+    let (list_ok, list_vm) = call2(
+        "=../2", Value::list(vec![a("head"), a("tail")]), ub("Parts"));
+    assert!(list_ok);
+    assert_eq!(read_var(&list_vm, "Parts"), Value::list(vec![
+        a("."), a("head"), Value::list(vec![a("tail")]),
+    ]));
+
+    assert!(!call2("=../2", ub("Term"), Value::list(vec![])).0);
+    assert!(!call2("=../2", ub("Term"), Value::list(vec![ub("Head")])).0);
+    assert!(!call2("=../2", ub("Term"), Value::list(vec![
+        Value::strv("not_atomic/0".to_string(), vec![]),
+    ])).0);
+    assert!(!call2("=../2", ub("Term"), a("not_a_list")).0);
+
+    let (rollback_ok, rollback_vm) = call2(
+        "=../2",
+        Value::strv("pair/2".to_string(), vec![a("left"), a("right")]),
+        Value::list(vec![ub("Name"), a("wrong"), a("right")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Name"), ub("Name"));
+
+    let mut missing_term = vmnew();
+    missing_term.set_reg("A2", Value::list(vec![a("atom")]));
+    assert!(!missing_term.execute_builtin("=../2", 2));
+
+    let mut missing_list = vmnew();
+    missing_list.set_reg("A1", a("atom"));
+    assert!(!missing_list.execute_builtin("=../2", 2));
+}
+
+#[test]
+fn test_copy_term_direct_sharing_and_rollback() {
+    let (copy_ok, copy_vm) = call2(
+        "copy_term/2",
+        Value::strv("pair/2".to_string(), vec![ub("Source"), ub("Source")]),
+        ub("Copy"),
+    );
+    assert!(copy_ok);
+    match read_var(&copy_vm, "Copy") {
+        Value::Str(name, args) => {
+            assert_eq!(name, "pair");
+            assert_eq!(args.len(), 2);
+            assert!(args[0].is_unbound());
+            assert_eq!(args[0], args[1]);
+            assert_ne!(args[0], ub("Source"));
+        }
+        other => panic!("expected copied pair, got {other:?}"),
+    }
+    assert_eq!(read_var(&copy_vm, "Source"), ub("Source"));
+
+    let (ground_ok, ground_vm) = call2(
+        "copy_term/2",
+        Value::strv("pair/2".to_string(), vec![a("left"), i(7)]),
+        ub("Copy"),
+    );
+    assert!(ground_ok);
+    assert_eq!(read_var(&ground_vm, "Copy"),
+        Value::strv("pair".to_string(), vec![a("left"), i(7)]));
+
+    let (rollback_ok, rollback_vm) = call2(
+        "copy_term/2",
+        Value::strv("outer/2".to_string(), vec![
+            Value::strv("pair/2".to_string(), vec![ub("Source"), a("right")]),
+            a("tail"),
+        ]),
+        Value::strv("outer/2".to_string(), vec![
+            Value::strv("pair/2".to_string(), vec![ub("Captured"), a("wrong")]),
+            a("tail"),
+        ]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Captured"), ub("Captured"));
+    assert_eq!(read_var(&rollback_vm, "Source"), ub("Source"));
+
+    let mut missing_term = vmnew();
+    missing_term.set_reg("A2", ub("Copy"));
+    assert!(!missing_term.execute_builtin("copy_term/2", 2));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", a("ground"));
+    assert!(!missing_output.execute_builtin("copy_term/2", 2));
+}
+
+#[test]
+fn test_reverse_direct_modes_and_rollback() {
+    let (forward_ok, forward_vm) = call2(
+        "reverse/2", Value::list(vec![a("a"), a("b"), a("c")]), ub("Reversed"));
+    assert!(forward_ok);
+    assert_eq!(read_var(&forward_vm, "Reversed"),
+        Value::list(vec![a("c"), a("b"), a("a")]));
+
+    let (inverse_ok, inverse_vm) = call2(
+        "reverse/2", a("[]"), Value::list(vec![]));
+    assert!(inverse_ok);
+    assert_eq!(read_var(&inverse_vm, "Reversed"), ub("Reversed"));
+
+    assert!(!call2("reverse/2", a("not_a_list"), ub("Reversed")).0);
+
+    let (rollback_ok, rollback_vm) = call2(
+        "reverse/2",
+        Value::list(vec![a("a"), a("b")]),
+        Value::list(vec![ub("Captured"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Captured"), ub("Captured"));
+
+    let mut missing_source = vmnew();
+    missing_source.set_reg("A2", ub("Reversed"));
+    assert!(!missing_source.execute_builtin("reverse/2", 2));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", Value::list(vec![]));
+    assert!(!missing_output.execute_builtin("reverse/2", 2));
+}
+
+#[test]
 fn test_standard_order() {
     assert!(call2("@</2", a("a"), a("b")).0);
     assert!(!call2("@</2", a("b"), a("a")).0);
     assert!(call2("@</2", i(99), a("a")).0, "numbers precede atoms");
-    assert!(call2("@</2", a("zzz"), Value::Str("f/1".to_string(), vec![i(1)])).0,
+    assert!(call2("@</2", a("zzz"), Value::strv("f/1".to_string(), vec![i(1)])).0,
         "atoms precede compounds");
     assert!(call2("@=</2", a("a"), a("a")).0);
-    assert!(call2("@>/2", Value::List(vec![i(1), i(2)]), Value::List(vec![i(1), i(1)])).0);
+    assert!(call2("@>/2", Value::list(vec![i(1), i(2)]), Value::list(vec![i(1), i(1)])).0);
     assert!(call2("@>=/2", a("b"), a("b")).0);
     let (ok, vm) = call3("compare/3", ub("O"), i(1), i(2));
     assert!(ok);
@@ -458,48 +2285,208 @@ fn test_standard_order() {
 
 #[test]
 fn test_keysort() {
-    let pair = |k: Value, v: Value| Value::Str("-/2".to_string(), vec![k, v]);
+    let pair = |k: Value, v: Value| Value::strv("-/2".to_string(), vec![k, v]);
     // read_var goes through deref_heap, which normalizes the functor
     // spelling "-/2" to the display name "-" — compare against that.
-    let dpair = |k: Value, v: Value| Value::Str("-".to_string(), vec![k, v]);
+    let dpair = |k: Value, v: Value| Value::strv("-".to_string(), vec![k, v]);
     let (ok, vm) = call2("keysort/2",
-        Value::List(vec![pair(a("b"), i(1)), pair(a("a"), i(2)), pair(a("b"), i(0))]),
+        Value::list(vec![pair(a("b"), i(1)), pair(a("a"), i(2)), pair(a("b"), i(0))]),
         ub("S"));
     assert!(ok);
-    assert_eq!(read_var(&vm, "S"), Value::List(vec![
+    assert_eq!(read_var(&vm, "S"), Value::list(vec![
         dpair(a("a"), i(2)), dpair(a("b"), i(1)), dpair(a("b"), i(0)),
     ]), "stable by key, payload order preserved");
 }
 
 #[test]
+fn test_sort4_modes_and_keys() {
+    let row = |name: &str, key: i64| {
+        Value::strv("row/2".to_string(), vec![a(name), i(key)])
+    };
+    let drow = |name: &str, key: i64| {
+        Value::strv("row".to_string(), vec![a(name), i(key)])
+    };
+    let rows = Value::list(vec![row("a", 2), row("b", 1), row("c", 2)]);
+
+    let (ascending_ok, ascending_vm) = call4(
+        "sort/4", i(2), a("@=<"), rows.clone(), ub("Sorted"));
+    assert!(ascending_ok);
+    assert_eq!(read_var(&ascending_vm, "Sorted"), Value::list(vec![
+        drow("b", 1), drow("a", 2), drow("c", 2),
+    ]));
+
+    let (ascending_unique_ok, ascending_unique_vm) = call4(
+        "sort/4", i(2), a("@<"), rows.clone(), ub("Sorted"));
+    assert!(ascending_unique_ok);
+    assert_eq!(read_var(&ascending_unique_vm, "Sorted"), Value::list(vec![
+        drow("b", 1), drow("a", 2),
+    ]));
+
+    let (descending_ok, descending_vm) = call4(
+        "sort/4", i(2), a("@>="), rows.clone(), ub("Sorted"));
+    assert!(descending_ok);
+    assert_eq!(read_var(&descending_vm, "Sorted"), Value::list(vec![
+        drow("a", 2), drow("c", 2), drow("b", 1),
+    ]));
+
+    let (descending_unique_ok, descending_unique_vm) = call4(
+        "sort/4", i(2), a("@>"), rows, ub("Sorted"));
+    assert!(descending_unique_ok);
+    assert_eq!(read_var(&descending_unique_vm, "Sorted"), Value::list(vec![
+        drow("a", 2), drow("b", 1),
+    ]));
+
+    let (whole_ok, whole_vm) = call4(
+        "sort/4", i(0), a("@<"),
+        Value::list(vec![a("b"), a("a"), a("b")]), ub("Sorted"));
+    assert!(whole_ok);
+    assert_eq!(read_var(&whole_vm, "Sorted"), Value::list(vec![a("a"), a("b")]));
+
+    let (list_key_ok, list_key_vm) = call4(
+        "sort/4", i(1), a("@=<"),
+        Value::list(vec![
+            Value::list(vec![i(2), a("two")]),
+            Value::list(vec![i(1), a("one")]),
+        ]),
+        ub("Sorted"),
+    );
+    assert!(list_key_ok);
+    assert_eq!(read_var(&list_key_vm, "Sorted"), Value::list(vec![
+        Value::list(vec![i(1), a("one")]),
+        Value::list(vec![i(2), a("two")]),
+    ]));
+}
+
+#[test]
+fn test_sort4_validation_and_rollback() {
+    let list = Value::list(vec![a("b"), a("a")]);
+    assert!(!call4("sort/4", i(-1), a("@<"), list.clone(), ub("Sorted")).0);
+    assert!(!call4("sort/4", a("key"), a("@<"), list.clone(), ub("Sorted")).0);
+    assert!(!call4("sort/4", i(0), a("ascending"), list.clone(), ub("Sorted")).0);
+    assert!(!call4("sort/4", i(0), a("@<"), a("not-a-list"), ub("Sorted")).0);
+
+    let (empty_ok, empty_vm) = call4(
+        "sort/4", i(0), a("@=<"), Value::list(vec![]), ub("Sorted"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Sorted"), Value::list(vec![]));
+
+    let (rollback_ok, rollback_vm) = call4(
+        "sort/4",
+        i(0),
+        a("@=<"),
+        list,
+        Value::list(vec![ub("First"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "First"), ub("First"));
+}
+
+#[test]
+fn test_pairs_family_direct() {
+    let pair = |k: Value, v: Value| Value::strv("-/2".to_string(), vec![k, v]);
+    let pairs = Value::list(vec![pair(a("a"), i(1)), pair(a("b"), i(2))]);
+
+    let (keys_ok, keys_vm) = call2("pairs_keys/2", pairs.clone(), ub("Keys"));
+    assert!(keys_ok);
+    assert_eq!(read_var(&keys_vm, "Keys"), Value::list(vec![a("a"), a("b")]));
+
+    let (values_ok, values_vm) = call2("pairs_values/2", pairs.clone(), ub("Values"));
+    assert!(values_ok);
+    assert_eq!(read_var(&values_vm, "Values"), Value::list(vec![i(1), i(2)]));
+
+    let (split_ok, split_vm) = call3(
+        "pairs_keys_values/3", pairs, ub("Keys"), ub("Values"));
+    assert!(split_ok);
+    assert_eq!(read_var(&split_vm, "Keys"), Value::list(vec![a("a"), a("b")]));
+    assert_eq!(read_var(&split_vm, "Values"), Value::list(vec![i(1), i(2)]));
+
+    let (zip_ok, zip_vm) = call3(
+        "pairs_keys_values/3",
+        ub("Pairs"),
+        Value::list(vec![a("a"), a("b")]),
+        Value::list(vec![i(1), i(2)]),
+    );
+    assert!(zip_ok);
+    assert_eq!(read_var(&zip_vm, "Pairs"), Value::list(vec![
+        Value::strv("-".to_string(), vec![a("a"), i(1)]),
+        Value::strv("-".to_string(), vec![a("b"), i(2)]),
+    ]));
+
+    let (empty_ok, empty_vm) = call3(
+        "pairs_keys_values/3", ub("Pairs"), Value::list(vec![]), Value::list(vec![]));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Pairs"), Value::list(vec![]));
+
+    assert!(!call3(
+        "pairs_keys_values/3",
+        ub("Pairs"),
+        Value::list(vec![a("a")]),
+        Value::list(vec![i(1), i(2)]),
+    ).0);
+    assert!(!call2(
+        "pairs_keys/2",
+        Value::list(vec![Value::strv("other/2".to_string(), vec![a("a"), i(1)])]),
+        ub("Keys"),
+    ).0);
+
+    let (rollback_ok, rollback_vm) = call3(
+        "pairs_keys_values/3",
+        Value::list(vec![pair(ub("X"), i(1))]),
+        Value::list(vec![a("bound")]),
+        Value::list(vec![i(2)]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "X"), ub("X"));
+}
+
+#[test]
 fn test_list_utilities() {
-    assert!(call2("memberchk/2", a("b"), Value::List(vec![a("a"), a("b")])).0);
-    assert!(!call2("memberchk/2", a("z"), Value::List(vec![a("a"), a("b")])).0);
-    let (ok, vm) = call2("last/2", Value::List(vec![i(1), i(2), i(3)]), ub("L"));
+    assert!(call2("memberchk/2", a("b"), Value::list(vec![a("a"), a("b")])).0);
+    assert!(!call2("memberchk/2", a("z"), Value::list(vec![a("a"), a("b")])).0);
+    let (ok, vm) = call2("last/2", Value::list(vec![i(1), i(2), i(3)]), ub("L"));
     assert!(ok);
     assert_eq!(read_var(&vm, "L"), i(3));
-    let (ok2, vm2) = call3("nth0/3", i(1), Value::List(vec![a("x"), a("y")]), ub("E"));
+    let (ok2, vm2) = call3("nth0/3", i(1), Value::list(vec![a("x"), a("y")]), ub("E"));
     assert!(ok2);
     assert_eq!(read_var(&vm2, "E"), a("y"));
-    let (ok3, vm3) = call3("nth1/3", i(1), Value::List(vec![a("x"), a("y")]), ub("E"));
+    let (ok3, vm3) = call3("nth1/3", i(1), Value::list(vec![a("x"), a("y")]), ub("E"));
     assert!(ok3);
     assert_eq!(read_var(&vm3, "E"), a("x"));
-    assert!(!call3("nth0/3", i(5), Value::List(vec![a("x")]), ub("E")).0);
+    assert!(!call3("nth0/3", i(5), Value::list(vec![a("x")]), ub("E")).0);
     let (ok4, vm4) = call3("numlist/3", i(2), i(5), ub("L"));
     assert!(ok4);
-    assert_eq!(read_var(&vm4, "L"), Value::List(vec![i(2), i(3), i(4), i(5)]));
+    assert_eq!(read_var(&vm4, "L"), Value::list(vec![i(2), i(3), i(4), i(5)]));
     assert!(!call3("numlist/3", i(5), i(2), ub("L")).0);
     let (ok5, vm5) = call3("delete/3",
-        Value::List(vec![a("a"), a("b"), a("a"), a("c")]), a("a"), ub("R"));
+        Value::list(vec![a("a"), a("b"), a("a"), a("c")]), a("a"), ub("R"));
     assert!(ok5);
-    assert_eq!(read_var(&vm5, "R"), Value::List(vec![a("b"), a("c")]));
+    assert_eq!(read_var(&vm5, "R"), Value::list(vec![a("b"), a("c")]));
+    let (ok6, vm6) = call3(
+        "subtract/3",
+        Value::list(vec![a("a"), a("b"), a("a"), a("c"), a("d")]),
+        Value::list(vec![a("a"), a("d")]),
+        ub("R"),
+    );
+    assert!(ok6);
+    assert_eq!(read_var(&vm6, "R"), Value::list(vec![a("b"), a("c")]));
+    let pair = Value::strv("pair/2".to_string(), vec![a("x"), i(1)]);
+    let (ok7, vm7) = call3(
+        "subtract/3",
+        Value::list(vec![pair.clone(), a("keep")]),
+        Value::list(vec![pair]),
+        ub("R"),
+    );
+    assert!(ok7);
+    assert_eq!(read_var(&vm7, "R"), Value::list(vec![a("keep")]));
+    assert!(!call3("subtract/3", a("not_a_list"), Value::list(vec![]), ub("R")).0);
+    assert!(!call3("subtract/3", Value::list(vec![]), a("not_a_list"), ub("R")).0);
 }
 
 #[test]
 fn test_nth_unbound_index_enumerates() {
     let mut vm = vmnew();
     vm.set_reg("A1", ub("N"));
-    vm.set_reg("A2", Value::List(vec![a("x"), a("y")]));
+    vm.set_reg("A2", Value::list(vec![a("x"), a("y")]));
     vm.set_reg("A3", ub("E"));
     assert!(vm.execute_builtin("nth1/3", 3));
     let mut got = Vec::new();
@@ -531,7 +2518,7 @@ fn test_between_check_and_plus() {
 
 #[test]
 fn test_numeric_list_folds() {
-    let nums = Value::List(vec![i(3), i(1), i(2)]);
+    let nums = Value::list(vec![i(3), i(1), i(2)]);
     let (ok, vm) = call2("sum_list/2", nums.clone(), ub("S"));
     assert!(ok);
     assert_eq!(read_var(&vm, "S"), i(6));
@@ -541,7 +2528,7 @@ fn test_numeric_list_folds() {
     let (ok3, vm3) = call2("min_list/2", nums, ub("M"));
     assert!(ok3);
     assert_eq!(read_var(&vm3, "M"), i(1));
-    assert!(!call2("max_list/2", Value::List(vec![]), ub("M")).0);
+    assert!(!call2("max_list/2", Value::list(vec![]), ub("M")).0);
 }
 
 #[test]
@@ -560,12 +2547,35 @@ fn test_atom_text_ops() {
     let (ok4, vm4) = call2("char_code/2", ub("Ch"), i(98));
     assert!(ok4);
     assert_eq!(read_var(&vm4, "Ch"), a("b"));
+    let (string_code_ok, string_code_vm) = call3("string_code/3", i(2), a("abc"), ub("Code"));
+    assert!(string_code_ok);
+    assert_eq!(read_var(&string_code_vm, "Code"), i(98));
+    assert!(call3("string_code/3", i(1), a("é"), i(233)).0);
+    assert!(!call3("string_code/3", i(0), a("abc"), ub("Code")).0);
+    assert!(!call3("string_code/3", i(4), a("abc"), ub("Code")).0);
+    assert!(!call3("string_code/3", ub("Index"), a("abc"), ub("Code")).0);
+    assert!(!call3("string_code/3", i(1), ub("String"), ub("Code")).0);
+    assert!(!call3("string_code/3", i(1), a("abc"), i(98)).0);
     let (ok5, vm5) = call2("atom_chars/2", a("hi"), ub("Cs"));
     assert!(ok5);
-    assert_eq!(read_var(&vm5, "Cs"), Value::List(vec![a("h"), a("i")]));
-    let (ok6, vm6) = call2("atom_chars/2", ub("A"), Value::List(vec![a("h"), a("i")]));
+    assert_eq!(read_var(&vm5, "Cs"), Value::list(vec![a("h"), a("i")]));
+    let (ok6, vm6) = call2("atom_chars/2", ub("A"), Value::list(vec![a("h"), a("i")]));
     assert!(ok6);
     assert_eq!(read_var(&vm6, "A"), a("hi"));
+    let (string_codes_ok, string_codes_vm) = call2("string_codes/2", a("hi"), ub("Codes"));
+    assert!(string_codes_ok);
+    assert_eq!(read_var(&string_codes_vm, "Codes"), Value::list(vec![i(104), i(105)]));
+    let (string_codes_rev_ok, string_codes_rev_vm) = call2(
+        "string_codes/2", ub("String"), Value::list(vec![i(111), i(107)]));
+    assert!(string_codes_rev_ok);
+    assert_eq!(read_var(&string_codes_rev_vm, "String"), a("ok"));
+    let (string_chars_ok, string_chars_vm) = call2("string_chars/2", a("hi"), ub("Chars"));
+    assert!(string_chars_ok);
+    assert_eq!(read_var(&string_chars_vm, "Chars"), Value::list(vec![a("h"), a("i")]));
+    let (string_chars_rev_ok, string_chars_rev_vm) = call2(
+        "string_chars/2", ub("String"), Value::list(vec![a("o"), a("k")]));
+    assert!(string_chars_rev_ok);
+    assert_eq!(read_var(&string_chars_rev_vm, "String"), a("ok"));
     let (ok7, vm7) = call2("upcase_atom/2", a("aBc"), ub("U"));
     assert!(ok7);
     assert_eq!(read_var(&vm7, "U"), a("ABC"));
@@ -579,6 +2589,22 @@ fn test_atom_text_ops() {
     assert!(ok10);
     assert_eq!(read_var(&vm10, "A"), a("7"));
     assert!(!call2("atom_number/2", a("notanum"), ub("N")).0);
+    let (ok_chars, vm_chars) = call2("number_chars/2", i(-42), ub("Cs"));
+    assert!(ok_chars);
+    assert_eq!(
+        read_var(&vm_chars, "Cs"),
+        Value::list(vec![a("-"), a("4"), a("2")]),
+    );
+    let (ok_float, vm_float) = call2(
+        "number_chars/2",
+        ub("N"),
+        Value::list(vec![a("3"), a("."), a("5")]),
+    );
+    assert!(ok_float);
+    assert_eq!(read_var(&vm_float, "N"), Value::Float(3.5));
+    assert!(!call2("number_chars/2", ub("N"), Value::list(vec![])).0);
+    assert!(!call2("number_chars/2", ub("N"), Value::list(vec![a("12")])).0);
+    assert!(!call2("number_chars/2", ub("N"), Value::list(vec![a("x")])).0);
     let (ok11, vm11) = call2("atom_string/2", a("x"), ub("S"));
     assert!(ok11);
     assert_eq!(read_var(&vm11, "S"), a("x"));
@@ -588,12 +2614,1396 @@ fn test_atom_text_ops() {
 }
 
 #[test]
+fn test_text_decomposition_direct() {
+    let (split_ok, split_vm) = call4(
+        "split_string/4", a(" alpha; beta,,gamma "), a(";,"), a(" "), ub("Parts"));
+    assert!(split_ok);
+    assert_eq!(read_var(&split_vm, "Parts"), Value::list(vec![
+        a("alpha"), a("beta"), a(""), a("gamma")
+    ]));
+
+    let (no_sep_ok, no_sep_vm) = call4(
+        "split_string/4", a("  hello  "), a(""), a(" "), ub("Parts"));
+    assert!(no_sep_ok);
+    assert_eq!(read_var(&no_sep_vm, "Parts"), Value::list(vec![a("hello")]));
+
+    let (unicode_ok, unicode_vm) = call4(
+        "split_string/4", a(" α·β·γ "), a("·"), a(" "), ub("Parts"));
+    assert!(unicode_ok);
+    assert_eq!(read_var(&unicode_vm, "Parts"), Value::list(vec![
+        a("α"), a("β"), a("γ")
+    ]));
+    assert!(!call4("split_string/4", ub("Text"), a(","), a(""), ub("Parts")).0);
+
+    let (rollback_ok, rollback_vm) = call4(
+        "split_string/4",
+        a("a,b"),
+        a(","),
+        a(""),
+        Value::list(vec![ub("First"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "First"), ub("First"));
+
+    let (atom_split_ok, atom_split_vm) = call3(
+        "atom_split/3", a("a,,b"), a(","), ub("Parts"));
+    assert!(atom_split_ok);
+    assert_eq!(read_var(&atom_split_vm, "Parts"), Value::list(vec![
+        a("a"), a(""), a("b")
+    ]));
+
+    let (empty_ok, empty_vm) = call3("atom_split/3", a(""), a(","), ub("Parts"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Parts"), Value::list(vec![a("")]));
+
+    let (unicode_split_ok, unicode_split_vm) = call3(
+        "atom_split/3", a("left·right"), a("·"), ub("Parts"));
+    assert!(unicode_split_ok);
+    assert_eq!(read_var(&unicode_split_vm, "Parts"), Value::list(vec![
+        a("left"), a("right")
+    ]));
+    assert!(!call3("atom_split/3", a("a--b"), a("--"), ub("Parts")).0);
+    assert!(!call3("atom_split/3", a("abc"), a(""), ub("Parts")).0);
+    assert!(!call3("atom_split/3", i(123), a(","), ub("Parts")).0);
+}
+
+#[test]
+fn test_atom_match_checks_direct() {
+    assert!(call2("atom_starts_with/2", a("prefix-value"), a("prefix")).0);
+    assert!(!call2("atom_starts_with/2", a("prefix-value"), a("value")).0);
+    assert!(call2("atom_ends_with/2", a("value-suffix"), a("suffix")).0);
+    assert!(!call2("atom_ends_with/2", a("value-suffix"), a("value")).0);
+    assert!(call2("atom_contains/2", a("prefix-middle-suffix"), a("middle")).0);
+    assert!(!call2("atom_contains/2", a("prefix-middle-suffix"), a("absent")).0);
+    assert!(call2("atom_starts_with/2", a("anything"), a("")).0);
+    assert!(call2("atom_ends_with/2", a("anything"), a("")).0);
+    assert!(call2("atom_contains/2", a("anything"), a("")).0);
+    assert!(!call2("atom_contains/2", i(123), a("2")).0);
+    assert!(!call2("atom_contains/2", a("123"), i(2)).0);
+}
+
+#[test]
+fn test_path_components_direct() {
+    let (base_ok, base_vm) = call2("file_base_name/2", a("/tmp/file.txt"), ub("Base"));
+    assert!(base_ok);
+    assert_eq!(read_var(&base_vm, "Base"), a("file.txt"));
+    let (plain_ok, plain_vm) = call2("file_base_name/2", a("plain"), ub("Base"));
+    assert!(plain_ok);
+    assert_eq!(read_var(&plain_vm, "Base"), a("plain"));
+    let (trailing_ok, trailing_vm) = call2("file_base_name/2", a("/tmp/"), ub("Base"));
+    assert!(trailing_ok);
+    assert_eq!(read_var(&trailing_vm, "Base"), a(""));
+    assert!(!call2("file_base_name/2", ub("Path"), ub("Base")).0);
+
+    let (dir_ok, dir_vm) = call2("file_directory_name/2", a("/tmp/file.txt"), ub("Dir"));
+    assert!(dir_ok);
+    assert_eq!(read_var(&dir_vm, "Dir"), a("/tmp"));
+    let (root_ok, root_vm) = call2("file_directory_name/2", a("/file.txt"), ub("Dir"));
+    assert!(root_ok);
+    assert_eq!(read_var(&root_vm, "Dir"), a("/"));
+    let (relative_ok, relative_vm) = call2("file_directory_name/2", a("file.txt"), ub("Dir"));
+    assert!(relative_ok);
+    assert_eq!(read_var(&relative_vm, "Dir"), a("."));
+    let (empty_ok, empty_vm) = call2("file_directory_name/2", a(""), ub("Dir"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Dir"), a("."));
+}
+
+#[test]
+fn test_file_name_extension_direct() {
+    let (split_ok, split_vm) = call3(
+        "file_name_extension/3", ub("Base"), ub("Ext"), a("/tmp/archive.tar.gz"));
+    assert!(split_ok);
+    assert_eq!(read_var(&split_vm, "Base"), a("/tmp/archive.tar"));
+    assert_eq!(read_var(&split_vm, "Ext"), a("gz"));
+
+    let (hidden_ok, hidden_vm) = call3(
+        "file_name_extension/3", ub("Base"), ub("Ext"), a("/tmp/.hidden"));
+    assert!(hidden_ok);
+    assert_eq!(read_var(&hidden_vm, "Base"), a("/tmp/.hidden"));
+    assert_eq!(read_var(&hidden_vm, "Ext"), a(""));
+
+    let (hidden_ext_ok, hidden_ext_vm) = call3(
+        "file_name_extension/3", ub("Base"), ub("Ext"), a("/tmp/.hidden.txt"));
+    assert!(hidden_ext_ok);
+    assert_eq!(read_var(&hidden_ext_vm, "Base"), a("/tmp/.hidden"));
+    assert_eq!(read_var(&hidden_ext_vm, "Ext"), a("txt"));
+
+    let (join_ok, join_vm) = call3(
+        "file_name_extension/3", a("/tmp/report"), a("csv"), ub("File"));
+    assert!(join_ok);
+    assert_eq!(read_var(&join_vm, "File"), a("/tmp/report.csv"));
+    let (empty_ext_ok, empty_ext_vm) = call3(
+        "file_name_extension/3", a("/tmp/report"), a(""), ub("File"));
+    assert!(empty_ext_ok);
+    assert_eq!(read_var(&empty_ext_vm, "File"), a("/tmp/report"));
+
+    let (rollback_ok, rollback_vm) = call3(
+        "file_name_extension/3", ub("Base"), a("wrong"), a("name.txt"));
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Base"), ub("Base"));
+    assert!(!call3("file_name_extension/3", ub("Base"), a("txt"), ub("File")).0);
+}
+
+#[test]
+fn test_path_queries_and_join_direct() {
+    assert!(call1("is_absolute_file_name/1", a("/tmp/file")).0);
+    assert!(!call1("is_absolute_file_name/1", a("tmp/file")).0);
+    assert!(!call1("is_absolute_file_name/1", a("")).0);
+    assert!(!call1("is_absolute_file_name/1", i(1)).0);
+
+    let (join_ok, join_vm) = call3("path_join/3", a("/tmp/base"), a("child"), ub("Full"));
+    assert!(join_ok);
+    assert_eq!(read_var(&join_vm, "Full"), a("/tmp/base/child"));
+    let (slash_ok, slash_vm) = call3("path_join/3", a("/tmp/base/"), a("child"), ub("Full"));
+    assert!(slash_ok);
+    assert_eq!(read_var(&slash_vm, "Full"), a("/tmp/base/child"));
+    let (absolute_ok, absolute_vm) = call3(
+        "path_join/3", a("/ignored"), a("/absolute/file"), ub("Full"));
+    assert!(absolute_ok);
+    assert_eq!(read_var(&absolute_vm, "Full"), a("/absolute/file"));
+    let (empty_base_ok, empty_base_vm) = call3("path_join/3", a(""), a("child"), ub("Full"));
+    assert!(empty_base_ok);
+    assert_eq!(read_var(&empty_base_vm, "Full"), a("child"));
+    let (empty_rel_ok, empty_rel_vm) = call3("path_join/3", a("base"), a(""), ub("Full"));
+    assert!(empty_rel_ok);
+    assert_eq!(read_var(&empty_rel_vm, "Full"), a("base"));
+    assert!(!call3("path_join/3", a("base"), ub("Rel"), ub("Full")).0);
+    assert!(!call3("path_join/3", a("base"), a("child"), a("wrong")).0);
+}
+
+#[test]
+fn test_term_variables_direct() {
+    let term = Value::strv(
+        "outer/3".to_string(),
+        vec![
+            ub("X"),
+            Value::strv("inner/3".to_string(), vec![ub("Y"), ub("X"), ub("Z")]),
+            Value::list(vec![ub("Z"), ub("Y")]),
+        ],
+    );
+    let (ok, vm) = call2("term_variables/2", term, ub("Vars"));
+    assert!(ok);
+    assert_eq!(
+        read_var(&vm, "Vars"),
+        Value::list(vec![ub("X"), ub("Y"), ub("Z")]),
+    );
+    let (ground_ok, ground_vm) = call2(
+        "term_variables/2",
+        Value::strv("ground/2".to_string(), vec![a("x"), i(1)]),
+        ub("Vars"),
+    );
+    assert!(ground_ok);
+    assert_eq!(read_var(&ground_vm, "Vars"), Value::list(vec![]));
+    assert!(!call2("term_variables/2", ub("X"), Value::list(vec![])).0);
+
+    let (rollback_ok, rollback_vm) = call2(
+        "term_variables/2",
+        Value::strv("pair/2".to_string(), vec![ub("Source"), a("ground")]),
+        Value::list(vec![ub("Captured"), a("wrong")]),
+    );
+    assert!(!rollback_ok);
+    assert_eq!(read_var(&rollback_vm, "Captured"), ub("Captured"));
+
+    let mut missing_term = vmnew();
+    missing_term.set_reg("A2", ub("Vars"));
+    assert!(!missing_term.execute_builtin("term_variables/2", 2));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", a("ground"));
+    assert!(!missing_output.execute_builtin("term_variables/2", 2));
+}
+
+#[test]
+fn test_numbervars_direct() {
+    let term = Value::strv(
+        "outer/3".to_string(),
+        vec![
+            ub("X"),
+            Value::strv("inner/2".to_string(), vec![ub("Y"), ub("X")]),
+            ub("Z"),
+        ],
+    );
+    let (ok, vm) = call3("numbervars/3", term, i(3), ub("End"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "X"), Value::strv("$VAR".to_string(), vec![i(3)]));
+    assert_eq!(read_var(&vm, "Y"), Value::strv("$VAR".to_string(), vec![i(4)]));
+    assert_eq!(read_var(&vm, "Z"), Value::strv("$VAR".to_string(), vec![i(5)]));
+    assert_eq!(read_var(&vm, "End"), i(6));
+
+    let (ground_ok, ground_vm) = call3(
+        "numbervars/3",
+        Value::strv("ground/2".to_string(), vec![a("x"), i(1)]),
+        i(7),
+        ub("End"),
+    );
+    assert!(ground_ok);
+    assert_eq!(read_var(&ground_vm, "End"), i(7));
+    assert!(!call3("numbervars/3", ub("X"), ub("Start"), ub("End")).0);
+
+    let (mismatch_ok, mismatch_vm) = call3(
+        "numbervars/3",
+        Value::strv("pair/2".to_string(), vec![ub("X"), ub("Y")]),
+        i(0),
+        i(9),
+    );
+    assert!(!mismatch_ok);
+    assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
+    assert_eq!(read_var(&mismatch_vm, "Y"), ub("Y"));
+
+    let (overflow_ok, overflow_vm) =
+        call3("numbervars/3", ub("X"), i(i64::MAX), ub("End"));
+    assert!(!overflow_ok);
+    assert_eq!(read_var(&overflow_vm, "X"), ub("X"));
+
+    let mut missing_term = vmnew();
+    missing_term.set_reg("A2", i(0));
+    missing_term.set_reg("A3", ub("End"));
+    assert!(!missing_term.execute_builtin("numbervars/3", 3));
+
+    let mut missing_start = vmnew();
+    missing_start.set_reg("A1", ub("X"));
+    missing_start.set_reg("A3", ub("End"));
+    assert!(!missing_start.execute_builtin("numbervars/3", 3));
+    assert_eq!(read_var(&missing_start, "X"), ub("X"));
+
+    let mut missing_end = vmnew();
+    missing_end.set_reg("A1", ub("X"));
+    missing_end.set_reg("A2", i(0));
+    assert!(!missing_end.execute_builtin("numbervars/3", 3));
+    assert_eq!(read_var(&missing_end, "X"), ub("X"));
+}
+
+#[test]
+fn test_unifiable_direct() {
+    let display_eq = |left: Value, right: Value| {
+        Value::strv("=".to_string(), vec![left, right])
+    };
+    let raw_eq = |left: Value, right: Value| {
+        Value::strv("=/2".to_string(), vec![left, right])
+    };
+
+    let (simple_ok, simple_vm) = call3(
+        "unifiable/3",
+        ub("X"),
+        Value::strv("foo/1".to_string(), vec![a("a")]),
+        ub("Bindings"),
+    );
+    assert!(simple_ok);
+    assert_eq!(read_var(&simple_vm, "X"), ub("X"));
+    assert_eq!(
+        read_var(&simple_vm, "Bindings"),
+        Value::list(vec![display_eq(
+            ub("X"),
+            Value::strv("foo".to_string(), vec![a("a")]),
+        )]),
+    );
+
+    let (two_ok, two_vm) = call3(
+        "unifiable/3",
+        Value::strv("p/2".to_string(), vec![ub("X"), ub("Y")]),
+        Value::strv("p/2".to_string(), vec![i(1), i(2)]),
+        ub("Bindings"),
+    );
+    assert!(two_ok);
+    assert_eq!(
+        read_var(&two_vm, "Bindings"),
+        Value::list(vec![display_eq(ub("X"), i(1)), display_eq(ub("Y"), i(2))]),
+    );
+    assert_eq!(read_var(&two_vm, "X"), ub("X"));
+    assert_eq!(read_var(&two_vm, "Y"), ub("Y"));
+
+    let (alias_ok, alias_vm) = call3("unifiable/3", ub("X"), ub("Y"), ub("Bindings"));
+    assert!(alias_ok);
+    assert_eq!(
+        read_var(&alias_vm, "Bindings"),
+        Value::list(vec![display_eq(ub("X"), ub("Y"))]),
+    );
+    assert_eq!(read_var(&alias_vm, "X"), ub("X"));
+    assert_eq!(read_var(&alias_vm, "Y"), ub("Y"));
+
+    let (ground_ok, ground_vm) = call3("unifiable/3", a("same"), a("same"), ub("B"));
+    assert!(ground_ok);
+    assert_eq!(read_var(&ground_vm, "B"), Value::list(vec![]));
+
+    let (fail_ok, fail_vm) = call3(
+        "unifiable/3",
+        Value::strv("p/2".to_string(), vec![ub("X"), a("a")]),
+        Value::strv("p/2".to_string(), vec![i(1), a("b")]),
+        ub("Bindings"),
+    );
+    assert!(!fail_ok);
+    assert_eq!(read_var(&fail_vm, "X"), ub("X"));
+
+    let constrained = Value::list(vec![raw_eq(ub("X"), a("foo"))]);
+    let (constrained_ok, constrained_vm) =
+        call3("unifiable/3", ub("X"), ub("Y"), constrained);
+    assert!(constrained_ok);
+    assert_eq!(read_var(&constrained_vm, "X"), ub("X"));
+    assert_eq!(read_var(&constrained_vm, "Y"), a("foo"));
+
+    let mismatched = Value::list(vec![
+        raw_eq(ub("Capture"), i(1)),
+        raw_eq(ub("Y"), i(9)),
+    ]);
+    let (mismatch_ok, mismatch_vm) = call3(
+        "unifiable/3",
+        Value::strv("p/2".to_string(), vec![ub("X"), ub("Y")]),
+        Value::strv("p/2".to_string(), vec![i(1), i(2)]),
+        mismatched,
+    );
+    assert!(!mismatch_ok);
+    assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
+    assert_eq!(read_var(&mismatch_vm, "Y"), ub("Y"));
+    assert_eq!(read_var(&mismatch_vm, "Capture"), ub("Capture"));
+
+    let mut missing_left = vmnew();
+    missing_left.set_reg("A2", a("term"));
+    missing_left.set_reg("A3", ub("Bindings"));
+    assert!(!missing_left.execute_builtin("unifiable/3", 3));
+
+    let mut missing_right = vmnew();
+    missing_right.set_reg("A1", a("term"));
+    missing_right.set_reg("A3", ub("Bindings"));
+    assert!(!missing_right.execute_builtin("unifiable/3", 3));
+
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", ub("X"));
+    missing_output.set_reg("A2", a("term"));
+    assert!(!missing_output.execute_builtin("unifiable/3", 3));
+    assert_eq!(read_var(&missing_output, "X"), ub("X"));
+}
+
+#[test]
+fn test_variant_equivalence_direct() {
+    assert!(call2("=@=/2", ub("X"), ub("Y")).0);
+    assert!(call2("=@=/2", a("same"), a("same")).0);
+    assert!(!call2("=@=/2", a("left"), a("right")).0);
+
+    let shared_left = Value::strv("f/2".to_string(), vec![ub("X"), ub("X")]);
+    let shared_right = Value::strv("f/2".to_string(), vec![ub("A"), ub("A")]);
+    let distinct_right = Value::strv("f/2".to_string(), vec![ub("A"), ub("B")]);
+    let (shared_ok, shared_vm) = call2("=@=/2", shared_left.clone(), shared_right);
+    assert!(shared_ok);
+    assert_eq!(read_var(&shared_vm, "X"), ub("X"));
+    assert_eq!(read_var(&shared_vm, "A"), ub("A"));
+    assert!(!call2("=@=/2", shared_left.clone(), distinct_right.clone()).0);
+    assert!(!call2("=@=/2", distinct_right, shared_left).0);
+
+    let nested_left = Value::strv(
+        "outer/2".to_string(),
+        vec![ub("X"), Value::list(vec![ub("Y"), ub("X")])],
+    );
+    let nested_right = Value::strv(
+        "outer/2".to_string(),
+        vec![ub("A"), Value::list(vec![ub("B"), ub("A")])],
+    );
+    assert!(call2("=@=/2", nested_left.clone(), nested_right.clone()).0);
+    assert!(!call2(
+        "=@=/2",
+        nested_left.clone(),
+        Value::strv("other/2".to_string(), vec![ub("A"), ub("B")]),
+    ).0);
+    assert!(call2("\\\\=@=/2", nested_left, a("different")).0);
+    assert!(!call2("\\\\=@=/2", nested_right.clone(), nested_right).0);
+
+    assert!(call2("=@=/2", Value::list(vec![]), a("[]")).0);
+    assert!(call2(
+        "=@=/2",
+        Value::list(vec![ub("X")]),
+        Value::strv("[|]/2".to_string(), vec![ub("Y"), a("[]")]),
+    ).0);
+
+    let mut missing_left = vmnew();
+    missing_left.set_reg("A2", a("term"));
+    assert!(!missing_left.execute_builtin("=@=/2", 2));
+
+    let mut missing_right = vmnew();
+    missing_right.set_reg("A1", a("term"));
+    assert!(!missing_right.execute_builtin("=@=/2", 2));
+
+    let mut missing_not_right = vmnew();
+    missing_not_right.set_reg("A1", a("term"));
+    assert!(!missing_not_right.execute_builtin("\\\\=@=/2", 2));
+}
+
+#[test]
+fn test_intersection_direct() {
+    let (ok, vm) = call3(
+        "intersection/3",
+        Value::list(vec![a("a"), a("b"), a("c"), a("b")]),
+        Value::list(vec![a("b"), a("d")]),
+        ub("Common"),
+    );
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Common"), Value::list(vec![a("b"), a("b")]));
+
+    let (empty_ok, empty_vm) = call3(
+        "intersection/3",
+        Value::list(vec![]),
+        Value::list(vec![a("a")]),
+        ub("Common"),
+    );
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Common"), Value::list(vec![]));
+    assert!(!call3("intersection/3", a("bad"), Value::list(vec![]), ub("R")).0);
+    assert!(!call3("intersection/3", Value::list(vec![]), a("bad"), ub("R")).0);
+
+    let (vars_ok, vars_vm) = call3(
+        "intersection/3",
+        Value::list(vec![ub("X"), ub("Y")]),
+        Value::list(vec![a("a")]),
+        ub("Common"),
+    );
+    assert!(vars_ok);
+    assert_eq!(read_var(&vars_vm, "X"), a("a"));
+    assert_eq!(read_var(&vars_vm, "Y"), a("a"));
+    assert_eq!(read_var(&vars_vm, "Common"), Value::list(vec![a("a"), a("a")]));
+
+    let (retry_ok, retry_vm) = call3(
+        "intersection/3",
+        Value::list(vec![Value::strv("f/1".to_string(), vec![ub("X")])]),
+        Value::list(vec![
+            Value::strv("g/1".to_string(), vec![a("wrong")]),
+            Value::strv("f/1".to_string(), vec![a("right")]),
+        ]),
+        ub("Common"),
+    );
+    assert!(retry_ok);
+    assert_eq!(read_var(&retry_vm, "X"), a("right"));
+
+    let (miss_ok, miss_vm) = call3(
+        "intersection/3",
+        Value::list(vec![Value::strv("f/2".to_string(), vec![ub("X"), a("a")])]),
+        Value::list(vec![Value::strv("f/2".to_string(), vec![a("bound"), a("b")])]),
+        ub("Common"),
+    );
+    assert!(miss_ok);
+    assert_eq!(read_var(&miss_vm, "X"), ub("X"));
+    assert_eq!(read_var(&miss_vm, "Common"), Value::list(vec![]));
+
+    let (mismatch_ok, mismatch_vm) = call3(
+        "intersection/3",
+        Value::list(vec![ub("X")]),
+        Value::list(vec![a("a")]),
+        Value::list(vec![]),
+    );
+    assert!(!mismatch_ok);
+    assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
+}
+
+#[test]
+fn test_union_direct() {
+    let (ok, vm) = call3(
+        "union/3",
+        Value::list(vec![a("a"), a("b"), a("c")]),
+        Value::list(vec![a("b"), a("d"), a("e")]),
+        ub("Union"),
+    );
+    assert!(ok);
+    assert_eq!(
+        read_var(&vm, "Union"),
+        Value::list(vec![a("a"), a("b"), a("c"), a("d"), a("e")]),
+    );
+
+    let (dupes_ok, dupes_vm) = call3(
+        "union/3",
+        Value::list(vec![a("a"), a("a"), a("b")]),
+        Value::list(vec![a("a"), a("c")]),
+        ub("Union"),
+    );
+    assert!(dupes_ok);
+    assert_eq!(
+        read_var(&dupes_vm, "Union"),
+        Value::list(vec![a("a"), a("a"), a("b"), a("c")]),
+    );
+
+    let (empty_ok, empty_vm) = call3(
+        "union/3",
+        Value::list(vec![]),
+        Value::list(vec![a("x"), a("y")]),
+        ub("Union"),
+    );
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Union"), Value::list(vec![a("x"), a("y")]));
+    assert!(!call3("union/3", a("bad"), Value::list(vec![]), ub("R")).0);
+    assert!(!call3("union/3", Value::list(vec![]), a("bad"), ub("R")).0);
+
+    let (vars_ok, vars_vm) = call3(
+        "union/3",
+        Value::list(vec![ub("X")]),
+        Value::list(vec![a("a"), a("b")]),
+        ub("Union"),
+    );
+    assert!(vars_ok);
+    assert_eq!(read_var(&vars_vm, "X"), a("a"));
+    assert_eq!(read_var(&vars_vm, "Union"), Value::list(vec![a("a"), a("b")]));
+
+    let (miss_ok, miss_vm) = call3(
+        "union/3",
+        Value::list(vec![Value::strv("f/2".to_string(), vec![ub("X"), a("a")])]),
+        Value::list(vec![
+            Value::strv("f/2".to_string(), vec![a("bound"), a("b")]),
+            a("keep"),
+        ]),
+        ub("Union"),
+    );
+    assert!(miss_ok);
+    assert_eq!(read_var(&miss_vm, "X"), ub("X"));
+    assert_eq!(
+        read_var(&miss_vm, "Union"),
+        Value::list(vec![
+            Value::strv("f".to_string(), vec![ub("X"), a("a")]),
+            Value::strv("f".to_string(), vec![a("bound"), a("b")]),
+            a("keep"),
+        ]),
+    );
+
+    let (mismatch_ok, mismatch_vm) = call3(
+        "union/3",
+        Value::list(vec![ub("X")]),
+        Value::list(vec![a("a")]),
+        Value::list(vec![]),
+    );
+    assert!(!mismatch_ok);
+    assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
+}
+
+#[test]
+fn test_list_to_set_direct() {
+    let (ok, vm) = call2(
+        "list_to_set/2",
+        Value::list(vec![a("a"), a("b"), a("c"), a("a"), a("b"), a("d")]),
+        ub("Set"),
+    );
+    assert!(ok);
+    assert_eq!(
+        read_var(&vm, "Set"),
+        Value::list(vec![a("a"), a("b"), a("c"), a("d")]),
+    );
+
+    let (empty_ok, empty_vm) =
+        call2("list_to_set/2", Value::list(vec![]), ub("Set"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Set"), Value::list(vec![]));
+    assert!(!call2("list_to_set/2", a("bad"), ub("Set")).0);
+
+    let pair = Value::strv("pair/2".to_string(), vec![a("x"), i(1)]);
+    let (compound_ok, compound_vm) = call2(
+        "list_to_set/2",
+        Value::list(vec![pair.clone(), a("keep"), pair]),
+        ub("Set"),
+    );
+    assert!(compound_ok);
+    assert_eq!(
+        read_var(&compound_vm, "Set"),
+        Value::list(vec![
+            Value::strv("pair".to_string(), vec![a("x"), i(1)]),
+            a("keep"),
+        ]),
+    );
+
+    let (vars_ok, vars_vm) = call2(
+        "list_to_set/2",
+        Value::list(vec![ub("X"), a("a"), a("b")]),
+        ub("Set"),
+    );
+    assert!(vars_ok);
+    assert_eq!(read_var(&vars_vm, "X"), a("a"));
+    assert_eq!(read_var(&vars_vm, "Set"), Value::list(vec![a("a"), a("b")]));
+
+    let (miss_ok, miss_vm) = call2(
+        "list_to_set/2",
+        Value::list(vec![
+            Value::strv("f/2".to_string(), vec![ub("X"), a("a")]),
+            Value::strv("f/2".to_string(), vec![a("bound"), a("b")]),
+        ]),
+        ub("Set"),
+    );
+    assert!(miss_ok);
+    assert_eq!(read_var(&miss_vm, "X"), ub("X"));
+    assert_eq!(
+        read_var(&miss_vm, "Set"),
+        Value::list(vec![
+            Value::strv("f".to_string(), vec![ub("X"), a("a")]),
+            Value::strv("f".to_string(), vec![a("bound"), a("b")]),
+        ]),
+    );
+
+    let (mismatch_ok, mismatch_vm) = call2(
+        "list_to_set/2",
+        Value::list(vec![ub("X"), a("a")]),
+        Value::list(vec![]),
+    );
+    assert!(!mismatch_ok);
+    assert_eq!(read_var(&mismatch_vm, "X"), ub("X"));
+}
+
+#[test]
 fn test_ground() {
     assert!(call1("ground/1", a("x")).0);
-    assert!(call1("ground/1", Value::List(vec![i(1), a("b")])).0);
+    assert!(call1("ground/1", Value::list(vec![i(1), a("b")])).0);
     assert!(!call1("ground/1", ub("V")).0);
-    assert!(!call1("ground/1", Value::List(vec![i(1), ub("V")])).0);
-    assert!(!call1("ground/1", Value::Str("f/1".to_string(), vec![ub("V")])).0);
+    assert!(!call1("ground/1", Value::list(vec![i(1), ub("V")])).0);
+    assert!(!call1("ground/1", Value::strv("f/1".to_string(), vec![ub("V")])).0);
+}
+
+#[test]
+fn test_atomic_direct() {
+    assert!(call1("atomic/1", a("x")).0);
+    assert!(call1("atomic/1", i(1)).0);
+    assert!(call1("atomic/1", Value::Float(1.5)).0);
+    assert!(call1("atomic/1", Value::list(vec![])).0);
+    assert!(!call1("atomic/1", Value::list(vec![a("x")])).0);
+    assert!(!call1("atomic/1", Value::strv("f".to_string(), vec![a("x")])).0);
+    assert!(!call1("atomic/1", ub("X")).0);
+}
+
+#[test]
+fn test_type_predicates_direct() {
+    assert!(call1("atom/1", a("x")).0);
+    assert!(!call1("atom/1", i(1)).0);
+    assert!(!call1("atom/1", Value::list(vec![])).0);
+
+    assert!(call1("integer/1", i(1)).0);
+    assert!(!call1("integer/1", Value::Float(1.0)).0);
+    assert!(call1("float/1", Value::Float(1.0)).0);
+    assert!(!call1("float/1", i(1)).0);
+    assert!(call1("number/1", i(1)).0);
+    assert!(call1("number/1", Value::Float(1.0)).0);
+    assert!(!call1("number/1", a("one")).0);
+
+    assert!(call1(
+        "compound/1", Value::strv("node/1".to_string(), vec![a("x")])).0);
+    assert!(call1("compound/1", Value::list(vec![a("x")])).0);
+    assert!(!call1("compound/1", Value::list(vec![])).0);
+    assert!(!call1("compound/1", a("x")).0);
+
+    assert!(call1("var/1", ub("X")).0);
+    assert!(!call1("var/1", a("x")).0);
+    assert!(call1("nonvar/1", a("x")).0);
+    assert!(!call1("nonvar/1", ub("X")).0);
+    assert!(call1("is_list/1", Value::list(vec![])).0);
+    assert!(call1("is_list/1", Value::list(vec![a("x")])).0);
+    assert!(!call1("is_list/1", a("x")).0);
+
+    let (bind_ok, mut bound_atom_vm) = call2("=/2", ub("X"), a("bound"));
+    assert!(bind_ok);
+    for op in ["atom/1", "nonvar/1"] {
+        bound_atom_vm.set_reg("A1", ub("X"));
+        assert!(bound_atom_vm.execute_builtin(op, 1), "{op} must dereference X");
+    }
+    bound_atom_vm.set_reg("A1", ub("X"));
+    assert!(!bound_atom_vm.execute_builtin("var/1", 1));
+
+    let (list_bind_ok, mut bound_list_vm) = call2(
+        "=/2", ub("X"), Value::list(vec![a("item")]));
+    assert!(list_bind_ok);
+    for op in ["compound/1", "is_list/1"] {
+        bound_list_vm.set_reg("A1", ub("X"));
+        assert!(bound_list_vm.execute_builtin(op, 1), "{op} must dereference X");
+    }
+
+    for op in [
+        "atom/1", "integer/1", "float/1", "number/1", "atomic/1",
+        "compound/1", "var/1", "nonvar/1", "is_list/1",
+    ] {
+        assert!(!vmnew().execute_builtin(op, 1), "{op} requires A1");
+    }
+}
+
+#[test]
+fn test_tab_direct() {
+    assert!(call1("tab/1", i(3)).0);
+    assert!(call1("tab/1", i(0)).0);
+    assert!(!call1("tab/1", i(-1)).0);
+    assert!(!call1("tab/1", ub("N")).0);
+    assert!(!call1("tab/1", a("three")).0);
+}
+
+#[test]
+fn test_single_term_output_direct() {
+    assert!(call1("put_char/1", a("x")).0);
+    assert!(call1("put_char/1", a("é")).0);
+    assert!(!call1("put_char/1", a("")).0);
+    assert!(!call1("put_char/1", a("xy")).0);
+    assert!(!call1("put_char/1", i(120)).0);
+    assert!(!call1("put_char/1", ub("C")).0);
+
+    assert!(call1("put_code/1", i(121)).0);
+    assert!(!call1("put_code/1", i(-1)).0);
+    assert!(!call1("put_code/1", i(0x110000)).0);
+    assert!(!call1("put_code/1", i(0xd800)).0);
+    assert!(!call1("put_code/1", a("x")).0);
+    assert!(!call1("put_code/1", ub("Code")).0);
+
+    assert!(call1("write_canonical/1",
+        Value::strv("node/2".to_string(), vec![a("has space"), i(7)])).0);
+    let mut vm = vmnew();
+    assert!(!vm.execute_builtin("write_canonical/1", 1));
+}
+
+#[test]
+fn test_format_direct() {
+    let args = Value::list(vec![
+        Value::strv("node".to_string(), vec![i(1)]),
+        a("hello"),
+        i(42),
+        Value::list(vec![i(111), i(107)]),
+    ]);
+    let destination = Value::strv("atom".to_string(), vec![ub("Out")]);
+    let (ok, vm) = call3("format/3", destination,
+        a("~w|~a|~d|~s|~t|~~"), args);
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Out"),
+        a(&format!("node(1)|hello|42|ok|{}|~", char::from(9))));
+
+    let string_dest = Value::strv("string/1".to_string(), vec![ub("Out")]);
+    let (string_ok, string_vm) = call3("format/3", string_dest,
+        a("~p"), Value::list(vec![Value::list(vec![a("a"), i(2)])]));
+    assert!(string_ok);
+    assert_eq!(read_var(&string_vm, "Out"), a("[a, 2]"));
+
+    let codes_dest = Value::strv("codes".to_string(), vec![ub("Codes")]);
+    let (codes_ok, codes_vm) = call3("format/3", codes_dest,
+        a("ab"), Value::list(vec![]));
+    assert!(codes_ok);
+    assert_eq!(read_var(&codes_vm, "Codes"), Value::list(vec![i(97), i(98)]));
+
+    assert!(call3("format/3",
+        Value::strv("atom".to_string(), vec![a("ok")]),
+        a("ok"), Value::list(vec![])).0);
+    assert!(!call3("format/3",
+        Value::strv("atom".to_string(), vec![a("wrong")]),
+        a("ok"), Value::list(vec![])).0);
+    assert!(!call3("format/3", a("unknown"), a("ok"), Value::list(vec![])).0);
+    assert!(!call2("format/2", a("~w"), Value::list(vec![])).0);
+    assert!(!call2("format/2", a("ok"), i(7)).0);
+    assert!(!call2("format/2", Value::Float(2.5), Value::list(vec![])).0);
+}
+
+#[test]
+fn test_filesystem_query_direct() {
+    assert!(call1("exists_file/1", a("Cargo.toml")).0);
+    assert!(!call1("exists_file/1", a("src/bin")).0);
+    assert!(!call1("exists_file/1", a("definitely_missing_rust_wam_path")).0);
+    assert!(!call1("exists_file/1", ub("Path")).0);
+    assert!(!call1("exists_file/1", i(7)).0);
+
+    assert!(call1("exists_directory/1", a("src/bin")).0);
+    assert!(!call1("exists_directory/1", a("Cargo.toml")).0);
+    assert!(!call1("exists_directory/1", a("definitely_missing_rust_wam_path")).0);
+    assert!(!call1("exists_directory/1", ub("Path")).0);
+    assert!(!call1("exists_directory/1", i(7)).0);
+
+    let expected = Value::list(vec![a("."), a(".."), a("output_probe.rs")]);
+    let (ok, vm) = call2("directory_files/2", a("src/bin"), ub("Files"));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Files"), expected);
+    assert!(!call2("directory_files/2", a("Cargo.toml"), ub("Files")).0);
+    assert!(!call2("directory_files/2", a("definitely_missing_rust_wam_path"), ub("Files")).0);
+    assert!(!call2("directory_files/2", ub("Path"), ub("Files")).0);
+    assert!(!call2("directory_files/2", i(7), ub("Files")).0);
+
+    let (matched, _) = call2("directory_files/2", a("src/bin"), expected.clone());
+    assert!(matched);
+    let (mismatched, mismatch_vm) = call2("directory_files/2", a("src/bin"),
+        Value::list(vec![ub("Head"), a("wrong"), ub("Tail")]));
+    assert!(!mismatched);
+    assert_eq!(read_var(&mismatch_vm, "Head"), ub("Head"));
+}
+
+#[test]
+fn test_file_metadata_direct() {
+    let (size_ok, size_vm) = call2("size_file/2", a("Cargo.toml"), ub("Size"));
+    assert!(size_ok);
+    let size = match read_var(&size_vm, "Size") {
+        Value::Integer(size) => size,
+        other => panic!("expected integer file size, got {:?}", other),
+    };
+    assert!(size > 0);
+    assert!(call2("size_file/2", a("Cargo.toml"), i(size)).0);
+    assert!(!call2("size_file/2", a("Cargo.toml"), i(size + 1)).0);
+    assert!(!call2("size_file/2", a("definitely_missing_rust_wam_path"), ub("Size")).0);
+    assert!(!call2("size_file/2", ub("Path"), ub("Size")).0);
+    assert!(!call2("size_file/2", i(7), ub("Size")).0);
+
+    let (time_ok, time_vm) = call2("time_file/2", a("Cargo.toml"), ub("Time"));
+    assert!(time_ok);
+    let time = match read_var(&time_vm, "Time") {
+        Value::Float(time) => time,
+        other => panic!("expected float modification time, got {:?}", other),
+    };
+    assert!(time.is_finite() && time > 0.0);
+    assert!(call2("time_file/2", a("Cargo.toml"), Value::Float(time)).0);
+    assert!(!call2("time_file/2", a("Cargo.toml"), Value::Float(time + 1.0)).0);
+    assert!(!call2("time_file/2", a("Cargo.toml"), i(time as i64)).0);
+    assert!(!call2("time_file/2", a("definitely_missing_rust_wam_path"), ub("Time")).0);
+    assert!(!call2("time_file/2", ub("Path"), ub("Time")).0);
+    assert!(!call2("time_file/2", i(7), ub("Time")).0);
+}
+
+#[test]
+fn test_system_queries_direct() {
+    let (time_ok, time_vm) = call1("get_time/1", ub("Time"));
+    assert!(time_ok);
+    match read_var(&time_vm, "Time") {
+        Value::Float(time) => assert!(time.is_finite() && time > 0.0),
+        other => panic!("expected float wall time, got {:?}", other),
+    }
+    assert!(!call1("get_time/1", Value::Float(0.0)).0);
+    assert!(!call1("get_time/1", i(0)).0);
+    assert!(!vmnew().execute_builtin("get_time/1", 1));
+
+    let pid = i64::from(std::process::id());
+    let (pid_ok, pid_vm) = call1("getpid/1", ub("Pid"));
+    assert!(pid_ok);
+    assert_eq!(read_var(&pid_vm, "Pid"), i(pid));
+    assert!(call1("getpid/1", i(pid)).0);
+    assert!(!call1("getpid/1", i(pid + 1)).0);
+    assert!(!call1("getpid/1", a("pid")).0);
+    assert!(!vmnew().execute_builtin("getpid/1", 1));
+
+    let expected_path = std::env::var("PATH").expect("PATH must be available to cargo test");
+    let (env_ok, env_vm) = call2("getenv/2", a("PATH"), ub("Value"));
+    assert!(env_ok);
+    assert_eq!(read_var(&env_vm, "Value"), a(&expected_path));
+    assert!(call2("getenv/2", a("PATH"), a(&expected_path)).0);
+    assert!(!call2("getenv/2", a("PATH"), a("definitely_not_the_path")).0);
+    assert!(!call2("getenv/2", a("UNIFYWEAVER_ENV_MUST_NOT_EXIST_7F3A"), ub("Value")).0);
+    assert!(!call2("getenv/2", ub("Name"), ub("Value")).0);
+    assert!(!call2("getenv/2", i(7), ub("Value")).0);
+    let mut missing_output = vmnew();
+    missing_output.set_reg("A1", a("PATH"));
+    assert!(!missing_output.execute_builtin("getenv/2", 2));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_identity_direct() {
+    let expected = native_process_identity();
+    for (op, value) in [
+        ("getuid/1", expected[0]),
+        ("geteuid/1", expected[1]),
+        ("getgid/1", expected[2]),
+        ("getegid/1", expected[3]),
+        ("getppid/1", expected[4]),
+        ("getpgrp/1", expected[5]),
+    ] {
+        let (ok, vm) = call1(op, ub("Value"));
+        assert!(ok, "{op} must succeed");
+        assert_eq!(read_var(&vm, "Value"), i(value));
+        assert!(call1(op, i(value)).0, "{op} must accept its current value");
+        assert!(!call1(op, i(value + 1)).0, "{op} must reject a mismatch");
+        assert!(!call1(op, a("not_an_integer")).0);
+        assert!(!vmnew().execute_builtin(op, 1));
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn test_system_names_direct() {
+    for (op, value) in [
+        ("gethostname/1", native_host_name()),
+        ("uname_sysname/1", native_uname("-s")),
+        ("uname_machine/1", native_uname("-m")),
+    ] {
+        let (ok, vm) = call1(op, ub("Value"));
+        assert!(ok, "{op} must succeed");
+        assert_eq!(read_var(&vm, "Value"), a(&value));
+        assert!(call1(op, a(&value)).0, "{op} must accept its current value");
+        assert!(!call1(op, a(&format!("{value}-mismatch"))).0);
+        assert!(!call1(op, i(7)).0);
+        assert!(!vmnew().execute_builtin(op, 1));
+    }
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_system_names_unavailable_direct() {
+    for op in ["gethostname/1", "uname_sysname/1", "uname_machine/1"] {
+        assert!(!call1(op, ub("Value")).0);
+    }
+}
+
+#[test]
+fn test_monotonic_time_direct() {
+    let (first_ok, first_vm) = call1("monotonic_time/1", ub("Time"));
+    assert!(first_ok);
+    let first = float_var(&first_vm, "Time");
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let (second_ok, second_vm) = call1("monotonic_time/1", ub("Time"));
+    assert!(second_ok);
+    let second = float_var(&second_vm, "Time");
+    assert!(first >= 0.0 && second >= first);
+    assert!(second - first >= 0.004);
+    assert!(!call1("monotonic_time/1", a("not_a_float")).0);
+    assert!(!call1("monotonic_time/1", i(0)).0);
+    assert!(!vmnew().execute_builtin("monotonic_time/1", 1));
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_process_metrics_direct() {
+    for op in ["cpu_time/1", "process_user_time/1", "process_system_time/1"] {
+        let (first_ok, first_vm) = call1(op, ub("Value"));
+        assert!(first_ok, "{op} must succeed");
+        let first = float_var(&first_vm, "Value");
+        let (second_ok, second_vm) = call1(op, ub("Value"));
+        assert!(second_ok, "{op} must remain available");
+        let second = float_var(&second_vm, "Value");
+        assert!(first.is_finite() && first >= 0.0 && second >= first);
+        assert!(!call1(op, a("not_a_float")).0);
+        assert!(!call1(op, i(0)).0);
+        assert!(!vmnew().execute_builtin(op, 1));
+    }
+
+    let (first_ok, first_vm) = call1("process_max_rss/1", ub("Rss"));
+    assert!(first_ok);
+    let first = integer_var(&first_vm, "Rss");
+    let (second_ok, second_vm) = call1("process_max_rss/1", ub("Rss"));
+    assert!(second_ok);
+    let second = integer_var(&second_vm, "Rss");
+    assert!(first > 0 && second >= first);
+    assert!(!call1("process_max_rss/1", a("not_an_integer")).0);
+    assert!(!call1("process_max_rss/1", Value::Float(0.0)).0);
+    assert!(!vmnew().execute_builtin("process_max_rss/1", 1));
+}
+
+#[cfg(not(all(unix, target_pointer_width = "64")))]
+#[test]
+fn test_process_metrics_unavailable_direct() {
+    for op in [
+        "cpu_time/1", "process_user_time/1",
+        "process_system_time/1", "process_max_rss/1",
+    ] {
+        assert!(!call1(op, ub("Value")).0);
+    }
+}
+
+#[test]
+fn test_os_errors_direct() {
+    let mut failed_vm = vmnew();
+    failed_vm.set_reg("A1", a("__unifyweaver_missing_errno_path__/file"));
+    assert!(!failed_vm.execute_builtin("delete_file/1", 1));
+    failed_vm.set_reg("A1", ub("Error"));
+    assert!(failed_vm.execute_builtin("errno/1", 1));
+    let failure_code = integer_var(&failed_vm, "Error");
+    assert_ne!(failure_code, 0);
+
+    assert!(call1("errno/1", i(failure_code)).0);
+    assert!(!call1("errno/1", i(i64::MIN)).0);
+    assert!(!call1("errno/1", a("not_an_integer")).0);
+    assert!(!vmnew().execute_builtin("errno/1", 1));
+
+    let (message_ok, message_vm) = call2("strerror/2", i(2), ub("Message"));
+    assert!(message_ok);
+    let message = match read_var(&message_vm, "Message") {
+        Value::Atom(message) => message,
+        other => panic!("expected error message atom, got {:?}", other),
+    };
+    assert!(!message.is_empty());
+    assert!(call2("strerror/2", i(2), a(&message)).0);
+    assert!(!call2("strerror/2", i(2), a("__not_an_error_message__")).0);
+    assert!(!call2("strerror/2", a("two"), ub("Message")).0);
+    assert!(!call2("strerror/2", ub("Error"), ub("Message")).0);
+    assert!(!call2("strerror/2", Value::Float(2.0), ub("Message")).0);
+    assert!(!vmnew().execute_builtin("strerror/2", 2));
+    let mut missing_output_vm = vmnew();
+    missing_output_vm.set_reg("A1", i(2));
+    assert!(!missing_output_vm.execute_builtin("strerror/2", 2));
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_priority_and_login_direct() {
+    let (priority_ok, priority_vm) = call1("getpriority/1", ub("Priority"));
+    assert!(priority_ok);
+    let priority = integer_var(&priority_vm, "Priority");
+    assert!((-20..=19).contains(&priority));
+    assert!(call1("getpriority/1", i(priority)).0);
+    assert!(!call1("getpriority/1", i(priority.wrapping_add(1))).0);
+    assert!(!call1("getpriority/1", a("not_an_integer")).0);
+    assert!(!vmnew().execute_builtin("getpriority/1", 1));
+
+    assert!(call1("nice/1", i(0)).0);
+    assert!(call1("setpriority/1", i(priority)).0);
+    let (after_ok, after_vm) = call1("getpriority/1", ub("After"));
+    assert!(after_ok);
+    assert_eq!(integer_var(&after_vm, "After"), priority);
+    assert!(!call1("nice/1", a("increment")).0);
+    assert!(!call1("setpriority/1", a("priority")).0);
+    assert!(!vmnew().execute_builtin("nice/1", 1));
+    assert!(!vmnew().execute_builtin("setpriority/1", 1));
+
+    let (login_ok, login_vm) = call1("getlogin/1", ub("Name"));
+    if login_ok {
+        let name = match read_var(&login_vm, "Name") {
+            Value::Atom(name) => name,
+            other => panic!("expected login-name atom, got {:?}", other),
+        };
+        assert!(!name.is_empty());
+        assert!(call1("getlogin/1", a(&name)).0);
+        assert!(!call1("getlogin/1", a("__not_the_login_name__")).0);
+    }
+    assert!(!call1("getlogin/1", i(7)).0);
+    assert!(!vmnew().execute_builtin("getlogin/1", 1));
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_process_priority_and_login_unavailable_direct() {
+    assert!(!call1("getpriority/1", ub("Priority")).0);
+    assert!(!call1("nice/1", i(0)).0);
+    assert!(!call1("setpriority/1", i(0)).0);
+    assert!(!call1("getlogin/1", ub("Name")).0);
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_process_soft_limit_direct() {
+    for resource in [0, 1, 4] {
+        let (ok, vm) = call2("getrlimit/2", i(resource), ub("Limit"));
+        assert!(ok, "resource {resource} must be readable");
+        let limit = integer_var(&vm, "Limit");
+        assert!(call2("getrlimit/2", i(resource), i(limit)).0);
+        assert!(call2("setrlimit/2", i(resource), i(limit)).0);
+        let (after_ok, after_vm) = call2("getrlimit/2", i(resource), ub("After"));
+        assert!(after_ok);
+        assert_eq!(integer_var(&after_vm, "After"), limit);
+        assert!(!call2(
+            "getrlimit/2", i(resource), i(limit.wrapping_add(1))).0);
+    }
+    assert!(!call2("getrlimit/2", i(999), ub("Limit")).0);
+    assert!(!call2("getrlimit/2", a("fsize"), ub("Limit")).0);
+    assert!(!call2("getrlimit/2", ub("Resource"), ub("Limit")).0);
+    assert!(!call2("getrlimit/2", Value::Float(1.0), ub("Limit")).0);
+    assert!(!vmnew().execute_builtin("getrlimit/2", 2));
+    assert!(!call2("setrlimit/2", i(999), i(0)).0);
+    assert!(!call2("setrlimit/2", a("fsize"), i(0)).0);
+    assert!(!call2("setrlimit/2", i(1), a("limit")).0);
+    assert!(!vmnew().execute_builtin("setrlimit/2", 2));
+    let mut missing_output_vm = vmnew();
+    missing_output_vm.set_reg("A1", i(1));
+    assert!(!missing_output_vm.execute_builtin("getrlimit/2", 2));
+}
+
+#[cfg(not(all(unix, target_pointer_width = "64")))]
+#[test]
+fn test_process_soft_limit_unavailable_direct() {
+    assert!(!call2("getrlimit/2", i(1), ub("Limit")).0);
+    assert!(!call2("setrlimit/2", i(1), i(0)).0);
+}
+
+#[test]
+fn test_working_directory_direct() {
+    let directory = std::env::current_dir().unwrap();
+    let directory_text = directory.to_string_lossy().into_owned();
+
+    let (ok, vm) = call2(
+        "working_directory/2", ub("Old"), a(&directory_text));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Old"), a(&directory_text));
+    assert_eq!(std::env::current_dir().unwrap(), directory);
+
+    let mut shared_vm = vmnew();
+    shared_vm.set_reg("A1", ub("Directory"));
+    shared_vm.set_reg("A2", ub("Directory"));
+    assert!(shared_vm.execute_builtin("working_directory/2", 2));
+    assert_eq!(read_var(&shared_vm, "Directory"), a(&directory_text));
+
+    let (query_ok, query_vm) = call2(
+        "working_directory/2", ub("Old"), ub("New"));
+    assert!(query_ok);
+    assert_eq!(read_var(&query_vm, "Old"), a(&directory_text));
+    assert_eq!(read_var(&query_vm, "New"), a(&directory_text));
+
+    assert!(!call2("working_directory/2", a("__wrong_old__"),
+                  a(&directory_text)).0);
+    assert!(!call2("working_directory/2", ub("Old"),
+                  a("__unifyweaver_missing_working_directory__")).0);
+    assert!(!call2("working_directory/2", ub("Old"), i(7)).0);
+    assert!(!call2("working_directory/2", ub("Old"), a("bad\0path")).0);
+    assert!(!vmnew().execute_builtin("working_directory/2", 2));
+    assert_eq!(std::env::current_dir().unwrap(), directory);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_umask_direct() {
+    let mask = native_process_umask();
+
+    let (ok, vm) = call2("umask/2", ub("Old"), i(mask));
+    assert!(ok);
+    assert_eq!(read_var(&vm, "Old"), i(mask));
+    assert_eq!(native_process_umask(), mask);
+    assert!(call2("umask/2", i(mask), i(mask)).0);
+    assert!(!call2("umask/2", i(mask.wrapping_add(1)), i(mask)).0);
+    assert_eq!(native_process_umask(), mask);
+
+    assert!(!call2("umask/2", ub("Old"), a("mask")).0);
+    assert!(!call2("umask/2", ub("Old"), ub("Mask")).0);
+    assert!(!call2("umask/2", ub("Old"), Value::Float(mask as f64)).0);
+    assert!(!vmnew().execute_builtin("umask/2", 2));
+    let mut missing_new = vmnew();
+    missing_new.set_reg("A1", ub("Old"));
+    assert!(!missing_new.execute_builtin("umask/2", 2));
+    assert_eq!(native_process_umask(), mask);
+}
+
+#[cfg(not(unix))]
+#[test]
+fn test_umask_unavailable_direct() {
+    assert!(!call2("umask/2", ub("Old"), i(0)).0);
+}
+
+#[test]
+fn test_stream_builtins_direct() {
+    let path = "stream_builtins_direct_fixture.txt";
+    let mut content = vec![102, 105, 114, 115, 116, 13, 10, 10];
+    content.extend(std::iter::repeat(120u8).take(70000));
+    content.push(10);
+    content.extend_from_slice(b"last");
+    std::fs::write(path, content).unwrap();
+
+    let (open_ok, open_vm) = call2("stream_open/2", a(path), ub("Handle"));
+    assert!(open_ok);
+    let handle = integer_var(&open_vm, "Handle");
+    assert!((1..4096).contains(&handle));
+
+    let (first_ok, first_vm) = call2("read_line/2", i(handle), ub("Line"));
+    assert!(first_ok);
+    assert_eq!(read_var(&first_vm, "Line"), a("first"));
+    let (empty_ok, empty_vm) = call2("read_line/2", i(handle), ub("Line"));
+    assert!(empty_ok);
+    assert_eq!(read_var(&empty_vm, "Line"), a(""));
+    let (long_ok, long_vm) = call2("read_line/2", i(handle), ub("Line"));
+    assert!(long_ok);
+    assert_eq!(read_var(&long_vm, "Line"), a(&"x".repeat(70000)));
+    let (last_ok, last_vm) = call2("read_line/2", i(handle), ub("Line"));
+    assert!(last_ok);
+    assert_eq!(read_var(&last_vm, "Line"), a("last"));
+    for _ in 0..2 {
+        let (eof_ok, eof_vm) = call2("read_line/2", i(handle), ub("Line"));
+        assert!(eof_ok);
+        assert_eq!(read_var(&eof_vm, "Line"), a("end_of_file"));
+    }
+
+    assert!(call1("stream_close/1", i(handle)).0);
+    assert!(call1("stream_close/1", i(handle)).0);
+    assert!(!call2("read_line/2", i(handle), ub("Line")).0);
+
+    let mismatch_path = "stream_builtins_mismatch_fixture.txt";
+    std::fs::write(
+        mismatch_path,
+        [97, 108, 112, 104, 97, 10, 98, 101, 116, 97, 10],
+    ).unwrap();
+    let (mismatch_open_ok, mismatch_open_vm) =
+        call2("stream_open/2", a(mismatch_path), ub("Handle"));
+    assert!(mismatch_open_ok);
+    let mismatch_handle = integer_var(&mismatch_open_vm, "Handle");
+    assert!(!call2("read_line/2", i(mismatch_handle), a("wrong")).0);
+    let (after_ok, after_vm) =
+        call2("read_line/2", i(mismatch_handle), ub("Line"));
+    assert!(after_ok);
+    assert_eq!(read_var(&after_vm, "Line"), a("beta"));
+    assert!(call1("stream_close/1", i(mismatch_handle)).0);
+
+    let nul_path = String::from_utf8(vec![98, 97, 100, 0, 112, 97, 116, 104]).unwrap();
+    assert!(!call2("stream_open/2", i(7), ub("Handle")).0);
+    assert!(!call2("stream_open/2", ub("Path"), ub("Handle")).0);
+    assert!(!call2(
+        "stream_open/2", a("__unifyweaver_missing_stream_file__"), ub("Handle")).0);
+    assert!(!call2("stream_open/2", a(&nul_path), ub("Handle")).0);
+    assert!(!call2("stream_open/2", a(path), a("handle")).0);
+    assert!(!call2("read_line/2", i(0), ub("Line")).0);
+    assert!(!call2("read_line/2", i(4096), ub("Line")).0);
+    assert!(!call2("read_line/2", a("handle"), ub("Line")).0);
+    assert!(call1("stream_close/1", i(4095)).0);
+    assert!(!call1("stream_close/1", i(0)).0);
+    assert!(!call1("stream_close/1", i(4096)).0);
+    assert!(!call1("stream_close/1", a("handle")).0);
+    assert!(!vmnew().execute_builtin("stream_open/2", 2));
+    assert!(!vmnew().execute_builtin("read_line/2", 2));
+    assert!(!vmnew().execute_builtin("stream_close/1", 1));
+
+    std::fs::remove_file(path).unwrap();
+    std::fs::remove_file(mismatch_path).unwrap();
+}
+
+#[cfg(all(unix, target_pointer_width = "64"))]
+#[test]
+fn test_time_conversions_direct() {
+    const STAMP: i64 = 1_700_000_000;
+
+    let (date_ok, date_vm) = call3(
+        "stamp_date_time/3", i(STAMP), ub("DateTime"), a("local"));
+    assert!(date_ok);
+    let date = read_var(&date_vm, "DateTime");
+    let args = date_args(date.clone());
+    assert!((1970..3000).contains(&integer_value(&args[0])));
+    assert!((1..=12).contains(&integer_value(&args[1])));
+    assert!((1..=31).contains(&integer_value(&args[2])));
+    assert_eq!(args[7], a("local"));
+    assert!(matches!(args[5], Value::Integer(_)));
+    assert!(call3("stamp_date_time/3", i(STAMP), date.clone(), a("local")).0);
+    assert!(!call3("stamp_date_time/3", i(STAMP), a("not_a_date"), a("local")).0);
+
+    let (float_ok, float_vm) = call3(
+        "stamp_date_time/3", Value::Float(STAMP as f64 + 0.75),
+        ub("DateTime"), a("local"));
+    assert!(float_ok);
+    assert_eq!(read_var(&float_vm, "DateTime"), date);
+    let (ignored_tz_ok, ignored_tz_vm) = call3(
+        "stamp_date_time/3", i(STAMP), ub("DateTime"), a("UTC"));
+    assert!(ignored_tz_ok);
+    assert_eq!(read_var(&ignored_tz_vm, "DateTime"), date);
+    assert!(!call3("stamp_date_time/3", a("bad"), ub("DateTime"), a("local")).0);
+    assert!(!call3("stamp_date_time/3", i(STAMP), ub("DateTime"), i(0)).0);
+    assert!(!call3(
+        "stamp_date_time/3", Value::Float(f64::NAN),
+        ub("DateTime"), a("local")).0);
+    assert!(!vmnew().execute_builtin("stamp_date_time/3", 3));
+
+    let (roundtrip_ok, roundtrip_vm) = call2(
+        "date_time_stamp/2", date.clone(), ub("Stamp"));
+    assert!(roundtrip_ok);
+    assert_eq!(float_var(&roundtrip_vm, "Stamp"), STAMP as f64);
+    assert!(call2(
+        "date_time_stamp/2", date.clone(), Value::Float(STAMP as f64)).0);
+    assert!(!call2("date_time_stamp/2", date.clone(), i(STAMP)).0);
+    assert!(!call2("date_time_stamp/2", a("not_a_date"), ub("Stamp")).0);
+    assert!(!call2(
+        "date_time_stamp/2",
+        Value::strv("date".to_string(), vec![i(2024)]), ub("Stamp")).0);
+    let mut bad_seconds = args.clone();
+    bad_seconds[5] = Value::Float(0.0);
+    assert!(!call2(
+        "date_time_stamp/2", Value::strv("date".to_string(), bad_seconds),
+        ub("Stamp")).0);
+    let mut bad_timezone = args.clone();
+    bad_timezone[7] = i(0);
+    assert!(!call2(
+        "date_time_stamp/2", Value::strv("date".to_string(), bad_timezone),
+        ub("Stamp")).0);
+    assert!(!vmnew().execute_builtin("date_time_stamp/2", 2));
+    let mut missing_stamp_vm = vmnew();
+    missing_stamp_vm.set_reg("A1", date.clone());
+    assert!(!missing_stamp_vm.execute_builtin("date_time_stamp/2", 2));
+
+    let format = "%Y-%m-%d %H:%M:%S";
+    let (format_ok, format_vm) = call3(
+        "format_time/3", ub("Formatted"), a(format), i(STAMP));
+    assert!(format_ok);
+    let formatted = match read_var(&format_vm, "Formatted") {
+        Value::Atom(formatted) => formatted,
+        other => panic!("expected formatted atom, got {:?}", other),
+    };
+    assert_eq!(formatted.len(), 19);
+    assert!(call3("format_time/3", a(&formatted), a(format), i(STAMP)).0);
+    assert!(call3(
+        "format_time/3", a(&formatted), a(format),
+        Value::Float(STAMP as f64 + 0.75)).0);
+    assert!(call3("format_time/3", a(""), a(""), i(STAMP)).0);
+    assert!(!call3("format_time/3", a("wrong"), a(format), i(STAMP)).0);
+    assert!(!call3("format_time/3", ub("Formatted"), i(7), i(STAMP)).0);
+    assert!(!call3("format_time/3", ub("Formatted"), a(format), a("bad")).0);
+    assert!(!vmnew().execute_builtin("format_time/3", 3));
+}
+
+#[cfg(not(all(unix, target_pointer_width = "64")))]
+#[test]
+fn test_time_conversions_unavailable_direct() {
+    assert!(!call3(
+        "stamp_date_time/3", i(0), ub("DateTime"), a("local")).0);
+    assert!(!call2(
+        "date_time_stamp/2",
+        Value::strv("date".to_string(), vec![i(0); 9]), ub("Stamp")).0);
+    assert!(!call3("format_time/3", ub("Formatted"), a("%Y"), i(0)).0);
+}
+
+#[cfg(unix)]
+#[test]
+fn test_process_commands_direct() {
+    assert!(call1("shell/1", a("exit 0")).0);
+    assert!(!call1("shell/1", a("exit 3")).0);
+    assert!(!call1("shell/1", i(7)).0);
+    assert!(!vmnew().execute_builtin("shell/1", 1));
+
+    let (status_ok, status_vm) = call2("shell/2", a("exit 23"), ub("Status"));
+    assert!(status_ok);
+    assert_eq!(read_var(&status_vm, "Status"), i(23));
+    assert!(call2("shell/2", a("exit 0"), i(0)).0);
+    assert!(!call2("shell/2", a("exit 9"), i(8)).0);
+    assert!(!call2("shell/2", ub("Command"), ub("Status")).0);
+
+    let (capture_ok, capture_vm) = call2(
+        "system_to_atom/2", a("printf direct-output"), ub("Output"));
+    assert!(capture_ok);
+    assert_eq!(read_var(&capture_vm, "Output"), a("direct-output"));
+    assert!(call2("system_to_atom/2", a("exit 5"), a("")).0,
+        "stdout capture succeeds independently of the exit status");
+    assert!(!call2("system_to_atom/2", a("printf wrong"), a("right")).0);
+    assert!(!call2("system_to_atom/2", i(7), ub("Output")).0);
+
+    let fixture = std::path::Path::new("process_command_direct_fixture.txt");
+    let _ = std::fs::remove_file(fixture);
+    assert!(call2(
+        "atom_to_system/2",
+        a("cat > process_command_direct_fixture.txt"),
+        a("direct-input")).0);
+    assert_eq!(std::fs::read_to_string(fixture).unwrap(), "direct-input");
+    assert!(!call2("atom_to_system/2", a("exit 4"), a("input")).0);
+    assert!(!call2("atom_to_system/2", i(7), a("input")).0);
+    assert!(!call2("atom_to_system/2", a("cat"), i(7)).0);
+    std::fs::remove_file(fixture).unwrap();
+}
+
+#[test]
+fn test_sleep_direct() {
+    assert!(call1("sleep/1", i(0)).0);
+    assert!(call1("sleep/1", Value::Float(0.0)).0);
+
+    let started = std::time::Instant::now();
+    assert!(call1("sleep/1", Value::Float(0.005)).0);
+    assert!(started.elapsed() >= std::time::Duration::from_millis(4));
+
+    assert!(!call1("sleep/1", i(-1)).0);
+    assert!(!call1("sleep/1", Value::Float(-0.001)).0);
+    assert!(!call1("sleep/1", Value::Float(f64::NAN)).0);
+    assert!(!call1("sleep/1", Value::Float(f64::INFINITY)).0);
+    assert!(!call1("sleep/1", a("soon")).0);
+    assert!(!call1("sleep/1", ub("Seconds")).0);
+}
+
+#[test]
+fn test_environment_mutation_direct() {
+    let key = "UNIFYWEAVER_RUST_WAM_DIRECT_ENV_5A27";
+    std::env::remove_var(key);
+
+    assert!(call2("setenv/2", a(key), a("first")).0);
+    assert_eq!(std::env::var(key).unwrap(), "first");
+    assert!(call2("setenv/2", a(key), a("second")).0);
+    assert_eq!(std::env::var(key).unwrap(), "second");
+    assert!(call1("unsetenv/1", a(key)).0);
+    assert!(std::env::var_os(key).is_none());
+    assert!(call1("unsetenv/1", a(key)).0,
+        "unsetenv/1 is idempotent for a missing name");
+
+    let nul_name = String::from_utf8(vec![66, 65, 68, 0, 78, 65, 77, 69]).unwrap();
+    let nul_value = String::from_utf8(vec![98, 97, 100, 0, 118, 97, 108]).unwrap();
+    assert!(!call2("setenv/2", a(""), a("value")).0);
+    assert!(!call2("setenv/2", a("BAD=NAME"), a("value")).0);
+    assert!(!call2("setenv/2", a(&nul_name), a("value")).0);
+    assert!(!call2("setenv/2", a(key), a(&nul_value)).0);
+    assert!(!call2("setenv/2", ub("Name"), a("value")).0);
+    assert!(!call2("setenv/2", a(key), i(7)).0);
+    assert!(!call1("unsetenv/1", a("")).0);
+    assert!(!call1("unsetenv/1", a("BAD=NAME")).0);
+    assert!(!call1("unsetenv/1", a(&nul_name)).0);
+    assert!(!call1("unsetenv/1", i(7)).0);
+
+    std::env::remove_var(key);
 }
 ',
         setup_call_cleanup(
@@ -608,7 +4018,23 @@ fn test_ground() {
         process_wait(Pid, exit(ExitCode)),
         (   ExitCode == 0,
             sub_string(Output, _, _, _, "test result: ok")
-        ->  pass(Test)
+        ->  run_output_probe(TmpDir, ProbeExitCode, ProbeOutput),
+            ExpectedOutput = "xy'two words'node('has space', 7)F1~|node(1)/hello/42/ok\n",
+            (   ProbeExitCode == 0,
+                ProbeOutput == ExpectedOutput
+            ->  write_halt_probe(TmpDir),
+                run_halt_probes(TmpDir, HaltResults),
+                ExpectedHaltResults = [zero-0, seven-7, sum-5, invalid-0],
+                (   HaltResults == ExpectedHaltResults
+                ->  pass(Test)
+                ;   format('--- halt probes ---~nexpected: ~q~nactual:   ~q~n--- end ---~n',
+                           [ExpectedHaltResults, HaltResults]),
+                    fail_test(Test, 'halt probes failed')
+                )
+            ;   format('--- output probe ---~nexpected: ~q~nactual:   ~q~n--- end ---~n',
+                       [ExpectedOutput, ProbeOutput]),
+                fail_test(Test, 'output probe failed')
+            )
         ;   format('--- cargo test output ---~n~w~n--- end ---~n', [Output]),
             fail_test(Test, 'cargo test failed')
         )

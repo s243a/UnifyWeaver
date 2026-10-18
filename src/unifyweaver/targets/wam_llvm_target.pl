@@ -47,6 +47,7 @@
     split_functor_arity/3,               % +Str, -Name, -Arity (handles `/` in name)
     llvm_emit_atom_prefix_guard/5,       % +GlobalBase, +ValueIR, +Prefix, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_eq_guard/7,     % +GlobalBase, +ValueIR, +FieldIndex, +Expected, +SepCode, +ResultIR, -GlobalIR-CallIR
+    llvm_emit_regex_field_match_guard/7, % +GlobalBase, +ValueIR, +FieldIndex, +Regex, +SepCode, +ResultIR, -GlobalIR-CallIR
     llvm_emit_atom_field_slice/5,        % +ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR
     llvm_emit_atom_field_count/4,        % +ValueIR, +SepCode, +CountBase, -CallIR
     llvm_emit_atom_field_length/5,       % +ValueIR, +FieldIndex, +SepCode, +LengthBase, -CallIR
@@ -62,7 +63,13 @@
     llvm_emit_printf_string/6,           % +FmtGlobal, +FmtLen, +FmtVar, +PrintVar, +PtrIR, -Parts
     llvm_emit_printf0/5,                 % +FmtGlobal, +FmtLen, +FmtVar, +PrintVar, -Parts
     llvm_emit_stream_driver_ir/3,        % +InputPath, +DriverBlocks, -DriverIR
-    llvm_emit_ascii_case_slice_print/5   % +Mode, +PtrIR, +LenIR, +PrintBase, -CallIR
+    llvm_emit_binary_stream_driver_ir/4, % +InputPath, +RecordSize, +DriverBlocks, -DriverIR
+    llvm_emit_varlen_stream_driver_ir/5, % +InputPath, +BufSize, +ReadIR, +DriverBlocks, -DriverIR
+    llvm_emit_ascii_case_slice_print/5,  % +Mode, +PtrIR, +LenIR, +PrintBase, -CallIR
+    % Phase 5 (JIT): runtime-loadable WAM objects (.wamo)
+    write_wam_object/3,                  % +Predicates, +Options, +OutFile
+    wam_object_encode/3,                 % +Predicates, +Options, -Text (in-memory .wamo bytes)
+    wam_object_support_ir/1              % -IR (loader + call primitive; append to a host module)
 ]).
 
 :- use_module(library(lists)).
@@ -381,45 +388,59 @@ llvm_foreign_lowerable_weighted_shortest_path(Pred, 3, Clauses, WeightPred) :-
 
 %% llvm_recursive_kernel_astar_shortest_path(+Pred, +Arity, +Clauses, -RecKernel).
 %
-%  Detects the astar_shortest_path4 clause shape (arity 4):
-%    pred(X, Y, W, _Vis) :- weight_pred(X, Y, W).
-%    pred(X, Y, Cost, Vis) :-
+%  Detects the canonical astar_shortest_path4 clause shape (arity 4):
+%    pred(X, Y, _Dim, W) :- weight_pred(X, Y, W).
+%    pred(X, Y, Dim, Cost) :-
 %        weight_pred(X, Z, W),
-%        pred(Z, Y, RC, [Z|Vis]),
+%        pred(Z, Y, Dim, RC),
 %        Cost is W + RC.
 %
-%  Extracts weight_pred. If user:direct_semantic_dist/3 is defined,
-%  includes it as direct_dist_pred for runtime heuristic support.
+%  Extracts weight_pred. If user:direct_dist_pred/1 (or the legacy
+%  direct_semantic_dist/3 convention) is available, includes it for
+%  target-specific runtime heuristic materialization.
 llvm_recursive_kernel_astar_shortest_path(Pred, Arity, Clauses,
         recursive_kernel(astar_shortest_path4, Pred/Arity, Config)) :-
     llvm_foreign_lowerable_astar_shortest_path(Pred, Arity, Clauses, WeightPred),
-    ( predicate_property(user:direct_semantic_dist(_,_,_), defined)
-    -> Config = [weight_pred(WeightPred/3), direct_dist_pred(direct_semantic_dist/3)]
+    ( llvm_astar_direct_dist_pred(DirectPred)
+    -> Config = [weight_pred(WeightPred/3), direct_dist_pred(DirectPred)]
     ;  Config = [weight_pred(WeightPred/3)]
     ).
 
+% Resolve the fleet-wide direct_dist_pred/1 declaration first.  Accept both
+% a predicate indicator and the convenient bare atom form; retain the old
+% direct_semantic_dist/3 convention as a compatibility fallback.
+llvm_astar_direct_dist_pred(DirectPred) :-
+    catch(user:direct_dist_pred(Spec), _, fail),
+    llvm_normalize_ternary_pred_spec(Spec, DirectPred),
+    !.
+llvm_astar_direct_dist_pred(direct_semantic_dist/3) :-
+    predicate_property(user:direct_semantic_dist(_, _, _), defined).
+
+llvm_normalize_ternary_pred_spec(_Module:Spec, DirectPred) :- !,
+    llvm_normalize_ternary_pred_spec(Spec, DirectPred).
+llvm_normalize_ternary_pred_spec(Name/3, Name/3) :- atom(Name), !.
+llvm_normalize_ternary_pred_spec(Name, Name/3) :- atom(Name).
+
 %% llvm_foreign_lowerable_astar_shortest_path(+Pred, +Arity, +Clauses, -WeightPred).
 %
-%  Matches arity-4 predicates with weighted shortest path + visited list.
-%  Base clause: pred(X, Y, W, _) :- weight(X, Y, W).
-%  Recursive clause: pred(X, Y, Cost, Vis) :- weight(X, Z, W), pred(Z, Y, RC, ...), Cost is W + RC.
+%  Matches the shared arity-4 Source/Target/Dim/Cost relation.  Dim is
+%  threaded unchanged through recursion and is a scheduling input only.
 llvm_foreign_lowerable_astar_shortest_path(Pred, 4, Clauses, WeightPred) :-
     member(BaseHead-BaseBody, Clauses),
     member(RecHead-RecBody, Clauses),
     BaseHead \== RecHead,
-    BaseHead =.. [Pred, _, _, _, _],
-    RecHead =.. [Pred, _, _, _, _],
-    % Base body is a single weight_pred call (ignoring visited arg).
-    BaseBody =.. [WeightPred, _, _, _],
+    BaseHead =.. [Pred, BaseStart, BaseTarget, _BaseDim, BaseCost],
+    BaseBody =.. [WeightPred, BaseStart, BaseTarget, BaseCost],
     WeightPred \== Pred,
-    % Recursive body contains weight call, recursive call, and arithmetic.
-    RecBody = (WeightGoal, RestBody),
-    WeightGoal =.. [WeightPred, _, _, _],
-    % Rest may have \+ member(...) interleaved; just check for the recursive call and is/2.
-    term_string(RestBody, RestStr),
-    atom_string(Pred, PredStr),
-    sub_string(RestStr, _, _, _, PredStr),
-    sub_string(RestStr, _, _, _, " is ").
+    RecHead =.. [Pred, RecStart, RecTarget, RecDim, RecCost],
+    RecBody = (WeightGoal, (RecGoal, IsGoal)),
+    WeightGoal =.. [WeightPred, RecStart, Mid, Weight],
+    RecGoal =.. [Pred, Mid, RecTarget, RecDim, RestCost],
+    IsGoal =.. [is, RecCost, PlusExpr],
+    PlusExpr =.. [+, Left, Right],
+    ( Left == Weight, Right == RestCost
+    ; Left == RestCost, Right == Weight
+    ).
 
 %% llvm_auto_detect_foreign_kernels(+Predicates) is det.
 %
@@ -896,6 +917,7 @@ build_wsp3_instance_parts([PredArity-Config | Rest], Index,
 %  call. The weight predicate has arity 3: weight_pred(From, To, Weight).
 build_wsp3_instance_table(Config, TableName, TableIR, GepLen, EffLen, MaxAtomId) :-
     ( member(weight_pred(WeightPred), Config) -> true
+    ; member(edge_pred(WeightPred), Config) -> true
     ; WeightPred = weight/3  % default for smoke tests
     ),
     WeightPred = WPName/WPArity,
@@ -976,7 +998,8 @@ build_astar4_instance_parts([PredArity-Config | Rest], Index,
     format(atom(HeuristicName), 'astar4_inst_~w_~w_heuristic', [SanePred, Index]),
     build_wsp3_instance_table(Config, EdgeTableName, EdgeTableIR, GepLen, EffLen, MaxAtomId),
     % Check if direct_dist_pred is configured for runtime heuristic.
-    ( member(direct_dist_pred(DDPred), Config)
+    ( member(direct_dist_pred(DDRaw), Config),
+      llvm_normalize_ternary_pred_spec(DDRaw, DDPred)
     -> % Runtime heuristic: emit a %WeightedFact table for direct distances
        % and build the heuristic dynamically at query time.
        format(atom(DDTableName), 'astar4_inst_~w_~w_direct', [SanePred, Index]),
@@ -989,7 +1012,8 @@ build_astar4_instance_parts([PredArity-Config | Rest], Index,
 'as_inst_~w:
   %as_tbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
   %as_dtbl_~w = getelementptr [~w x %WeightedFact], [~w x %WeightedFact]* @~w, i64 0, i64 0
-  %as_target_~w = call i64 @wam_get_reg_payload(%WamState* %vm, i32 1)
+  %as_target_v_~w = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %as_target_~w = extractvalue %Value %as_target_v_~w, 1
   %as_h_~w = call double* @wam_build_heuristic_from_table(
       %WeightedFact* %as_dtbl_~w, i64 ~w,
       i64 %as_target_~w, i64 ~w)
@@ -1000,7 +1024,7 @@ build_astar4_instance_parts([PredArity-Config | Rest], Index,
            [Index,
             Index, GepLen, GepLen, EdgeTableName,
             Index, DDGepLen, DDGepLen, DDTableName,
-            Index,
+            Index, Index, Index,
             Index, Index, DDEffLen,
             Index, MaxAtomIdAll,
             Index, Index, EffLen, Index, MaxAtomIdAll,
@@ -1052,7 +1076,6 @@ build_astar4_heuristic_array(Config, MaxAtomId, Name, IR, Size) :-
                 ( Goal =.. [HPName, Node, Target, HVal],
                   user:Goal,
                   atom(Node),
-                  number(HVal),
                   intern_atom(Node, AtomId)
                 ),
                 HEntries),
@@ -1072,7 +1095,18 @@ build_astar4_heuristic_array(Config, MaxAtomId, Name, IR, Size) :-
     ).
 
 heuristic_entry_value(HEntries, AtomId, Value) :-
-    ( memberchk(AtomId-V, HEntries) -> Value = V ; Value = 0.0 ).
+    findall(V, member(AtomId-V, HEntries), Values),
+    ( Values == []
+    -> Value = 0.0
+    ;  maplist(llvm_valid_heuristic_value, Values)
+    -> min_list(Values, Min), Value is float(Min)
+    ;  % Preserve malformed relevant data as a runtime-invalid sentinel.
+       Value = -1.0
+    ).
+
+llvm_valid_heuristic_value(V) :-
+    number(V),
+    catch((V >= 0, V =:= V, V =\= 1.0Inf, V =\= -1.0Inf), _, fail).
 
 format_double_entry(V, Str) :-
     ( integer(V)
@@ -1163,9 +1197,18 @@ string_replace(Haystack, Needle, Replacement, Result) :-
 % PHASE 5: Hybrid Module Assembly
 % ============================================================================
 
-%% write_wam_llvm_project(+Predicates, +Options, +OutputFile)
+%% write_wam_llvm_project(+Predicates, +Options, +OutputFile) is det.
+%
 %  Generates a complete LLVM IR module for the given predicates.
+%  Deterministic by contract: the body's compilation pipeline leaves
+%  internal choice points, and a caller that backtracks into them
+%  (e.g. a test negating a goal that contains this call) re-runs the
+%  whole compiler search -- one such \+ burned 45 CPU-minutes before
+%  this fence existed.
 write_wam_llvm_project(Predicates, Options, OutputFile) :-
+    once(write_wam_llvm_project_(Predicates, Options, OutputFile)).
+
+write_wam_llvm_project_(Predicates, Options, OutputFile) :-
     option(module_name(ModuleName), Options, 'wam_generated'),
     option(target_triple(Triple), Options, 'x86_64-pc-linux-gnu'),
     option(target_datalayout(DataLayout), Options,
@@ -1323,7 +1366,16 @@ write_wam_llvm_project(Predicates, Options, OutputFile) :-
     % predicates section so they are at module scope before any use.
     atomic_list_concat([ForeignGlobals, '\n', FunctorGlobals, '\n',
         EmptyListGlobal, '\n', AtomStringGlobals, '\n\n', NativeCode],
-        FinalNativeCode),
+        FinalNativeCode0),
+    % Phase 5 (JIT): append the .wamo loader + object-call primitive when
+    % requested. It references only runtime helpers already in this module
+    % plus libc open/read/close, so it can ride any host module.
+    (   option(emit_wamo_loader(true), Options)
+    ->  wam_object_support_ir(WamoLoaderIR),
+        atomic_list_concat([FinalNativeCode0, '\n\n', WamoLoaderIR],
+            FinalNativeCode)
+    ;   FinalNativeCode = FinalNativeCode0
+    ),
 
     % Generate external declarations (native vs WASM).
     generate_external_declarations(Triple, ExternalDecls),
@@ -1562,6 +1614,7 @@ declare i8* @opendir(i8*)
 declare i8* @readdir(i8*)
 declare i32 @closedir(i8*)
 declare i64 @strlen(i8*)
+declare i64 @strnlen(i8*, i64)
 declare i32 @system(i8*)
 declare i8* @getcwd(i8*, i64)
 declare i32 @chdir(i8*)
@@ -1600,6 +1653,8 @@ declare i8* @popen(i8*, i8*)
 declare i32 @pclose(i8*)
 declare i64 @fread(i8*, i64, i64, i8*)
 declare i64 @fwrite(i8*, i64, i64, i8*)
+declare i32 @memcmp(i8*, i8*, i64)
+declare i8* @strstr(i8*, i8*)
 declare i32 @usleep(i32)
 declare i32 @gethostname(i8*, i64)
 declare double @drand48()
@@ -1611,7 +1666,10 @@ declare i64 @mktime(i8*)
 declare double @asin(double)
 declare double @acos(double)
 declare double @atan(double)
-declare double @atan2(double, double)'
+declare double @atan2(double, double)
+declare i32 @regcomp(i8*, i8*, i32)
+declare i32 @regexec(i8*, i8*, i64, i8*, i32)
+declare double @strtod(i8*, i8**)'
     ).
 
 %% generate_wasm_exports(+Predicates, -ExportCode)
@@ -1720,10 +1778,26 @@ echo "Size: $(wc -c < ~w.wasm) bytes"
 ', [LLFile, LLFile, OutputName, OutputName, OutputName, OutputName, OutputName, OutputName]).
 
 %% read_template_file(+Path, -Content)
+% Captured at load time so template paths resolve against the
+% repository the module was loaded from, not the process cwd.
+:- dynamic wam_llvm_module_dir/1.
+:- prolog_load_context(directory, Dir),
+   retractall(wam_llvm_module_dir(_)),
+   assertz(wam_llvm_module_dir(Dir)).
+
 read_template_file(Path, Content) :-
     (   exists_file(Path)
     ->  read_file_to_string(Path, Content, [])
-    ;   format(atom(Content), "; Template not found: ~w", [Path])
+    ;   wam_llvm_module_dir(ModuleDir),
+        format(atom(RootPath), '~w/../../../~w', [ModuleDir, Path]),
+        exists_file(RootPath)
+    ->  read_file_to_string(RootPath, Content, [])
+    ;   % A missing runtime template used to become an IR comment,
+        % producing a module full of undefined types that failed later
+        % at clang with baffling errors. Fail here instead.
+        throw(error(existence_error(source_sink, Path),
+            context(wam_llvm_codegen,
+                'runtime template not found relative to the working directory or the UnifyWeaver source tree')))
     ).
 
 %% compile_predicates_for_llvm(+Predicates, +Options, -NativeCode, -WamCode)
@@ -2142,6 +2216,19 @@ pass2_emit_merged(Classified, LabelMap, NamePCPairs, Options,
                   NativeParts, WamParts) :-
     partition_classified(Classified,
         NativeRecords, WamRecords, HybridRecords, FailedRecords),
+    % A predicate that failed every compilation route used to become
+    % an IR comment inside a "successful" module -- the caller thought
+    % it compiled. Fail loudly instead (wam_allow_failed(true) keeps
+    % the old comment-and-continue behaviour).
+    (   FailedRecords == []
+    ->  true
+    ;   option(wam_allow_failed(true), Options)
+    ->  true
+    ;   findall(PI, member(failed(PI, _A), FailedRecords), FailedPIs),
+        throw(error(existence_error(procedures, FailedPIs),
+            context(wam_llvm_codegen,
+                'these predicates could not be compiled (no clauses or no supported route); check the name/arity -- a DCG rule adds 2 to the visible arity -- or pass wam_allow_failed(true) to emit the module with them omitted')))
+    ),
     % Native records' PredCode already includes both the lowered
     % function AND the @<pred> wrapper. Hybrid records contribute
     % their LoweredCode (just the @lowered_*_* fn); the matching
@@ -2979,21 +3066,25 @@ uvl.fail:
   ret i1 false').
 
 wam_llvm_case('unify_constant',
-'  ; unify_constant: op1 = constant value (packed)
-  ; Read mode: check next arg equals constant
-  ; Write mode: push constant onto heap
+'  ; unify_constant: op1 = constant value (packed), op2 = tag << 16.
+  ; The tag (0 = Atom, 1 = Integer) was historically missing: the
+  ; comparison value was always built Atom-tagged, so an integer
+  ; constant in a list/structure head (p([44|T])) compared Atom(44)
+  ; against the heap Integer(44) and never matched. Read mode now
+  ; also goes through the general unifier, so an unbound sub-arg is
+  ; BOUND to the constant (with trailing) instead of silently
+  ; "matching" while staying unbound.
   %uc.stype = call i32 @wam_peek_stack_type(%WamState* %vm)
   %uc.is_read = icmp eq i32 %uc.stype, 1
-  %uc.val = insertvalue %Value undef, i32 0, 0
+  %uc.op2_32 = trunc i64 %op2 to i32
+  %uc.tag = lshr i32 %uc.op2_32, 16
+  %uc.val = insertvalue %Value undef, i32 %uc.tag, 0
   %uc.val2 = insertvalue %Value %uc.val, i64 %op1, 1
   br i1 %uc.is_read, label %uc.read, label %uc.write
 
 uc.read:
-  ; Read mode: get expected, check equality
   %uc.expected = call %Value @wam_unify_ctx_next(%WamState* %vm)
-  %uc.eq = call i1 @value_equals(%Value %uc.expected, %Value %uc.val2)
-  %uc.exp_unb = call i1 @value_is_unbound(%Value %uc.expected)
-  %uc.ok = or i1 %uc.eq, %uc.exp_unb
+  %uc.ok = call i1 @wam_unify_value(%WamState* %vm, %Value %uc.expected, %Value %uc.val2)
   br i1 %uc.ok, label %uc.read_ok, label %uc.fail
 
 uc.read_ok:
@@ -4293,6 +4384,274 @@ done:
   ret void
 }
 
+define i64 @wam_assoc_i64_iter_next(%WamAssocI64Table* %table, i64 %start) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %iter.miss, label %iter.load
+
+iter.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %iter.miss, label %iter.loop
+
+iter.loop:
+  %idx = phi i64 [ %start, %iter.load ], [ %next_idx, %iter.next ]
+  %past_end = icmp uge i64 %idx, %cap
+  br i1 %past_end, label %iter.miss, label %iter.check
+
+iter.check:
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %occupied_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 2
+  %occupied = load i1, i1* %occupied_slot
+  br i1 %occupied, label %iter.hit, label %iter.next
+
+iter.hit:
+  ret i64 %idx
+
+iter.next:
+  %next_idx = add i64 %idx, 1
+  br label %iter.loop
+
+iter.miss:
+  ret i64 -1
+}
+
+define i64 @wam_assoc_i64_key_at(%WamAssocI64Table* %table, i64 %idx) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %kat.miss, label %kat.load
+
+kat.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %past_end = icmp uge i64 %idx, %cap
+  br i1 %past_end, label %kat.miss, label %kat.entries
+
+kat.entries:
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %kat.miss, label %kat.read
+
+kat.read:
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %key_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 0
+  %key = load i64, i64* %key_slot
+  ret i64 %key
+
+kat.miss:
+  ret i64 0
+}
+
+define i64 @wam_assoc_i64_value_at(%WamAssocI64Table* %table, i64 %idx) {
+entry:
+  %table_null = icmp eq %WamAssocI64Table* %table, null
+  br i1 %table_null, label %vat.miss, label %vat.load
+
+vat.load:
+  %cap_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 1
+  %cap = load i64, i64* %cap_slot
+  %past_end = icmp uge i64 %idx, %cap
+  br i1 %past_end, label %vat.miss, label %vat.entries
+
+vat.entries:
+  %entries_slot = getelementptr %WamAssocI64Table, %WamAssocI64Table* %table, i32 0, i32 2
+  %entries = load %WamAssocI64Entry*, %WamAssocI64Entry** %entries_slot
+  %entries_null = icmp eq %WamAssocI64Entry* %entries, null
+  br i1 %entries_null, label %vat.miss, label %vat.read
+
+vat.read:
+  %assoc_entry = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %entries, i64 %idx
+  %value_slot = getelementptr %WamAssocI64Entry, %WamAssocI64Entry* %assoc_entry, i32 0, i32 1
+  %value = load i64, i64* %value_slot
+  ret i64 %value
+
+vat.miss:
+  ret i64 0
+}
+
+; POSIX ERE matching over atom-backed text records. Patterns are
+; compile-time constants; each match site owns a cache slot holding a
+; lazily regcomp()ed regex_t. The regex_t is malloc''d at 512 bytes,
+; comfortably above sizeof(regex_t) on glibc (64), musl, and the BSDs.
+; cflags is REG_EXTENDED (1 on all common libcs); REG_NOSUB is skipped
+; because its value differs across libcs and it is only an optimization.
+@wam_regex_field_buf = internal global i8* null
+@wam_regex_field_cap = internal global i64 0
+
+define i1 @wam_regex_field_match(%Value %line, i64 %field_index, i8 %sep, i8* %pattern, i8** %cache_slot) {
+entry:
+  %cached = load i8*, i8** %cache_slot
+  %have = icmp ne i8* %cached, null
+  br i1 %have, label %rgx.have_regex, label %rgx.compile
+
+rgx.compile:
+  %mem = call i8* @malloc(i64 512)
+  %mem_null = icmp eq i8* %mem, null
+  br i1 %mem_null, label %rgx.fail, label %rgx.do_comp
+
+rgx.do_comp:
+  %comp_rc = call i32 @regcomp(i8* %mem, i8* %pattern, i32 1)
+  %comp_ok = icmp eq i32 %comp_rc, 0
+  br i1 %comp_ok, label %rgx.store_regex, label %rgx.comp_fail
+
+rgx.comp_fail:
+  call void @free(i8* %mem)
+  br label %rgx.fail
+
+rgx.store_regex:
+  store i8* %mem, i8** %cache_slot
+  br label %rgx.have_regex
+
+rgx.have_regex:
+  %preg = load i8*, i8** %cache_slot
+  %is_whole = icmp eq i64 %field_index, 0
+  br i1 %is_whole, label %rgx.match_whole, label %rgx.match_field
+
+rgx.match_whole:
+  %aid = call i64 @value_payload(%Value %line)
+  %line_s = call i8* @wam_atom_to_string(i64 %aid)
+  %line_null = icmp eq i8* %line_s, null
+  br i1 %line_null, label %rgx.fail, label %rgx.exec_whole
+
+rgx.exec_whole:
+  %exec_rc_w = call i32 @regexec(i8* %preg, i8* %line_s, i64 0, i8* null, i32 0)
+  %match_w = icmp eq i32 %exec_rc_w, 0
+  ret i1 %match_w
+
+rgx.match_field:
+  %slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %field_index, i8 %sep)
+  %fptr = extractvalue %WamSlice %slice, 0
+  %flen = extractvalue %WamSlice %slice, 1
+  %missing = icmp eq i8* %fptr, null
+  br i1 %missing, label %rgx.fail, label %rgx.ensure_buf
+
+rgx.ensure_buf:
+  ; Field slices are not NUL-terminated; copy into a growable scratch
+  ; buffer so regexec sees a C string.
+  %need = add i64 %flen, 1
+  %cap = load i64, i64* @wam_regex_field_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %rgx.copy, label %rgx.grow
+
+rgx.grow:
+  %old_buf = load i8*, i8** @wam_regex_field_buf
+  %new_cap = shl i64 %need, 1
+  %new_buf = call i8* @realloc(i8* %old_buf, i64 %new_cap)
+  %grow_null = icmp eq i8* %new_buf, null
+  br i1 %grow_null, label %rgx.fail, label %rgx.store_buf
+
+rgx.store_buf:
+  store i8* %new_buf, i8** @wam_regex_field_buf
+  store i64 %new_cap, i64* @wam_regex_field_cap
+  br label %rgx.copy
+
+rgx.copy:
+  %buf = load i8*, i8** @wam_regex_field_buf
+  br label %rgx.copy_loop
+
+rgx.copy_loop:
+  %ci = phi i64 [ 0, %rgx.copy ], [ %ci1, %rgx.copy_step ]
+  %copy_done = icmp uge i64 %ci, %flen
+  br i1 %copy_done, label %rgx.terminate, label %rgx.copy_step
+
+rgx.copy_step:
+  %src_p = getelementptr i8, i8* %fptr, i64 %ci
+  %dst_p = getelementptr i8, i8* %buf, i64 %ci
+  %byte = load i8, i8* %src_p
+  store i8 %byte, i8* %dst_p
+  %ci1 = add i64 %ci, 1
+  br label %rgx.copy_loop
+
+rgx.terminate:
+  %end_p = getelementptr i8, i8* %buf, i64 %flen
+  store i8 0, i8* %end_p
+  %exec_rc_f = call i32 @regexec(i8* %preg, i8* %buf, i64 0, i8* null, i32 0)
+  %match_f = icmp eq i32 %exec_rc_f, 0
+  ret i1 %match_f
+
+rgx.fail:
+  ret i1 false
+}
+
+; awk-style numeric coercion of a record or projected field to double:
+; strtod parses a leading number and ignores trailing text, so
+; "3.14abc" reads as 3.14 and non-numeric text reads as 0.0. Field
+; slices are copied into a growable NUL-terminated scratch buffer;
+; field 0 uses the record atom''s C string directly.
+@wam_f64_field_buf = internal global i8* null
+@wam_f64_field_cap = internal global i64 0
+
+define double @wam_atom_field_f64_value(%Value %line, i64 %field_index, i8 %sep) {
+entry:
+  %is_whole = icmp eq i64 %field_index, 0
+  br i1 %is_whole, label %f64.whole, label %f64.field
+
+f64.whole:
+  %aid = call i64 @value_payload(%Value %line)
+  %line_s = call i8* @wam_atom_to_string(i64 %aid)
+  %line_null = icmp eq i8* %line_s, null
+  br i1 %line_null, label %f64.zero, label %f64.parse_whole
+
+f64.parse_whole:
+  %whole_v = call double @strtod(i8* %line_s, i8** null)
+  ret double %whole_v
+
+f64.field:
+  %slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 %field_index, i8 %sep)
+  %fptr = extractvalue %WamSlice %slice, 0
+  %flen = extractvalue %WamSlice %slice, 1
+  %missing = icmp eq i8* %fptr, null
+  br i1 %missing, label %f64.zero, label %f64.ensure_buf
+
+f64.ensure_buf:
+  %need = add i64 %flen, 1
+  %cap = load i64, i64* @wam_f64_field_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %f64.copy, label %f64.grow
+
+f64.grow:
+  %old_buf = load i8*, i8** @wam_f64_field_buf
+  %new_cap = shl i64 %need, 1
+  %new_buf = call i8* @realloc(i8* %old_buf, i64 %new_cap)
+  %grow_null = icmp eq i8* %new_buf, null
+  br i1 %grow_null, label %f64.zero, label %f64.store_buf
+
+f64.store_buf:
+  store i8* %new_buf, i8** @wam_f64_field_buf
+  store i64 %new_cap, i64* @wam_f64_field_cap
+  br label %f64.copy
+
+f64.copy:
+  %buf = load i8*, i8** @wam_f64_field_buf
+  br label %f64.copy_loop
+
+f64.copy_loop:
+  %ci = phi i64 [ 0, %f64.copy ], [ %ci1, %f64.copy_step ]
+  %copy_done = icmp uge i64 %ci, %flen
+  br i1 %copy_done, label %f64.terminate, label %f64.copy_step
+
+f64.copy_step:
+  %src_p = getelementptr i8, i8* %fptr, i64 %ci
+  %dst_p = getelementptr i8, i8* %buf, i64 %ci
+  %byte = load i8, i8* %src_p
+  store i8 %byte, i8* %dst_p
+  %ci1 = add i64 %ci, 1
+  br label %f64.copy_loop
+
+f64.terminate:
+  %end_p = getelementptr i8, i8* %buf, i64 %flen
+  store i8 0, i8* %end_p
+  %field_v = call double @strtod(i8* %buf, i8** null)
+  ret double %field_v
+
+f64.zero:
+  ret double 0.000000e+00
+}
+
 define %Value @wam_stream_fail_value() alwaysinline nounwind {
 entry:
   %bad = call %Value @value_integer(i64 -1)
@@ -4370,6 +4729,66 @@ soh.close_all_fail:
   call void @free(i8* %soh.buf)
   call void @free(i8* %soh.reader_mem)
   br label %soh.fail
+}
+
+define %Value @wam_stream_open_fd_value(i64 %fd64) {
+entry:
+  ; Wrap an already-open file descriptor (e.g. fd 0 for stdin) in a
+  ; buffered reader handle. The fd is not opened or validated here;
+  ; wam_stream_close_value closes it like any other stream. On
+  ; allocation failure the caller keeps ownership of the fd.
+  %sfd.fd_ok = icmp sge i64 %fd64, 0
+  br i1 %sfd.fd_ok, label %sfd.alloc_reader, label %sfd.fail
+
+sfd.fail:
+  %sfd.bad = call %Value @wam_stream_fail_value()
+  ret %Value %sfd.bad
+
+sfd.alloc_reader:
+  %sfd.fd = trunc i64 %fd64 to i32
+  %sfd.reader_size = ptrtoint %WamLineReader* getelementptr (%WamLineReader, %WamLineReader* null, i32 1) to i64
+  %sfd.reader_mem = call i8* @malloc(i64 %sfd.reader_size)
+  %sfd.reader_null = icmp eq i8* %sfd.reader_mem, null
+  br i1 %sfd.reader_null, label %sfd.fail, label %sfd.alloc_buf
+
+sfd.alloc_buf:
+  %sfd.buf = call i8* @malloc(i64 4096)
+  %sfd.buf_null = icmp eq i8* %sfd.buf, null
+  br i1 %sfd.buf_null, label %sfd.free_reader_fail, label %sfd.init
+
+sfd.free_reader_fail:
+  call void @free(i8* %sfd.reader_mem)
+  br label %sfd.fail
+
+sfd.init:
+  %sfd.reader = bitcast i8* %sfd.reader_mem to %WamLineReader*
+  %sfd.fd_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 0
+  store i32 %sfd.fd, i32* %sfd.fd_slot
+  %sfd.buf_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 1
+  store i8* %sfd.buf, i8** %sfd.buf_slot
+  %sfd.cap_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 2
+  store i64 4096, i64* %sfd.cap_slot
+  %sfd.len_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 3
+  store i64 0, i64* %sfd.len_slot
+  %sfd.pos_slot = getelementptr %WamLineReader, %WamLineReader* %sfd.reader, i32 0, i32 4
+  store i64 0, i64* %sfd.pos_slot
+  %sfd.count = load i32, i32* @wam_stream_handle_count
+  %sfd.next = add i32 %sfd.count, 1
+  %sfd.cap_ok = icmp ult i32 %sfd.next, 4096
+  br i1 %sfd.cap_ok, label %sfd.store_handle, label %sfd.free_all_fail
+
+sfd.store_handle:
+  %sfd.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %sfd.next
+  store %WamLineReader* %sfd.reader, %WamLineReader** %sfd.slot
+  store i32 %sfd.next, i32* @wam_stream_handle_count
+  %sfd.handle = zext i32 %sfd.next to i64
+  %sfd.v = call %Value @value_integer(i64 %sfd.handle)
+  ret %Value %sfd.v
+
+sfd.free_all_fail:
+  call void @free(i8* %sfd.buf)
+  call void @free(i8* %sfd.reader_mem)
+  br label %sfd.fail
 }
 
 define %Value @wam_stream_read_line_value(%Value %handle_value) {
@@ -4508,6 +4927,254 @@ rhv.free_out_fail:
   %rhv.fail_out = phi i8* [ %rhv.out_cur, %rhv.fill ], [ %rhv.out_cur, %rhv.grow_out ], [ %rhv.out_cur, %rhv.grow_alloc ]
   call void @free(i8* %rhv.fail_out)
   br label %rhv.fail
+}
+
+; Transient-line variant of read_line for per-record streaming: the
+; line lands in the shared @wam_transient_line_buf (grown geometrically,
+; reused across reads, never freed) and the returned atom Value carries
+; the reserved transient id 2^62 that @wam_atom_to_string maps to that
+; buffer. No malloc/free, no hashing, no atom-table append per record,
+; and memory stays constant on unbounded streams. Contract: the Value
+; is valid only until the next transient read -- callers that persist
+; line-derived data past the record must intern it (field-slice assoc
+; keys and $0 foreign-call arguments already do). EOF still returns the
+; real interned end_of_file atom.
+define %Value @wam_stream_read_line_transient_value(%Value %handle_value) {
+entry:
+  %rtv.t = call i32 @value_tag(%Value %handle_value)
+  %rtv.is_int = icmp eq i32 %rtv.t, 1
+  br i1 %rtv.is_int, label %rtv.lookup_handle, label %rtv.fail
+
+rtv.fail:
+  %rtv.bad = call %Value @wam_stream_fail_value()
+  ret %Value %rtv.bad
+
+rtv.lookup_handle:
+  %rtv.handle64 = call i64 @value_payload(%Value %handle_value)
+  %rtv.handle = trunc i64 %rtv.handle64 to i32
+  %rtv.handle_min = icmp sgt i32 %rtv.handle, 0
+  %rtv.handle_max = icmp ult i32 %rtv.handle, 4096
+  %rtv.handle_ok = and i1 %rtv.handle_min, %rtv.handle_max
+  br i1 %rtv.handle_ok, label %rtv.load_handle, label %rtv.fail
+
+rtv.load_handle:
+  %rtv.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rtv.handle
+  %rtv.reader = load %WamLineReader*, %WamLineReader** %rtv.slot
+  %rtv.reader_null = icmp eq %WamLineReader* %rtv.reader, null
+  br i1 %rtv.reader_null, label %rtv.fail, label %rtv.have_handle
+
+rtv.have_handle:
+  %rtv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 0
+  %rtv.fd = load i32, i32* %rtv.fd_slot
+  %rtv.fd_ok = icmp sge i32 %rtv.fd, 0
+  br i1 %rtv.fd_ok, label %rtv.ensure_out, label %rtv.fail
+
+rtv.ensure_out:
+  %rtv.cap0 = load i64, i64* @wam_transient_line_cap
+  %rtv.have_buf = icmp sgt i64 %rtv.cap0, 0
+  br i1 %rtv.have_buf, label %rtv.loop_pre, label %rtv.first_alloc
+
+rtv.first_alloc:
+  %rtv.first_buf = call i8* @malloc(i64 4096)
+  %rtv.first_null = icmp eq i8* %rtv.first_buf, null
+  br i1 %rtv.first_null, label %rtv.fail, label %rtv.first_store
+
+rtv.first_store:
+  store i8* %rtv.first_buf, i8** @wam_transient_line_buf
+  store i64 4096, i64* @wam_transient_line_cap
+  br label %rtv.loop_pre
+
+rtv.loop_pre:
+  %rtv.out0 = load i8*, i8** @wam_transient_line_buf
+  %rtv.cap1 = load i64, i64* @wam_transient_line_cap
+  br label %rtv.loop
+
+rtv.loop:
+  %rtv.out_len = phi i64 [ 0, %rtv.loop_pre ], [ %rtv.out_len, %rtv.after_read ], [ %rtv.next_out_len, %rtv.append_store ]
+  %rtv.out_cur = phi i8* [ %rtv.out0, %rtv.loop_pre ], [ %rtv.out_cur, %rtv.after_read ], [ %rtv.append_out, %rtv.append_store ]
+  %rtv.out_cap = phi i64 [ %rtv.cap1, %rtv.loop_pre ], [ %rtv.out_cap, %rtv.after_read ], [ %rtv.append_cap, %rtv.append_store ]
+  %rtv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 1
+  %rtv.buf = load i8*, i8** %rtv.buf_slot
+  %rtv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 3
+  %rtv.len = load i64, i64* %rtv.len_slot
+  %rtv.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 4
+  %rtv.pos = load i64, i64* %rtv.pos_slot
+  %rtv.have_byte = icmp slt i64 %rtv.pos, %rtv.len
+  br i1 %rtv.have_byte, label %rtv.consume, label %rtv.fill
+
+rtv.fill:
+  %rtv.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rtv.reader, i32 0, i32 2
+  %rtv.rcap = load i64, i64* %rtv.cap_slot
+  %rtv.n = call i64 @read(i32 %rtv.fd, i8* %rtv.buf, i64 %rtv.rcap)
+  %rtv.n_neg = icmp slt i64 %rtv.n, 0
+  br i1 %rtv.n_neg, label %rtv.fail, label %rtv.check_eof
+
+rtv.check_eof:
+  %rtv.n_zero = icmp eq i64 %rtv.n, 0
+  br i1 %rtv.n_zero, label %rtv.eof_or_partial, label %rtv.after_read
+
+rtv.after_read:
+  store i64 %rtv.n, i64* %rtv.len_slot
+  store i64 0, i64* %rtv.pos_slot
+  br label %rtv.loop
+
+rtv.eof_or_partial:
+  %rtv.empty_line = icmp eq i64 %rtv.out_len, 0
+  br i1 %rtv.empty_line, label %rtv.eof, label %rtv.finalize
+
+rtv.consume:
+  %rtv.char_ptr = getelementptr i8, i8* %rtv.buf, i64 %rtv.pos
+  %rtv.ch = load i8, i8* %rtv.char_ptr
+  %rtv.pos_next = add i64 %rtv.pos, 1
+  store i64 %rtv.pos_next, i64* %rtv.pos_slot
+  %rtv.is_lf = icmp eq i8 %rtv.ch, 10
+  br i1 %rtv.is_lf, label %rtv.finalize, label %rtv.append
+
+rtv.append:
+  %rtv.next_out_len_pre = add i64 %rtv.out_len, 1
+  %rtv.has_room = icmp ult i64 %rtv.next_out_len_pre, %rtv.out_cap
+  br i1 %rtv.has_room, label %rtv.append_store, label %rtv.grow_out
+
+rtv.grow_out:
+  %rtv.new_out_cap = shl i64 %rtv.out_cap, 1
+  %rtv.cap_grew = icmp ugt i64 %rtv.new_out_cap, %rtv.out_cap
+  br i1 %rtv.cap_grew, label %rtv.grow_alloc, label %rtv.fail
+
+rtv.grow_alloc:
+  %rtv.grown_out = call i8* @realloc(i8* %rtv.out_cur, i64 %rtv.new_out_cap)
+  %rtv.grown_null = icmp eq i8* %rtv.grown_out, null
+  br i1 %rtv.grown_null, label %rtv.fail, label %rtv.grow_store
+
+rtv.grow_store:
+  store i8* %rtv.grown_out, i8** @wam_transient_line_buf
+  store i64 %rtv.new_out_cap, i64* @wam_transient_line_cap
+  br label %rtv.append_store
+
+rtv.append_store:
+  %rtv.append_out = phi i8* [ %rtv.out_cur, %rtv.append ], [ %rtv.grown_out, %rtv.grow_store ]
+  %rtv.append_cap = phi i64 [ %rtv.out_cap, %rtv.append ], [ %rtv.new_out_cap, %rtv.grow_store ]
+  %rtv.out_ptr = getelementptr i8, i8* %rtv.append_out, i64 %rtv.out_len
+  store i8 %rtv.ch, i8* %rtv.out_ptr
+  %rtv.next_out_len = add i64 %rtv.out_len, 1
+  br label %rtv.loop
+
+rtv.finalize:
+  %rtv.has_chars = icmp sgt i64 %rtv.out_len, 0
+  br i1 %rtv.has_chars, label %rtv.check_cr, label %rtv.terminate_empty
+
+rtv.check_cr:
+  %rtv.last_idx = sub i64 %rtv.out_len, 1
+  %rtv.last_ptr = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.last_idx
+  %rtv.last = load i8, i8* %rtv.last_ptr
+  %rtv.last_is_cr = icmp eq i8 %rtv.last, 13
+  %rtv.trim_len = select i1 %rtv.last_is_cr, i64 %rtv.last_idx, i64 %rtv.out_len
+  br label %rtv.terminate
+
+rtv.terminate_empty:
+  br label %rtv.terminate
+
+rtv.terminate:
+  %rtv.final_len = phi i64 [ %rtv.trim_len, %rtv.check_cr ], [ 0, %rtv.terminate_empty ]
+  %rtv.term = getelementptr i8, i8* %rtv.out_cur, i64 %rtv.final_len
+  store i8 0, i8* %rtv.term
+  %rtv.v0 = insertvalue %Value undef, i32 0, 0
+  %rtv.v = insertvalue %Value %rtv.v0, i64 4611686018427387904, 1
+  ret %Value %rtv.v
+
+rtv.eof:
+  %rtv.eof_ptr = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof_atom, i32 0, i32 0
+  %rtv.eof_aid = call i64 @wam_intern_atom(i8* %rtv.eof_ptr, i64 11)
+  %rtv.eof_v0 = insertvalue %Value undef, i32 0, 0
+  %rtv.eof_v = insertvalue %Value %rtv.eof_v0, i64 %rtv.eof_aid, 1
+  ret %Value %rtv.eof_v
+}
+
+; Fixed-size binary record reader over the buffered stream: copies
+; exactly %size bytes into %dst through the reader buffer. Returns
+; 1 for a full record, 0 for clean EOF at a record boundary, and -1
+; for a read error or a trailing partial record.
+define i64 @wam_stream_read_record(%Value %handle_value, i64 %size, i8* %dst) {
+entry:
+  %rrv.t = call i32 @value_tag(%Value %handle_value)
+  %rrv.is_int = icmp eq i32 %rrv.t, 1
+  br i1 %rrv.is_int, label %rrv.lookup_handle, label %rrv.fail
+
+rrv.fail:
+  ret i64 -1
+
+rrv.lookup_handle:
+  %rrv.handle64 = call i64 @value_payload(%Value %handle_value)
+  %rrv.handle = trunc i64 %rrv.handle64 to i32
+  %rrv.handle_min = icmp sgt i32 %rrv.handle, 0
+  %rrv.handle_max = icmp ult i32 %rrv.handle, 4096
+  %rrv.handle_ok = and i1 %rrv.handle_min, %rrv.handle_max
+  br i1 %rrv.handle_ok, label %rrv.load_handle, label %rrv.fail
+
+rrv.load_handle:
+  %rrv.slot = getelementptr [4096 x %WamLineReader*], [4096 x %WamLineReader*]* @wam_stream_handle_table, i32 0, i32 %rrv.handle
+  %rrv.reader = load %WamLineReader*, %WamLineReader** %rrv.slot
+  %rrv.reader_null = icmp eq %WamLineReader* %rrv.reader, null
+  br i1 %rrv.reader_null, label %rrv.fail, label %rrv.have_handle
+
+rrv.have_handle:
+  %rrv.fd_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 0
+  %rrv.fd = load i32, i32* %rrv.fd_slot
+  %rrv.fd_ok = icmp sge i32 %rrv.fd, 0
+  br i1 %rrv.fd_ok, label %rrv.loop, label %rrv.fail
+
+rrv.loop:
+  %rrv.copied = phi i64 [ 0, %rrv.have_handle ], [ %rrv.copied_next, %rrv.chunk ], [ %rrv.copied, %rrv.after_read ]
+  %rrv.done = icmp uge i64 %rrv.copied, %size
+  br i1 %rrv.done, label %rrv.full, label %rrv.need_bytes
+
+rrv.full:
+  ret i64 1
+
+rrv.need_bytes:
+  %rrv.buf_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 1
+  %rrv.buf = load i8*, i8** %rrv.buf_slot
+  %rrv.len_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 3
+  %rrv.len = load i64, i64* %rrv.len_slot
+  %rrv.pos_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 4
+  %rrv.pos = load i64, i64* %rrv.pos_slot
+  %rrv.have_byte = icmp slt i64 %rrv.pos, %rrv.len
+  br i1 %rrv.have_byte, label %rrv.chunk, label %rrv.fill
+
+rrv.chunk:
+  %rrv.avail = sub i64 %rrv.len, %rrv.pos
+  %rrv.want = sub i64 %size, %rrv.copied
+  %rrv.avail_smaller = icmp ult i64 %rrv.avail, %rrv.want
+  %rrv.n_copy = select i1 %rrv.avail_smaller, i64 %rrv.avail, i64 %rrv.want
+  %rrv.src = getelementptr i8, i8* %rrv.buf, i64 %rrv.pos
+  %rrv.dstp = getelementptr i8, i8* %dst, i64 %rrv.copied
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %rrv.dstp, i8* %rrv.src, i64 %rrv.n_copy, i1 false)
+  %rrv.pos_next = add i64 %rrv.pos, %rrv.n_copy
+  store i64 %rrv.pos_next, i64* %rrv.pos_slot
+  %rrv.copied_next = add i64 %rrv.copied, %rrv.n_copy
+  br label %rrv.loop
+
+rrv.fill:
+  %rrv.cap_slot = getelementptr %WamLineReader, %WamLineReader* %rrv.reader, i32 0, i32 2
+  %rrv.cap = load i64, i64* %rrv.cap_slot
+  %rrv.n = call i64 @read(i32 %rrv.fd, i8* %rrv.buf, i64 %rrv.cap)
+  %rrv.n_neg = icmp slt i64 %rrv.n, 0
+  br i1 %rrv.n_neg, label %rrv.fail, label %rrv.check_eof
+
+rrv.check_eof:
+  %rrv.n_zero = icmp eq i64 %rrv.n, 0
+  br i1 %rrv.n_zero, label %rrv.eof, label %rrv.after_read
+
+rrv.after_read:
+  store i64 %rrv.n, i64* %rrv.len_slot
+  store i64 0, i64* %rrv.pos_slot
+  br label %rrv.loop
+
+rrv.eof:
+  ; Clean EOF only at a record boundary; a trailing partial record is
+  ; an error.
+  %rrv.at_boundary = icmp eq i64 %rrv.copied, 0
+  %rrv.eof_status = select i1 %rrv.at_boundary, i64 0, i64 -1
+  ret i64 %rrv.eof_status
 }
 
 define i1 @wam_stream_close_value(%Value %handle_value) {
@@ -5469,6 +6136,7 @@ entry:
     i32 73, label %builtin_atomic_list_concat
     i32 74, label %builtin_atomic_list_concat3
     i32 75, label %builtin_char_type
+    i32 172, label %builtin_code_type
     i32 76, label %builtin_compare
     i32 77, label %builtin_must_be
     i32 78, label %builtin_write
@@ -5562,6 +6230,9 @@ entry:
     i32 166, label %builtin_stream_open
     i32 167, label %builtin_read_line
     i32 168, label %builtin_stream_close
+    i32 169, label %builtin_atom_starts_with
+    i32 170, label %builtin_atom_ends_with
+    i32 171, label %builtin_atom_contains
   ]
 
 builtin_is:
@@ -9733,6 +10404,112 @@ as.unify_empty:
   %as.raw3_e = call %Value @wam_get_reg(%WamState* %vm, i32 2)
   %as.ok_e = call i1 @wam_unify_value(%WamState* %vm, %Value %as.raw3_e, %Value %as.efin_v)
   ret i1 %as.ok_e
+
+builtin_atom_starts_with:
+  ; M142: atom_starts_with(+Atom, +Prefix) -- succeeds iff Atom''s
+  ; first Prefix-length bytes equal Prefix. Both args must be Atom.
+  ; Empty Prefix succeeds for any Atom (consistent with str::starts_with
+  ; in major languages). Prefix longer than Atom fails fast.
+  %asw.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %asw.t1 = call i32 @value_tag(%Value %asw.a1)
+  %asw.is_atom1 = icmp eq i32 %asw.t1, 0
+  br i1 %asw.is_atom1, label %asw.check2, label %asw.fail
+asw.fail:
+  ret i1 false
+asw.check2:
+  %asw.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %asw.t2 = call i32 @value_tag(%Value %asw.a2)
+  %asw.is_atom2 = icmp eq i32 %asw.t2, 0
+  br i1 %asw.is_atom2, label %asw.have_args, label %asw.fail
+asw.have_args:
+  %asw.aid1 = call i64 @value_payload(%Value %asw.a1)
+  %asw.s1 = call i8* @wam_atom_to_string(i64 %asw.aid1)
+  %asw.s1_null = icmp eq i8* %asw.s1, null
+  br i1 %asw.s1_null, label %asw.fail, label %asw.have_s1
+asw.have_s1:
+  %asw.aid2 = call i64 @value_payload(%Value %asw.a2)
+  %asw.s2 = call i8* @wam_atom_to_string(i64 %asw.aid2)
+  %asw.s2_null = icmp eq i8* %asw.s2, null
+  br i1 %asw.s2_null, label %asw.fail, label %asw.measure
+asw.measure:
+  %asw.alen = call i64 @strlen(i8* %asw.s1)
+  %asw.plen = call i64 @strlen(i8* %asw.s2)
+  ; Prefix longer than atom -> false.
+  %asw.fits = icmp sle i64 %asw.plen, %asw.alen
+  br i1 %asw.fits, label %asw.compare, label %asw.fail
+asw.compare:
+  ; Empty prefix is a valid prefix of anything (memcmp with len 0 returns 0).
+  %asw.cmp = call i32 @memcmp(i8* %asw.s1, i8* %asw.s2, i64 %asw.plen)
+  %asw.eq = icmp eq i32 %asw.cmp, 0
+  ret i1 %asw.eq
+
+builtin_atom_ends_with:
+  ; M142: atom_ends_with(+Atom, +Suffix) -- succeeds iff Atom''s
+  ; last Suffix-length bytes equal Suffix. Both args must be Atom.
+  ; Empty Suffix succeeds for any Atom. Suffix longer than Atom fails.
+  %aew.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %aew.t1 = call i32 @value_tag(%Value %aew.a1)
+  %aew.is_atom1 = icmp eq i32 %aew.t1, 0
+  br i1 %aew.is_atom1, label %aew.check2, label %aew.fail
+aew.fail:
+  ret i1 false
+aew.check2:
+  %aew.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %aew.t2 = call i32 @value_tag(%Value %aew.a2)
+  %aew.is_atom2 = icmp eq i32 %aew.t2, 0
+  br i1 %aew.is_atom2, label %aew.have_args, label %aew.fail
+aew.have_args:
+  %aew.aid1 = call i64 @value_payload(%Value %aew.a1)
+  %aew.s1 = call i8* @wam_atom_to_string(i64 %aew.aid1)
+  %aew.s1_null = icmp eq i8* %aew.s1, null
+  br i1 %aew.s1_null, label %aew.fail, label %aew.have_s1
+aew.have_s1:
+  %aew.aid2 = call i64 @value_payload(%Value %aew.a2)
+  %aew.s2 = call i8* @wam_atom_to_string(i64 %aew.aid2)
+  %aew.s2_null = icmp eq i8* %aew.s2, null
+  br i1 %aew.s2_null, label %aew.fail, label %aew.measure
+aew.measure:
+  %aew.alen = call i64 @strlen(i8* %aew.s1)
+  %aew.slen = call i64 @strlen(i8* %aew.s2)
+  %aew.fits = icmp sle i64 %aew.slen, %aew.alen
+  br i1 %aew.fits, label %aew.compare, label %aew.fail
+aew.compare:
+  %aew.off = sub i64 %aew.alen, %aew.slen
+  %aew.tail = getelementptr i8, i8* %aew.s1, i64 %aew.off
+  %aew.cmp = call i32 @memcmp(i8* %aew.tail, i8* %aew.s2, i64 %aew.slen)
+  %aew.eq = icmp eq i32 %aew.cmp, 0
+  ret i1 %aew.eq
+
+builtin_atom_contains:
+  ; M142: atom_contains(+Atom, +Needle) -- succeeds iff Needle
+  ; appears anywhere in Atom. Wraps libc strstr which returns
+  ; the first match pointer or NULL. Both args must be Atom.
+  ; Empty Needle matches any Atom (strstr semantics).
+  %acn.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %acn.t1 = call i32 @value_tag(%Value %acn.a1)
+  %acn.is_atom1 = icmp eq i32 %acn.t1, 0
+  br i1 %acn.is_atom1, label %acn.check2, label %acn.fail
+acn.fail:
+  ret i1 false
+acn.check2:
+  %acn.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %acn.t2 = call i32 @value_tag(%Value %acn.a2)
+  %acn.is_atom2 = icmp eq i32 %acn.t2, 0
+  br i1 %acn.is_atom2, label %acn.have_args, label %acn.fail
+acn.have_args:
+  %acn.aid1 = call i64 @value_payload(%Value %acn.a1)
+  %acn.s1 = call i8* @wam_atom_to_string(i64 %acn.aid1)
+  %acn.s1_null = icmp eq i8* %acn.s1, null
+  br i1 %acn.s1_null, label %acn.fail, label %acn.have_s1
+acn.have_s1:
+  %acn.aid2 = call i64 @value_payload(%Value %acn.a2)
+  %acn.s2 = call i8* @wam_atom_to_string(i64 %acn.aid2)
+  %acn.s2_null = icmp eq i8* %acn.s2, null
+  br i1 %acn.s2_null, label %acn.fail, label %acn.do
+acn.do:
+  %acn.found = call i8* @strstr(i8* %acn.s1, i8* %acn.s2)
+  %acn.found_ok = icmp ne i8* %acn.found, null
+  ret i1 %acn.found_ok
 
 builtin_nl:
   ; nl/0: print newline via printf.
@@ -14254,6 +15031,35 @@ alc3.s_b_bind:
   %alc3.s_b_ok = call i1 @wam_unify_value(%WamState* %vm, %Value %alc3.s_b_raw1, %Value %alc3.s_b_acc)
   ret i1 %alc3.s_b_ok
 
+builtin_code_type:
+  ; code_type(+Code, +Type) -- check mode only, ASCII semantics. A1 is
+  ; an Integer character code; A2 is the type atom. Joins char_type''s
+  ; classifier at ctp.dispatch (same type names, same class checks).
+  %cot.a1 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 0)
+  %cot.a2 = call %Value @wam_get_reg_deref(%WamState* %vm, i32 1)
+  %cot.t1 = extractvalue %Value %cot.a1, 0
+  %cot.t2 = extractvalue %Value %cot.a2, 0
+  %cot.is_int1 = icmp eq i32 %cot.t1, 1
+  %cot.is_atom2 = icmp eq i32 %cot.t2, 0
+  %cot.both = and i1 %cot.is_int1, %cot.is_atom2
+  br i1 %cot.both, label %cot.range, label %cot.fail
+cot.fail:
+  ret i1 false
+cot.range:
+  %cot.code = extractvalue %Value %cot.a1, 1
+  %cot.ge0 = icmp sge i64 %cot.code, 0
+  %cot.le255 = icmp sle i64 %cot.code, 255
+  %cot.in_range = and i1 %cot.ge0, %cot.le255
+  br i1 %cot.in_range, label %cot.lookup, label %cot.fail
+cot.lookup:
+  %cot.aid2 = extractvalue %Value %cot.a2, 1
+  %cot.t_str = call i8* @wam_atom_to_string(i64 %cot.aid2)
+  %cot.t_null = icmp eq i8* %cot.t_str, null
+  br i1 %cot.t_null, label %cot.fail, label %cot.enter
+cot.enter:
+  %cot.byte = trunc i64 %cot.code to i8
+  br label %ctp.dispatch
+
 builtin_char_type:
   ; M58: char_type(+Char, +Type) -- check mode only. A1 is a single-
   ; char atom; A2 is the type atom (alpha, digit, upper, lower,
@@ -14290,118 +15096,120 @@ ctp.measure_c_next:
   %ctp.c1_zero = icmp eq i8 %ctp.c1, 0
   br i1 %ctp.c1_zero, label %ctp.dispatch, label %ctp.fail
 ctp.dispatch:
-  ; %ctp.c0 holds the character byte. Try each type name in order.
+  ; %ctp.cv holds the character byte. Try each type name in order.
+  %ctp.cv = phi i8 [ %ctp.c0, %ctp.measure_c_next ], [ %cot.byte, %cot.enter ]
+  %ctp.tsv = phi i8* [ %ctp.t_str, %ctp.measure_c_next ], [ %cot.t_str, %cot.enter ]
   %ctp.fn_alpha = getelementptr [6 x i8], [6 x i8]* @.fn_alpha, i32 0, i32 0
-  %ctp.cmp_alpha = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_alpha)
+  %ctp.cmp_alpha = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_alpha)
   %ctp.is_alpha_t = icmp eq i32 %ctp.cmp_alpha, 0
   br i1 %ctp.is_alpha_t, label %ctp.do_alpha, label %ctp.try_alnum
 ctp.try_alnum:
   %ctp.fn_alnum = getelementptr [6 x i8], [6 x i8]* @.fn_alnum, i32 0, i32 0
-  %ctp.cmp_alnum = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_alnum)
+  %ctp.cmp_alnum = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_alnum)
   %ctp.is_alnum_t = icmp eq i32 %ctp.cmp_alnum, 0
   br i1 %ctp.is_alnum_t, label %ctp.do_alnum, label %ctp.try_digit
 ctp.try_digit:
   %ctp.fn_digit = getelementptr [6 x i8], [6 x i8]* @.fn_digit, i32 0, i32 0
-  %ctp.cmp_digit = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_digit)
+  %ctp.cmp_digit = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_digit)
   %ctp.is_digit_t = icmp eq i32 %ctp.cmp_digit, 0
   br i1 %ctp.is_digit_t, label %ctp.do_digit, label %ctp.try_upper
 ctp.try_upper:
   %ctp.fn_upper = getelementptr [6 x i8], [6 x i8]* @.fn_upper, i32 0, i32 0
-  %ctp.cmp_upper = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_upper)
+  %ctp.cmp_upper = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_upper)
   %ctp.is_upper_t = icmp eq i32 %ctp.cmp_upper, 0
   br i1 %ctp.is_upper_t, label %ctp.do_upper, label %ctp.try_lower
 ctp.try_lower:
   %ctp.fn_lower = getelementptr [6 x i8], [6 x i8]* @.fn_lower, i32 0, i32 0
-  %ctp.cmp_lower = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_lower)
+  %ctp.cmp_lower = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_lower)
   %ctp.is_lower_t = icmp eq i32 %ctp.cmp_lower, 0
   br i1 %ctp.is_lower_t, label %ctp.do_lower, label %ctp.try_space
 ctp.try_space:
   %ctp.fn_space = getelementptr [6 x i8], [6 x i8]* @.fn_space, i32 0, i32 0
-  %ctp.cmp_space = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_space)
+  %ctp.cmp_space = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_space)
   %ctp.is_space_t = icmp eq i32 %ctp.cmp_space, 0
   br i1 %ctp.is_space_t, label %ctp.do_space, label %ctp.try_white
 ctp.try_white:
   %ctp.fn_white = getelementptr [6 x i8], [6 x i8]* @.fn_white, i32 0, i32 0
-  %ctp.cmp_white = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_white)
+  %ctp.cmp_white = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_white)
   %ctp.is_white_t = icmp eq i32 %ctp.cmp_white, 0
   br i1 %ctp.is_white_t, label %ctp.do_white, label %ctp.try_ascii
 ctp.try_ascii:
   %ctp.fn_ascii = getelementptr [6 x i8], [6 x i8]* @.fn_ascii, i32 0, i32 0
-  %ctp.cmp_ascii = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_ascii)
+  %ctp.cmp_ascii = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_ascii)
   %ctp.is_ascii_t = icmp eq i32 %ctp.cmp_ascii, 0
   br i1 %ctp.is_ascii_t, label %ctp.do_ascii, label %ctp.try_punct
 ctp.try_punct:
   %ctp.fn_punct = getelementptr [6 x i8], [6 x i8]* @.fn_punct, i32 0, i32 0
-  %ctp.cmp_punct = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_punct)
+  %ctp.cmp_punct = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_punct)
   %ctp.is_punct_t = icmp eq i32 %ctp.cmp_punct, 0
   br i1 %ctp.is_punct_t, label %ctp.do_punct, label %ctp.try_csym
 ctp.try_csym:
   %ctp.fn_csym = getelementptr [5 x i8], [5 x i8]* @.fn_csym, i32 0, i32 0
-  %ctp.cmp_csym = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_csym)
+  %ctp.cmp_csym = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_csym)
   %ctp.is_csym_t = icmp eq i32 %ctp.cmp_csym, 0
   br i1 %ctp.is_csym_t, label %ctp.do_csym, label %ctp.try_csymf
 ctp.try_csymf:
   %ctp.fn_csymf = getelementptr [6 x i8], [6 x i8]* @.fn_csymf, i32 0, i32 0
-  %ctp.cmp_csymf = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_csymf)
+  %ctp.cmp_csymf = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_csymf)
   %ctp.is_csymf_t = icmp eq i32 %ctp.cmp_csymf, 0
   br i1 %ctp.is_csymf_t, label %ctp.do_csymf, label %ctp.try_newline
 ctp.try_newline:
   %ctp.fn_newline = getelementptr [8 x i8], [8 x i8]* @.fn_newline, i32 0, i32 0
-  %ctp.cmp_newline = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_newline)
+  %ctp.cmp_newline = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_newline)
   %ctp.is_newline_t = icmp eq i32 %ctp.cmp_newline, 0
   br i1 %ctp.is_newline_t, label %ctp.do_newline, label %ctp.try_eol
 ctp.try_eol:
   %ctp.fn_eol = getelementptr [12 x i8], [12 x i8]* @.fn_end_5Fof_5Fline, i32 0, i32 0
-  %ctp.cmp_eol = call i32 @strcmp(i8* %ctp.t_str, i8* %ctp.fn_eol)
+  %ctp.cmp_eol = call i32 @strcmp(i8* %ctp.tsv, i8* %ctp.fn_eol)
   %ctp.is_eol_t = icmp eq i32 %ctp.cmp_eol, 0
   br i1 %ctp.is_eol_t, label %ctp.do_newline, label %ctp.fail
 ctp.do_alpha:
-  %ctp.a_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.a_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.a_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.a_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.a_lower = and i1 %ctp.a_ge_a, %ctp.a_le_z
-  %ctp.a_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.a_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.a_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.a_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.a_upper = and i1 %ctp.a_ge_A, %ctp.a_le_Z
   %ctp.a_any = or i1 %ctp.a_lower, %ctp.a_upper
   ret i1 %ctp.a_any
 ctp.do_alnum:
-  %ctp.an_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.an_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.an_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.an_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.an_lower = and i1 %ctp.an_ge_a, %ctp.an_le_z
-  %ctp.an_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.an_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.an_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.an_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.an_upper = and i1 %ctp.an_ge_A, %ctp.an_le_Z
-  %ctp.an_ge_0 = icmp uge i8 %ctp.c0, 48
-  %ctp.an_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.an_ge_0 = icmp uge i8 %ctp.cv, 48
+  %ctp.an_le_9 = icmp ule i8 %ctp.cv, 57
   %ctp.an_dig = and i1 %ctp.an_ge_0, %ctp.an_le_9
   %ctp.an_letter = or i1 %ctp.an_lower, %ctp.an_upper
   %ctp.an_any = or i1 %ctp.an_letter, %ctp.an_dig
   ret i1 %ctp.an_any
 ctp.do_digit:
-  %ctp.d_ge_0 = icmp uge i8 %ctp.c0, 48
-  %ctp.d_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.d_ge_0 = icmp uge i8 %ctp.cv, 48
+  %ctp.d_le_9 = icmp ule i8 %ctp.cv, 57
   %ctp.d_any = and i1 %ctp.d_ge_0, %ctp.d_le_9
   ret i1 %ctp.d_any
 ctp.do_upper:
-  %ctp.u_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.u_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.u_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.u_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.u_any = and i1 %ctp.u_ge_A, %ctp.u_le_Z
   ret i1 %ctp.u_any
 ctp.do_lower:
-  %ctp.l_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.l_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.l_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.l_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.l_any = and i1 %ctp.l_ge_a, %ctp.l_le_z
   ret i1 %ctp.l_any
 ctp.do_space:
   ; ISO Prolog: space includes ASCII space (32), HT (9), VT (11), FF (12),
   ; LF (10), CR (13). Same set as ``white'' for now; SWI distinguishes
   ; further but we collapse them.
-  %ctp.s_sp = icmp eq i8 %ctp.c0, 32
-  %ctp.s_ht = icmp eq i8 %ctp.c0, 9
-  %ctp.s_lf = icmp eq i8 %ctp.c0, 10
-  %ctp.s_vt = icmp eq i8 %ctp.c0, 11
-  %ctp.s_ff = icmp eq i8 %ctp.c0, 12
-  %ctp.s_cr = icmp eq i8 %ctp.c0, 13
+  %ctp.s_sp = icmp eq i8 %ctp.cv, 32
+  %ctp.s_ht = icmp eq i8 %ctp.cv, 9
+  %ctp.s_lf = icmp eq i8 %ctp.cv, 10
+  %ctp.s_vt = icmp eq i8 %ctp.cv, 11
+  %ctp.s_ff = icmp eq i8 %ctp.cv, 12
+  %ctp.s_cr = icmp eq i8 %ctp.cv, 13
   %ctp.s_a = or i1 %ctp.s_sp, %ctp.s_ht
   %ctp.s_b = or i1 %ctp.s_a, %ctp.s_lf
   %ctp.s_c = or i1 %ctp.s_b, %ctp.s_vt
@@ -14410,28 +15218,28 @@ ctp.do_space:
   ret i1 %ctp.s_any
 ctp.do_white:
   ; SWI ``white'' = space + tab only.
-  %ctp.w_sp = icmp eq i8 %ctp.c0, 32
-  %ctp.w_ht = icmp eq i8 %ctp.c0, 9
+  %ctp.w_sp = icmp eq i8 %ctp.cv, 32
+  %ctp.w_ht = icmp eq i8 %ctp.cv, 9
   %ctp.w_any = or i1 %ctp.w_sp, %ctp.w_ht
   ret i1 %ctp.w_any
 ctp.do_ascii:
   ; Byte < 128.
-  %ctp.as_any = icmp ult i8 %ctp.c0, 128
+  %ctp.as_any = icmp ult i8 %ctp.cv, 128
   ret i1 %ctp.as_any
 ctp.do_punct:
   ; SWI ``punct'' = printable graphical character that is not alphanumeric
   ; or space. ASCII 33..126 minus alnum minus space.
-  %ctp.p_ge33 = icmp uge i8 %ctp.c0, 33
-  %ctp.p_le126 = icmp ule i8 %ctp.c0, 126
+  %ctp.p_ge33 = icmp uge i8 %ctp.cv, 33
+  %ctp.p_le126 = icmp ule i8 %ctp.cv, 126
   %ctp.p_print = and i1 %ctp.p_ge33, %ctp.p_le126
-  %ctp.p_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.p_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.p_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.p_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.p_lower = and i1 %ctp.p_ge_a, %ctp.p_le_z
-  %ctp.p_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.p_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.p_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.p_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.p_upper = and i1 %ctp.p_ge_A, %ctp.p_le_Z
-  %ctp.p_ge_0 = icmp uge i8 %ctp.c0, 48
-  %ctp.p_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.p_ge_0 = icmp uge i8 %ctp.cv, 48
+  %ctp.p_le_9 = icmp ule i8 %ctp.cv, 57
   %ctp.p_dig = and i1 %ctp.p_ge_0, %ctp.p_le_9
   %ctp.p_letter = or i1 %ctp.p_lower, %ctp.p_upper
   %ctp.p_alnum = or i1 %ctp.p_letter, %ctp.p_dig
@@ -14440,36 +15248,36 @@ ctp.do_punct:
   ret i1 %ctp.p_any
 ctp.do_csym:
   ; C symbol: alnum or underscore.
-  %ctp.cs_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.cs_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.cs_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.cs_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.cs_lower = and i1 %ctp.cs_ge_a, %ctp.cs_le_z
-  %ctp.cs_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.cs_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.cs_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.cs_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.cs_upper = and i1 %ctp.cs_ge_A, %ctp.cs_le_Z
-  %ctp.cs_ge_0 = icmp uge i8 %ctp.c0, 48
-  %ctp.cs_le_9 = icmp ule i8 %ctp.c0, 57
+  %ctp.cs_ge_0 = icmp uge i8 %ctp.cv, 48
+  %ctp.cs_le_9 = icmp ule i8 %ctp.cv, 57
   %ctp.cs_dig = and i1 %ctp.cs_ge_0, %ctp.cs_le_9
-  %ctp.cs_us = icmp eq i8 %ctp.c0, 95
+  %ctp.cs_us = icmp eq i8 %ctp.cv, 95
   %ctp.cs_letter = or i1 %ctp.cs_lower, %ctp.cs_upper
   %ctp.cs_alnum = or i1 %ctp.cs_letter, %ctp.cs_dig
   %ctp.cs_any = or i1 %ctp.cs_alnum, %ctp.cs_us
   ret i1 %ctp.cs_any
 ctp.do_csymf:
   ; C symbol-first: alpha or underscore.
-  %ctp.csf_ge_a = icmp uge i8 %ctp.c0, 97
-  %ctp.csf_le_z = icmp ule i8 %ctp.c0, 122
+  %ctp.csf_ge_a = icmp uge i8 %ctp.cv, 97
+  %ctp.csf_le_z = icmp ule i8 %ctp.cv, 122
   %ctp.csf_lower = and i1 %ctp.csf_ge_a, %ctp.csf_le_z
-  %ctp.csf_ge_A = icmp uge i8 %ctp.c0, 65
-  %ctp.csf_le_Z = icmp ule i8 %ctp.c0, 90
+  %ctp.csf_ge_A = icmp uge i8 %ctp.cv, 65
+  %ctp.csf_le_Z = icmp ule i8 %ctp.cv, 90
   %ctp.csf_upper = and i1 %ctp.csf_ge_A, %ctp.csf_le_Z
-  %ctp.csf_us = icmp eq i8 %ctp.c0, 95
+  %ctp.csf_us = icmp eq i8 %ctp.cv, 95
   %ctp.csf_letter = or i1 %ctp.csf_lower, %ctp.csf_upper
   %ctp.csf_any = or i1 %ctp.csf_letter, %ctp.csf_us
   ret i1 %ctp.csf_any
 ctp.do_newline:
   ; ``newline'' and ``end_of_line'' both match LF (and CR for end_of_line).
-  %ctp.n_lf = icmp eq i8 %ctp.c0, 10
-  %ctp.n_cr = icmp eq i8 %ctp.c0, 13
+  %ctp.n_lf = icmp eq i8 %ctp.cv, 10
+  %ctp.n_cr = icmp eq i8 %ctp.cv, 13
   %ctp.n_any = or i1 %ctp.n_lf, %ctp.n_cr
   ret i1 %ctp.n_any
 
@@ -16267,7 +17075,7 @@ compile_wam_runtime_to_llvm(Options, LLVMCode) :-
 wam_instruction_to_llvm_literal(get_constant(C, Ai), Lit) :-
     llvm_pack_value(C, PackedVal),
     reg_name_to_index(Ai, RegIdx),
-    ( integer(C) -> Tag = 1 ; Tag = 0 ),
+    llvm_constant_tag(C, Tag),
     Op2 is (Tag << 16) \/ RegIdx,
     format(atom(Lit), '{ i32 0, i64 ~w, i64 ~w }', [PackedVal, Op2]).
 wam_instruction_to_llvm_literal(get_variable(Xn, Ai), Lit) :-
@@ -16301,7 +17109,9 @@ wam_instruction_to_llvm_literal(unify_value(Xn), Lit) :-
     format(atom(Lit), '{ i32 6, i64 ~w, i64 0 }', [XnIdx]).
 wam_instruction_to_llvm_literal(unify_constant(C), Lit) :-
     llvm_pack_value(C, PackedVal),
-    format(atom(Lit), '{ i32 7, i64 ~w, i64 0 }', [PackedVal]).
+    llvm_constant_tag(C, Tag),
+    Op2 is Tag << 16,
+    format(atom(Lit), '{ i32 7, i64 ~w, i64 ~w }', [PackedVal, Op2]).
 
 wam_instruction_to_llvm_literal(put_constant(C, Ai), Lit) :-
     llvm_pack_value(C, PackedVal),
@@ -16505,6 +17315,8 @@ emit_atom_string_globals(IR) :-
 @wam_atom_dyn_ptr   = global i8** null
 @wam_atom_dyn_count = global i32 0
 @wam_atom_dyn_cap   = global i32 0
+@wam_transient_line_buf = global i8* null
+@wam_transient_line_cap = global i64 0
 
 define i8* @wam_atom_to_string(i64 %id) {
   ret i8* null
@@ -16520,7 +17332,40 @@ define i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %cand) {
 
 define i64 @wam_intern_atom(i8* %str, i64 %len) {
   ret i64 0
-}'
+}
+
+; Tier-2 payload marshaling: copy Len bytes into the shared transient
+; buffer (grown geometrically, NUL-terminated) and return the transient
+; atom id (2^62). Constant memory: one buffer for the process, valid
+; until the next transient write/read. At most one live payload at a
+; time -- callers pass at most one blob argument per foreign call.
+define i64 @wam_transient_atom_from_bytes(i8* %src, i64 %len) {
+entry:
+  %need = add i64 %len, 1
+  %cap = load i64, i64* @wam_transient_line_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %copy, label %grow
+grow:
+  %small = icmp ult i64 %need, 4096
+  %newcap = select i1 %small, i64 4096, i64 %need
+  %old = load i8*, i8** @wam_transient_line_buf
+  %newbuf = call i8* @realloc(i8* %old, i64 %newcap)
+  %newnull = icmp eq i8* %newbuf, null
+  br i1 %newnull, label %fail, label %store_new
+store_new:
+  store i8* %newbuf, i8** @wam_transient_line_buf
+  store i64 %newcap, i64* @wam_transient_line_cap
+  br label %copy
+copy:
+  %buf = load i8*, i8** @wam_transient_line_buf
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %buf, i8* %src, i64 %len, i1 false)
+  %endp = getelementptr i8, i8* %buf, i64 %len
+  store i8 0, i8* %endp
+  ret i64 4611686018427387904
+fail:
+  ret i64 -1
+}
+'
     ;  sort(Pairs0, Pairs),   % sort by id
        last(Pairs, MaxId-_),
        ArrSize is MaxId + 1,
@@ -16584,8 +17429,36 @@ define i64 @wam_intern_atom(i8* %str, i64 %len) {
 @wam_atom_dyn_count = global i32 0
 @wam_atom_dyn_cap   = global i32 0
 
+; FNV-1a hash index over the atom tables: maps string -> atom id so
+; wam_intern_atom is O(1) amortized instead of a linear scan over
+; every atom (previously O(table size) per intern, which made streams
+; that intern many unique lines through read_line quadratic). Slots
+; hold atom_id + 1; 0 marks an empty slot. Built lazily on the first
+; intern, seeded with every existing static and dynamic atom, and
+; grown at 50 percent load by rehashing all ids.
+@wam_atom_hash_slots = global i64* null
+@wam_atom_hash_cap   = global i64 0
+@wam_atom_hash_count = global i64 0
+
+; Shared buffer behind the transient line atom (id 2^62). Grown
+; geometrically, never freed; contents are valid until the next
+; transient read.
+@wam_transient_line_buf = global i8* null
+@wam_transient_line_cap = global i64 0
+
 define i8* @wam_atom_to_string(i64 %id) {
 entry:
+  ; Transient line atom: id 2^62 resolves to the shared line buffer
+  ; owned by @wam_stream_read_line_transient_value. The buffer mutates
+  ; on every read, so this id must never enter the intern hash or the
+  ; dynamic table; it exists so per-record consumers (field helpers,
+  ; regex, printing) work on the current record without interning it.
+  %is_transient = icmp eq i64 %id, 4611686018427387904
+  br i1 %is_transient, label %transient, label %check_static
+transient:
+  %tbuf = load i8*, i8** @wam_transient_line_buf
+  ret i8* %tbuf
+check_static:
   %cnt = load i32, i32* @wam_atom_string_count
   %cnt64 = zext i32 %cnt to i64
   %in_static = icmp ult i64 %id, %cnt64
@@ -16624,6 +17497,39 @@ zret:
   ret i64 0
 }
 
+
+; Tier-2 payload marshaling: copy Len bytes into the shared transient
+; buffer (grown geometrically, NUL-terminated) and return the transient
+; atom id (2^62). Constant memory: one buffer for the process, valid
+; until the next transient write/read. At most one live payload at a
+; time -- callers pass at most one blob argument per foreign call.
+define i64 @wam_transient_atom_from_bytes(i8* %src, i64 %len) {
+entry:
+  %need = add i64 %len, 1
+  %cap = load i64, i64* @wam_transient_line_cap
+  %fits = icmp ule i64 %need, %cap
+  br i1 %fits, label %copy, label %grow
+grow:
+  %small = icmp ult i64 %need, 4096
+  %newcap = select i1 %small, i64 4096, i64 %need
+  %old = load i8*, i8** @wam_transient_line_buf
+  %newbuf = call i8* @realloc(i8* %old, i64 %newcap)
+  %newnull = icmp eq i8* %newbuf, null
+  br i1 %newnull, label %fail, label %store_new
+store_new:
+  store i8* %newbuf, i8** @wam_transient_line_buf
+  store i64 %newcap, i64* @wam_transient_line_cap
+  br label %copy
+copy:
+  %buf = load i8*, i8** @wam_transient_line_buf
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %buf, i8* %src, i64 %len, i1 false)
+  %endp = getelementptr i8, i8* %buf, i64 %len
+  store i8 0, i8* %endp
+  ret i64 4611686018427387904
+fail:
+  ret i64 -1
+}
+
 ; M29: case-sensitive string equality of (str, len) against a
 ; null-terminated C string. Returns true iff str[0..len) matches
 ; cand[0..len) AND cand[len] == 0.
@@ -16651,57 +17557,195 @@ check_term:
   ret i1 %term
 }
 
-; M29: intern an atom by (str, len). Linear scan over static then
-; dynamic table; if found, return existing id. If not found, copy
-; the string into a malloc''d block, append to the dynamic table
-; (growing via realloc as needed), and return the new id.
+; FNV-1a over the raw bytes. The 64-bit offset basis
+; 14695981039346656037 is written in two-s complement signed form
+; because LLVM textual IR rejects unsigned constants above 2^63 - 1.
+define i64 @wam_atom_hash_value(i8* %str, i64 %len) {
+entry:
+  br label %loop
+loop:
+  %i = phi i64 [ 0, %entry ], [ %i1, %step ]
+  %h = phi i64 [ -3750763034362895579, %entry ], [ %h1, %step ]
+  %done = icmp uge i64 %i, %len
+  br i1 %done, label %ret, label %step
+step:
+  %bp = getelementptr i8, i8* %str, i64 %i
+  %b = load i8, i8* %bp
+  %b64 = zext i8 %b to i64
+  %hx = xor i64 %h, %b64
+  %h1 = mul i64 %hx, 1099511628211
+  %i1 = add i64 %i, 1
+  br label %loop
+ret:
+  ret i64 %h
+}
+
+; Probe for (str, len): returns the index of the matching occupied
+; slot, or of the empty slot where the string belongs. Requires
+; cap > 0 with load factor below 1, which the grow-at-50-percent rule
+; guarantees, so the probe always terminates.
+define i64 @wam_atom_hash_find_slot(i8* %str, i64 %len) {
+entry:
+  %cap = load i64, i64* @wam_atom_hash_cap
+  %slots = load i64*, i64** @wam_atom_hash_slots
+  %h = call i64 @wam_atom_hash_value(i8* %str, i64 %len)
+  %start = urem i64 %h, %cap
+  br label %probe
+probe:
+  %idx = phi i64 [ %start, %entry ], [ %next, %miss ]
+  %slot_p = getelementptr i64, i64* %slots, i64 %idx
+  %v = load i64, i64* %slot_p
+  %empty = icmp eq i64 %v, 0
+  br i1 %empty, label %found, label %check
+check:
+  %cand_id = sub i64 %v, 1
+  %cand_s = call i8* @wam_atom_to_string(i64 %cand_id)
+  %cand_null = icmp eq i8* %cand_s, null
+  br i1 %cand_null, label %miss, label %cmp
+cmp:
+  %eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %cand_s)
+  br i1 %eq, label %found, label %miss
+miss:
+  %idx1 = add i64 %idx, 1
+  %wrap = icmp uge i64 %idx1, %cap
+  %next = select i1 %wrap, i64 0, i64 %idx1
+  br label %probe
+found:
+  ret i64 %idx
+}
+
+; Insert an existing atom id into the hash by its string. When the
+; same string appears under two ids (duplicate static entries), the
+; first id inserted wins, mirroring the old first-match linear scan.
+define i1 @wam_atom_hash_insert_id(i64 %id) {
+entry:
+  %s = call i8* @wam_atom_to_string(i64 %id)
+  %s_null = icmp eq i8* %s, null
+  br i1 %s_null, label %skip, label %measure
+measure:
+  br label %len_loop
+len_loop:
+  %li = phi i64 [ 0, %measure ], [ %li1, %len_step ]
+  %lp = getelementptr i8, i8* %s, i64 %li
+  %lb = load i8, i8* %lp
+  %lz = icmp eq i8 %lb, 0
+  br i1 %lz, label %have_len, label %len_step
+len_step:
+  %li1 = add i64 %li, 1
+  br label %len_loop
+have_len:
+  %slot_idx = call i64 @wam_atom_hash_find_slot(i8* %s, i64 %li)
+  %slots = load i64*, i64** @wam_atom_hash_slots
+  %slot_p = getelementptr i64, i64* %slots, i64 %slot_idx
+  %v = load i64, i64* %slot_p
+  %empty = icmp eq i64 %v, 0
+  br i1 %empty, label %fill, label %skip
+fill:
+  %idp1 = add i64 %id, 1
+  store i64 %idp1, i64* %slot_p
+  %cnt = load i64, i64* @wam_atom_hash_count
+  %cnt1 = add i64 %cnt, 1
+  store i64 %cnt1, i64* @wam_atom_hash_count
+  ret i1 true
+skip:
+  ret i1 false
+}
+
+; Allocate a zeroed slot array of new_cap entries and reinsert every
+; atom id currently in the static + dynamic tables. Used for both
+; lazy init and growth. Fails only if malloc fails, in which case the
+; previous table (if any) is left untouched and still valid.
+define i1 @wam_atom_hash_rebuild(i64 %new_cap) {
+entry:
+  %bytes = shl i64 %new_cap, 3
+  %mem = call i8* @malloc(i64 %bytes)
+  %mem_null = icmp eq i8* %mem, null
+  br i1 %mem_null, label %fail, label %zero_init
+zero_init:
+  %new_slots = bitcast i8* %mem to i64*
+  br label %zloop
+zloop:
+  %zi = phi i64 [ 0, %zero_init ], [ %zi1, %zstep ]
+  %zdone = icmp uge i64 %zi, %new_cap
+  br i1 %zdone, label %swap, label %zstep
+zstep:
+  %zp = getelementptr i64, i64* %new_slots, i64 %zi
+  store i64 0, i64* %zp
+  %zi1 = add i64 %zi, 1
+  br label %zloop
+swap:
+  %old = load i64*, i64** @wam_atom_hash_slots
+  store i64* %new_slots, i64** @wam_atom_hash_slots
+  store i64 %new_cap, i64* @wam_atom_hash_cap
+  store i64 0, i64* @wam_atom_hash_count
+  %old_null = icmp eq i64* %old, null
+  br i1 %old_null, label %reinsert_init, label %free_old
+free_old:
+  %old_i8 = bitcast i64* %old to i8*
+  call void @free(i8* %old_i8)
+  br label %reinsert_init
+reinsert_init:
+  ; Total ids = static count + dynamic count. Id 0 and any null static
+  ; slots resolve to null strings and are skipped by insert.
+  %st_cnt = load i32, i32* @wam_atom_string_count
+  %st_64 = zext i32 %st_cnt to i64
+  %dy_cnt = load i32, i32* @wam_atom_dyn_count
+  %dy_64 = zext i32 %dy_cnt to i64
+  %total = add i64 %st_64, %dy_64
+  br label %riloop
+riloop:
+  %ri = phi i64 [ 0, %reinsert_init ], [ %ri1, %ristep ]
+  %ridone = icmp uge i64 %ri, %total
+  br i1 %ridone, label %ok, label %ristep
+ristep:
+  %ins_ignored = call i1 @wam_atom_hash_insert_id(i64 %ri)
+  %ri1 = add i64 %ri, 1
+  br label %riloop
+ok:
+  ret i1 true
+fail:
+  ret i1 false
+}
+
+; Intern an atom by (str, len) through the hash index: hit returns the
+; existing id in O(1) amortized; miss copies the string, appends it to
+; the dynamic table (growing via realloc as needed), and records the
+; new id in the hash.
 define i64 @wam_intern_atom(i8* %str, i64 %len) {
 entry:
-  ; Scan static table.
+  %cap0 = load i64, i64* @wam_atom_hash_cap
+  %uninit = icmp eq i64 %cap0, 0
+  br i1 %uninit, label %init_hash, label %lookup
+
+init_hash:
+  ; First intern: size the table to keep the static atoms below
+  ; 50 percent load, minimum 4096 slots.
+  %st_cnt0 = load i32, i32* @wam_atom_string_count
+  %st0_64 = zext i32 %st_cnt0 to i64
+  %seed_need = shl i64 %st0_64, 2
+  %small = icmp ult i64 %seed_need, 4096
+  %init_cap = select i1 %small, i64 4096, i64 %seed_need
+  %init_ok = call i1 @wam_atom_hash_rebuild(i64 %init_cap)
+  br i1 %init_ok, label %lookup, label %intern_fail
+
+lookup:
+  %slot_idx = call i64 @wam_atom_hash_find_slot(i8* %str, i64 %len)
+  %slots = load i64*, i64** @wam_atom_hash_slots
+  %slot_p = getelementptr i64, i64* %slots, i64 %slot_idx
+  %v = load i64, i64* %slot_p
+  %hit = icmp ne i64 %v, 0
+  br i1 %hit, label %ret_hit, label %do_intern
+
+ret_hit:
+  %hit_id = sub i64 %v, 1
+  ret i64 %hit_id
+
+do_intern:
   %st_cnt = load i32, i32* @wam_atom_string_count
   %st_cnt_64 = zext i32 %st_cnt to i64
-  br label %scan_static
-scan_static:
-  %s_i = phi i64 [ 0, %entry ], [ %s_i1, %scan_static_step ]
-  %s_done = icmp uge i64 %s_i, %st_cnt_64
-  br i1 %s_done, label %scan_dyn_init, label %scan_static_check
-scan_static_check:
-  %st_slot_ptr = getelementptr [~w x i8*], [~w x i8*]* @wam_atom_strings, i32 0, i64 %s_i
-  %st_cand = load i8*, i8** %st_slot_ptr
-  %st_null = icmp eq i8* %st_cand, null
-  br i1 %st_null, label %scan_static_step, label %scan_static_cmp
-scan_static_cmp:
-  %st_eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %st_cand)
-  br i1 %st_eq, label %ret_static_id, label %scan_static_step
-ret_static_id:
-  ret i64 %s_i
-scan_static_step:
-  %s_i1 = add i64 %s_i, 1
-  br label %scan_static
-
-scan_dyn_init:
   %dyn_cnt = load i32, i32* @wam_atom_dyn_count
   %dyn_cnt_64 = zext i32 %dyn_cnt to i64
   %dyn_ptr_0 = load i8**, i8*** @wam_atom_dyn_ptr
-  br label %scan_dyn
-scan_dyn:
-  %d_i = phi i64 [ 0, %scan_dyn_init ], [ %d_i1, %scan_dyn_step ]
-  %d_done = icmp uge i64 %d_i, %dyn_cnt_64
-  br i1 %d_done, label %do_intern, label %scan_dyn_check
-scan_dyn_check:
-  %d_slot_ptr = getelementptr i8*, i8** %dyn_ptr_0, i64 %d_i
-  %d_cand = load i8*, i8** %d_slot_ptr
-  %d_eq = call i1 @wam_str_eq_n(i8* %str, i64 %len, i8* %d_cand)
-  br i1 %d_eq, label %ret_dyn_id, label %scan_dyn_step
-ret_dyn_id:
-  %dyn_id = add i64 %st_cnt_64, %d_i
-  ret i64 %dyn_id
-scan_dyn_step:
-  %d_i1 = add i64 %d_i, 1
-  br label %scan_dyn
-
-do_intern:
-  ; Need to append. First, ensure capacity.
   %dyn_cap = load i32, i32* @wam_atom_dyn_cap
   %need_grow = icmp uge i32 %dyn_cnt, %dyn_cap
   br i1 %need_grow, label %do_grow, label %do_alloc_str
@@ -16743,9 +17787,26 @@ do_copy:
   %new_cnt = add i32 %dyn_cnt, 1
   store i32 %new_cnt, i32* @wam_atom_dyn_count
   %new_id = add i64 %st_cnt_64, %dyn_cnt_64
+  ; Record the new id in the hash, then grow past 50 percent load.
+  %idp1 = add i64 %new_id, 1
+  store i64 %idp1, i64* %slot_p
+  %hcnt = load i64, i64* @wam_atom_hash_count
+  %hcnt1 = add i64 %hcnt, 1
+  store i64 %hcnt1, i64* @wam_atom_hash_count
+  %hcap = load i64, i64* @wam_atom_hash_cap
+  %half = lshr i64 %hcap, 1
+  %needs_hash_grow = icmp ugt i64 %hcnt1, %half
+  br i1 %needs_hash_grow, label %grow_hash, label %ret_new
+grow_hash:
+  ; On rebuild failure the old table stays valid, only fuller; the
+  ; intern itself already succeeded.
+  %gcap = shl i64 %hcap, 1
+  %grow_ignored = call i1 @wam_atom_hash_rebuild(i64 %gcap)
+  br label %ret_new
+ret_new:
   ret i64 %new_id
 }',
-           [ArrSize, SlotsStr, ArrSize, CharSlotsStr, ArrSize, ArrSize, ArrSize, ArrSize]),
+           [ArrSize, SlotsStr, ArrSize, CharSlotsStr, ArrSize, ArrSize]),
        atomic_list_concat(StrGlobals, '\n', StrGlobalsStr),
        atomic_list_concat([StrGlobalsStr, LookupTable], '\n\n', IR)
     ).
@@ -16805,6 +17866,30 @@ llvm_emit_atom_field_eq_guard(GlobalBase, ValueIR, FieldIndex, Expected, SepCode
         '  %~w_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0~n  ~w = call i1 @wam_atom_field_eq_value(%Value ~w, i64 ~w, i8* %~w_ptr, i64 ~w, i8 ~w)',
         [SafeBase, ArrLen, ArrLen, SafeBase,
          ResultIR, ValueIR, FieldIndex, SafeBase, ExpectedLen, SepCode]).
+
+%% llvm_emit_regex_field_match_guard(+GlobalBase, +ValueIR, +FieldIndex, +Regex, +SepCode, +ResultIR, -GlobalIR-CallIR)
+%
+%  Emit a native POSIX ERE guard over an atom-backed text record.
+%  FieldIndex 0 matches the whole record; positive indexes match the
+%  projected field slice. The pattern is emitted as a string global
+%  plus a per-site cache slot holding the lazily compiled regex_t;
+%  matching happens in the @wam_regex_field_match runtime helper. A
+%  pattern that fails to compile never matches.
+llvm_emit_regex_field_match_guard(GlobalBase, ValueIR, FieldIndex, Regex, SepCode, ResultIR, GlobalIR-CallIR) :-
+    integer(FieldIndex),
+    FieldIndex >= 0,
+    sanitize_functor_for_llvm(GlobalBase, SafeBase),
+    escape_llvm_string(Regex, EscapedRegex, RegexLen),
+    ArrLen is RegexLen + 1,
+    format(atom(GlobalIR),
+'@.~w = private constant [~w x i8] c"~w\\00"
+@~w_regex_cache = internal global i8* null',
+        [SafeBase, ArrLen, EscapedRegex, SafeBase]),
+    format(atom(CallIR),
+'  %~w_pat_ptr = getelementptr [~w x i8], [~w x i8]* @.~w, i32 0, i32 0
+  ~w = call i1 @wam_regex_field_match(%Value ~w, i64 ~w, i8 ~w, i8* %~w_pat_ptr, i8** @~w_regex_cache)',
+        [SafeBase, ArrLen, ArrLen, SafeBase,
+         ResultIR, ValueIR, FieldIndex, SepCode, SafeBase, SafeBase]).
 
 %% llvm_emit_atom_field_slice(+ValueIR, +FieldIndex, +SepCode, +SliceBase, -CallIR)
 %
@@ -16985,6 +18070,18 @@ llvm_emit_printf0(FmtGlobal, FmtLen, FmtVar, PrintVar, [FmtPtr, PrintCall]) :-
 %  lowerers provide runtime globals, optional entry setup, loop-carried phis,
 %  per-record lowered IR, continuation phis, optional terminal-break close IR,
 %  and the close-success block.
+%
+%  InputPath is either a concrete path (compiled into the binary as a
+%  string global) or the atom `stdin_or_argv`, which emits a
+%  main(argc, argv) that opens argv[1] at runtime, treats "-" as stdin,
+%  and defaults to stdin (fd 0) when no argument is given -- the awk
+%  pipeline-filter convention.
+%
+%  Records are read with @wam_stream_read_line_transient_value: %line
+%  is the reserved transient atom whose string lives in a shared buffer
+%  valid only until the next read, so per-record lowerings read it
+%  freely but anything persisted past the record must intern (field
+%  slices used as assoc keys and $0 foreign-call arguments do).
 llvm_emit_stream_driver_ir(
     InputPath,
     driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
@@ -17006,6 +18103,108 @@ llvm_emit_stream_driver_ir(
         driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
             ContinueIR, '', CloseOkLabel, CloseOkIR),
         DriverIR).
+
+llvm_emit_stream_driver_ir(
+    stdin_or_argv,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    format(atom(DriverIR),
+'@.wam_stream_eof = private constant [12 x i8] c"end_of_file\\00"
+@.wam_stream_stdin_dash = private constant [2 x i8] c"-\\00"
+~w
+
+define i32 @main(i32 %argc, i8** %argv) {
+entry:
+~w
+  %have_arg = icmp sgt i32 %argc, 1
+  br i1 %have_arg, label %check_argv_path, label %use_stdin
+
+check_argv_path:
+  %argv1_ptr = getelementptr i8*, i8** %argv, i64 1
+  %argv1 = load i8*, i8** %argv1_ptr
+  %dash_ptr = getelementptr [2 x i8], [2 x i8]* @.wam_stream_stdin_dash, i32 0, i32 0
+  %dash_cmp = call i32 @strcmp(i8* %argv1, i8* %dash_ptr)
+  %is_dash = icmp eq i32 %dash_cmp, 0
+  br i1 %is_dash, label %use_stdin, label %open_argv_file
+
+open_argv_file:
+  %argv1_len = call i64 @strlen(i8* %argv1)
+  %path_id = call i64 @wam_intern_atom(i8* %argv1, i64 %argv1_len)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+  %file_handle = call %Value @wam_stream_open_value(%Value %path)
+  br label %have_handle
+
+use_stdin:
+  %stdin_handle = call %Value @wam_stream_open_fd_value(i64 0)
+  br label %have_handle
+
+have_handle:
+  %handle = phi %Value [ %file_handle, %open_argv_file ], [ %stdin_handle, %use_stdin ]
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+  %line = call %Value @wam_stream_read_line_transient_value(%Value %handle)
+  %line_tag = extractvalue %Value %line, 0
+  %line_payload = extractvalue %Value %line, 1
+  %line_is_int = icmp eq i32 %line_tag, 1
+  %line_bad_payload = icmp slt i64 %line_payload, 0
+  %line_bad = and i1 %line_is_int, %line_bad_payload
+  br i1 %line_bad, label %fail_read, label %check_line_atom
+
+check_line_atom:
+  %line_is_atom = icmp eq i32 %line_tag, 0
+  br i1 %line_is_atom, label %check_eof, label %fail_line_tag
+
+check_eof:
+  %line_s = call i8* @wam_atom_to_string(i64 %line_payload)
+  %eof_s = getelementptr [12 x i8], [12 x i8]* @.wam_stream_eof, i32 0, i32 0
+  %eof_cmp = call i32 @strcmp(i8* %line_s, i8* %eof_s)
+  %is_eof = icmp eq i32 %eof_cmp, 0
+  br i1 %is_eof, label %close_stream, label %~w
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_line_tag:
+  %close_ignore_line_tag = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 12
+
+fail_close:
+  ret i32 16
+}
+',
+        [RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel,
+         LoweredLabel, RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR]).
 
 llvm_emit_stream_driver_ir(
     InputPath,
@@ -17038,7 +18237,7 @@ check_handle_value:
 
 loop:
 ~w
-  %line = call %Value @wam_stream_read_line_value(%Value %handle)
+  %line = call %Value @wam_stream_read_line_transient_value(%Value %handle)
   %line_tag = extractvalue %Value %line, 0
   %line_payload = extractvalue %Value %line, 1
   %line_is_int = icmp eq i32 %line_tag, 1
@@ -17089,6 +18288,376 @@ fail_close:
         [PathGlobalIR, RuntimeGlobals,
          BytesLen, BytesLen, PathLen, EntrySetupIR, LoopPhiIR, LoweredLabel,
          LoweredLabel, RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR]).
+
+%% llvm_emit_binary_stream_driver_ir(+InputPath, +RecordSize, +DriverBlocks, -DriverIR)
+%
+%  Binary sibling of llvm_emit_stream_driver_ir: the loop reads
+%  fixed-size RecordSize-byte records into a reusable %rec buffer with
+%  @wam_stream_read_record instead of interning text lines. There is no
+%  %line/%line_s; lowered blocks read typed fields directly from %rec.
+%  Block labels (%check_handle_value, %continue_loop, close labels)
+%  match the text skeleton so loop-carried phis work unchanged. A
+%  trailing partial record fails with the read error exit code.
+%  InputPath is a concrete path or the stdin_or_argv sentinel.
+llvm_emit_binary_stream_driver_ir(
+    InputPath,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    llvm_emit_binary_stream_driver_ir(InputPath, RecordSize,
+        driver_blocks(RuntimeGlobals, '', LoopPhiIR, LoweredLabel, RecordIR,
+            ContinueIR, '', CloseOkLabel, CloseOkIR),
+        DriverIR).
+
+llvm_emit_binary_stream_driver_ir(
+    InputPath,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    llvm_emit_binary_stream_driver_ir(InputPath, RecordSize,
+        driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+            ContinueIR, '', CloseOkLabel, CloseOkIR),
+        DriverIR).
+
+llvm_emit_binary_stream_driver_ir(
+    stdin_or_argv,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    format(atom(DriverIR),
+'@.wam_stream_stdin_dash = private constant [2 x i8] c"-\00"
+~w
+
+define i32 @main(i32 %argc, i8** %argv) {
+entry:
+~w
+  %rec = call i8* @malloc(i64 ~w)
+  %rec_null = icmp eq i8* %rec, null
+  br i1 %rec_null, label %fail_open, label %pick_input
+
+pick_input:
+  %have_arg = icmp sgt i32 %argc, 1
+  br i1 %have_arg, label %check_argv_path, label %use_stdin
+
+check_argv_path:
+  %argv1_ptr = getelementptr i8*, i8** %argv, i64 1
+  %argv1 = load i8*, i8** %argv1_ptr
+  %dash_ptr = getelementptr [2 x i8], [2 x i8]* @.wam_stream_stdin_dash, i32 0, i32 0
+  %dash_cmp = call i32 @strcmp(i8* %argv1, i8* %dash_ptr)
+  %is_dash = icmp eq i32 %dash_cmp, 0
+  br i1 %is_dash, label %use_stdin, label %open_argv_file
+
+open_argv_file:
+  %argv1_len = call i64 @strlen(i8* %argv1)
+  %path_id = call i64 @wam_intern_atom(i8* %argv1, i64 %argv1_len)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+  %file_handle = call %Value @wam_stream_open_value(%Value %path)
+  br label %have_handle
+
+use_stdin:
+  %stdin_handle = call %Value @wam_stream_open_fd_value(i64 0)
+  br label %have_handle
+
+have_handle:
+  %handle = phi %Value [ %file_handle, %open_argv_file ], [ %stdin_handle, %use_stdin ]
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+  %rec_status = call i64 @wam_stream_read_record(%Value %handle, i64 ~w, i8* %rec)
+  %rec_eof = icmp eq i64 %rec_status, 0
+  br i1 %rec_eof, label %close_stream, label %check_record
+
+check_record:
+  %rec_ok = icmp eq i64 %rec_status, 1
+  br i1 %rec_ok, label %~w, label %fail_read
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_close:
+  ret i32 16
+}
+',
+        [RuntimeGlobals, EntrySetupIR, RecordSize, LoopPhiIR, RecordSize,
+         LoweredLabel, LoweredLabel, RecordIR, ContinueIR, BreakCloseIR,
+         CloseOkLabel, CloseOkIR]).
+
+llvm_emit_binary_stream_driver_ir(
+    InputPath,
+    RecordSize,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel, RecordIR,
+        ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    llvm_emit_c_string_global(wam_stream_input_path, InputPath, PathGlobalIR, PathLen, BytesLen),
+    format(atom(DriverIR),
+'~w
+~w
+
+define i32 @main() {
+entry:
+  %path_ptr = getelementptr [~w x i8], [~w x i8]* @.wam_stream_input_path, i32 0, i32 0
+  %path_id = call i64 @wam_intern_atom(i8* %path_ptr, i64 ~w)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+~w
+  %rec = call i8* @malloc(i64 ~w)
+  %rec_null = icmp eq i8* %rec, null
+  br i1 %rec_null, label %fail_open, label %open_stream
+
+open_stream:
+  %handle = call %Value @wam_stream_open_value(%Value %path)
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+  %rec_status = call i64 @wam_stream_read_record(%Value %handle, i64 ~w, i8* %rec)
+  %rec_eof = icmp eq i64 %rec_status, 0
+  br i1 %rec_eof, label %close_stream, label %check_record
+
+check_record:
+  %rec_ok = icmp eq i64 %rec_status, 1
+  br i1 %rec_ok, label %~w, label %fail_read
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_close:
+  ret i32 16
+}
+',
+        [PathGlobalIR, RuntimeGlobals,
+         BytesLen, BytesLen, PathLen, EntrySetupIR, RecordSize, LoopPhiIR,
+         RecordSize, LoweredLabel, LoweredLabel, RecordIR, ContinueIR,
+         BreakCloseIR, CloseOkLabel, CloseOkIR]).
+
+%% llvm_emit_varlen_stream_driver_ir(+InputPath, +BufSize, +ReadIR,
+%%     +DriverBlocks, -DriverIR)
+%
+%  Variable-length sibling of llvm_emit_binary_stream_driver_ir: instead
+%  of one fixed-size @wam_stream_read_record call, the caller supplies
+%  ReadIR -- a field-by-field read sequence that materializes one record
+%  into the BufSize-byte %rec buffer and ends by branching to the
+%  lowered label (or %close_stream on clean EOF at a record boundary /
+%  %fail_read on a short read). Block labels match the fixed skeletons
+%  so loop phis and lowered blocks work unchanged.
+llvm_emit_varlen_stream_driver_ir(
+    stdin_or_argv,
+    BufSize,
+    ReadIR,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel,
+        RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    !,
+    format(atom(DriverIR),
+'@.wam_stream_stdin_dash = private constant [2 x i8] c"-\00"
+~w
+
+define i32 @main(i32 %argc, i8** %argv) {
+entry:
+~w
+  %rec = call i8* @malloc(i64 ~w)
+  %rec_null = icmp eq i8* %rec, null
+  br i1 %rec_null, label %fail_open, label %pick_input
+
+pick_input:
+  %have_arg = icmp sgt i32 %argc, 1
+  br i1 %have_arg, label %check_argv_path, label %use_stdin
+
+check_argv_path:
+  %argv1_ptr = getelementptr i8*, i8** %argv, i64 1
+  %argv1 = load i8*, i8** %argv1_ptr
+  %dash_ptr = getelementptr [2 x i8], [2 x i8]* @.wam_stream_stdin_dash, i32 0, i32 0
+  %dash_cmp = call i32 @strcmp(i8* %argv1, i8* %dash_ptr)
+  %is_dash = icmp eq i32 %dash_cmp, 0
+  br i1 %is_dash, label %use_stdin, label %open_argv_file
+
+open_argv_file:
+  %argv1_len = call i64 @strlen(i8* %argv1)
+  %path_id = call i64 @wam_intern_atom(i8* %argv1, i64 %argv1_len)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+  %file_handle = call %Value @wam_stream_open_value(%Value %path)
+  br label %have_handle
+
+use_stdin:
+  %stdin_handle = call %Value @wam_stream_open_fd_value(i64 0)
+  br label %have_handle
+
+have_handle:
+  %handle = phi %Value [ %file_handle, %open_argv_file ], [ %stdin_handle, %use_stdin ]
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+~w
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_close:
+  ret i32 16
+}
+',
+        [RuntimeGlobals, EntrySetupIR, BufSize, LoopPhiIR, ReadIR,
+         LoweredLabel, RecordIR, ContinueIR, BreakCloseIR,
+         CloseOkLabel, CloseOkIR]).
+
+llvm_emit_varlen_stream_driver_ir(
+    InputPath,
+    BufSize,
+    ReadIR,
+    driver_blocks(RuntimeGlobals, EntrySetupIR, LoopPhiIR, LoweredLabel,
+        RecordIR, ContinueIR, BreakCloseIR, CloseOkLabel, CloseOkIR),
+    DriverIR
+) :-
+    llvm_emit_c_string_global(wam_stream_input_path, InputPath, PathGlobalIR, PathLen, BytesLen),
+    format(atom(DriverIR),
+'~w
+~w
+
+define i32 @main() {
+entry:
+  %path_ptr = getelementptr [~w x i8], [~w x i8]* @.wam_stream_input_path, i32 0, i32 0
+  %path_id = call i64 @wam_intern_atom(i8* %path_ptr, i64 ~w)
+  %path0 = insertvalue %Value undef, i32 0, 0
+  %path = insertvalue %Value %path0, i64 %path_id, 1
+~w
+  %rec = call i8* @malloc(i64 ~w)
+  %rec_null = icmp eq i8* %rec, null
+  br i1 %rec_null, label %fail_open, label %open_stream
+
+open_stream:
+  %handle = call %Value @wam_stream_open_value(%Value %path)
+  %handle_tag = extractvalue %Value %handle, 0
+  %handle_is_int = icmp eq i32 %handle_tag, 1
+  br i1 %handle_is_int, label %check_handle_value, label %fail_open
+
+check_handle_value:
+  %handle_payload = extractvalue %Value %handle, 1
+  %handle_ok = icmp sgt i64 %handle_payload, 0
+  br i1 %handle_ok, label %loop, label %fail_open
+
+loop:
+~w
+~w
+
+~w:
+~w
+
+continue_loop:
+~w
+  br label %loop
+
+~w
+close_stream:
+  %close_ok = call i1 @wam_stream_close_value(%Value %handle)
+  br i1 %close_ok, label %~w, label %fail_close
+
+~w
+
+fail_open:
+  ret i32 10
+
+fail_read:
+  %close_ignore_read = call i1 @wam_stream_close_value(%Value %handle)
+  ret i32 11
+
+fail_close:
+  ret i32 16
+}
+',
+        [PathGlobalIR, RuntimeGlobals,
+         BytesLen, BytesLen, PathLen, EntrySetupIR, BufSize, LoopPhiIR,
+         ReadIR, LoweredLabel, RecordIR, ContinueIR,
+         BreakCloseIR, CloseOkLabel, CloseOkIR]).
 
 %% llvm_emit_ascii_case_slice_print(+Mode, +PtrIR, +LenIR, +PrintBase, -CallIR)
 %
@@ -17370,6 +18939,14 @@ target_struct_tm_gmtoff_offset(_, 40).
 
 % --- Value packing helpers ---
 
+% %Value tag for a head constant: integers (raw or integer/1-wrapped)
+% are tag 1, everything else interns as an atom (tag 0). get_constant
+% and unify_constant share this so integer constants in heads compare
+% against heap Integers, not same-payload Atoms.
+llvm_constant_tag(C, 1) :- integer(C), !.
+llvm_constant_tag(integer(_), 1) :- !.
+llvm_constant_tag(_, 0).
+
 llvm_pack_value(atom(A0), Packed) :- !,
     llvm_normalize_atom_token(A0, A),
     intern_atom(A, Packed).
@@ -17555,6 +19132,10 @@ builtin_op_to_id('atom_split/3', 165).        % split atom on single-char sep ->
 builtin_op_to_id('stream_open/2', 166).       % open + table-backed buffered line-reader handle.
 builtin_op_to_id('read_line/2', 167).         % buffered line read; EOF unifies end_of_file.
 builtin_op_to_id('stream_close/1', 168).      % close + free line-reader handle.
+builtin_op_to_id('atom_starts_with/2', 169).  % prefix check via memcmp.
+builtin_op_to_id('atom_ends_with/2', 170).    % suffix check via memcmp.
+builtin_op_to_id('atom_contains/2', 171).     % substring check via strstr.
+builtin_op_to_id('code_type/2', 172).        % ASCII class check; shares char_type's classifier.
 % Catch-all for builtin names with no dedicated dispatch entry. Must
 % be a value that no real builtin uses AND that the switch in
 % @execute_builtin has no case for, so dispatch falls through to the
@@ -17888,13 +19469,14 @@ lookup_label_index(LabelName, LabelMap, Index) :-
 lookup_label_index(LabelName, LabelMap, Options, Index) :-
     (   member(LabelName-Index, LabelMap)
     ->  true
-    ;   (   option(wam_strict_labels(true), Options)
-        ->  throw(error(unknown_label(LabelName),
-                'Label not found in LabelMap — enable wam_strict_labels(false) to allow fallback'))
-        ;   format(user_error,
+    ;   (   option(wam_strict_labels(false), Options)
+        ->  format(user_error,
                 'Warning: unknown label "~w" in WAM LLVM codegen, defaulting to index 0~n',
                 [LabelName]),
             Index = 0
+        ;   throw(error(existence_error(procedure, LabelName),
+                context(wam_llvm_codegen,
+                    'called predicate was not compiled into this module; add it to the predicate list passed to write_wam_llvm_project/3, or pass wam_strict_labels(false) to allow the legacy index-0 fallback')))
         )
     ).
 
@@ -18067,7 +19649,9 @@ wam_line_to_llvm_literal(["unify_value", Xn], Lit) :-
 wam_line_to_llvm_literal(["unify_constant", C], Lit) :-
     clean_comma(C, CC),
     llvm_pack_value_str(CC, PackedVal),
-    format(atom(Lit), '%Instruction { i32 7, i64 ~w, i64 0 }', [PackedVal]).
+    ( number_string(_, CC) -> Tag = 1 ; Tag = 0 ),
+    Op2 is Tag << 16,
+    format(atom(Lit), '%Instruction { i32 7, i64 ~w, i64 ~w }', [PackedVal, Op2]).
 
 wam_line_to_llvm_literal(["put_constant", C, Ai], Lit) :-
     clean_comma(C, CC), clean_comma(Ai, CAi),
@@ -18371,3 +19955,708 @@ build_llvm_arg_setup(Arity, Setup) :-
             [RegIdx, I])
     ), Indices, Parts),
     atomic_list_concat(Parts, '\n', Setup).
+
+% ============================================================================
+% PHASE 5 (JIT): Runtime-loadable WAM objects (.wamo)
+% ============================================================================
+%
+% A .wamo object is a self-contained, position-independent WAM program that
+% a host binary can load at RUNTIME and execute on the shared WAM runtime.
+% The host is any module produced by write_wam_llvm_project/3 with the
+% wam_object_support_ir/1 loader appended (option emit_wamo_loader(true)).
+% This is UnifyWeaver's JIT slice-1: grammars compiled ahead of time and
+% swapped in without recompiling the host.
+%
+% Format -- a whitespace-separated token stream. Strings are length-prefixed
+% ("<bytelen> <raw bytes>") so the native loader needs no escaping:
+%
+%     WAMO\n
+%     <version=1>
+%     <entry-label-index>
+%     <atom-count N>      then N length-prefixed strings
+%     <functor-count M>   then M length-prefixed strings
+%     <label-count L>     then L ints (PC per label; index = position)
+%     <code-count C>      then C * 4 ints (tag op1 op2 reloc)
+%
+% Relocation classes (reloc field, per instruction):
+%     0 none     - op1/op2 verbatim
+%     1 atom     - op1 is an index into the atom table; the loader re-interns
+%                  atoms[op1] via @wam_intern_atom (which copies the string)
+%                  and writes the runtime atom id back into op1
+%     2 functor  - op1 is an index into the functor table; the loader makes
+%                  ONE malloc'd NUL-terminated copy per functor and writes its
+%                  pointer into op1. Pointer identity within the object keeps
+%                  get/put_structure unification correct (functor comparison
+%                  is by pointer); arithmetic is content-based so the copy is
+%                  also fine for `is`/comparison operators.
+%
+% call/execute/try_me_else/retry_me_else operands are indexes into the
+% object's OWN labels array -- @wam_label_pc reads the VM's installed labels
+% array, so they are already self-relative. builtin_call ids are host-stable
+% per UnifyWeaver version. Float constants (tag 2), switch-on-constant tables
+% and call/N meta-calls are outside slice 1 and rejected at write time.
+
+%% write_wam_object(+Predicates, +Options, +OutFile) is det.
+%
+%  Compile Predicates (plus their same-module helper closure) to a .wamo
+%  object and write it to OutFile. Options:
+%    wamo_entry(Pred/Arity) - entry predicate (default: first of Predicates)
+%  Throws error(wamo_unsupported(_), _) if any instruction is outside the
+%  loadable subset, error(wamo_entry_not_found(_), _) if the entry label
+%  is missing, or error(wamo_uncompilable(_), _) on a WAM compile failure.
+write_wam_object(Predicates, Options, OutFile) :-
+    wam_object_encode(Predicates, Options, Codes),
+    setup_call_cleanup(
+        open(OutFile, write, S, [encoding(octet)]),
+        format(S, "~s", [Codes]),
+        close(S)).
+
+%% wam_object_encode(+Predicates, +Options, -Codes) is det.
+%
+%  Produce the .wamo byte stream (a list of 0..255 codes) in memory.
+wam_object_encode(Predicates, Options, Codes) :-
+    expand_wam_llvm_project_predicates(Predicates, Options, Expanded),
+    wamo_classify(Expanded, Options, 0, Records),
+    build_merged_labels(Records, NamePCPairs, LabelMap),
+    wamo_entry_index(Predicates, Options, LabelMap, EntryIndex),
+    wamo_all_instr_parts(Records, AllParts),
+    foldl(wamo_encode_step(LabelMap), AllParts,
+          ws([], tab([], 0), tab([], 0)),
+          ws(RevEnc, ATab, FTab)),
+    reverse(RevEnc, EncInstrs),
+    wamo_table_list(ATab, Atoms),
+    wamo_table_list(FTab, Functors),
+    findall(PC, member(_-PC, NamePCPairs), PCs),
+    wamo_serialize(EntryIndex, Atoms, Functors, PCs, EncInstrs, Codes).
+
+%% wamo_classify(+Preds, +Options, +StartPC, -Records)
+%
+%  Like pass1_classify_predicates/4 but WAM-only: every predicate is
+%  compiled to bytecode (no native lowering, no foreign kernels) so the
+%  object carries real instructions. StartPC threads through all records.
+wamo_classify([], _, _, []).
+wamo_classify([PI|Rest], Options, StartPC, [Rec|Recs]) :-
+    ( PI = M:P/A -> true ; PI = P/A, M = user ),
+    (   catch(wam_target:compile_predicate_to_wam(M:P/A, Options, WamRaw), _, fail)
+    ->  parse_wam_to_pass1(P/A, WamRaw, A, StartPC, Rec, NumInstrs),
+        NextPC is StartPC + NumInstrs
+    ;   throw(error(wamo_uncompilable(M:P/A),
+            context(write_wam_object,
+                'predicate has no WAM-compilable clauses')))
+    ),
+    wamo_classify(Rest, Options, NextPC, Recs).
+
+%% wamo_entry_index(+Predicates, +Options, +LabelMap, -Index)
+wamo_entry_index(Predicates, Options, LabelMap, Index) :-
+    (   option(wamo_entry(EP/EA), Options)
+    ->  P = EP, A = EA
+    ;   Predicates = [First|_],
+        ( First = _:P0/A0 -> P = P0, A = A0
+        ; First = P0/A0   -> P = P0, A = A0 )
+    ),
+    format(string(Name), "~w/~w", [P, A]),
+    (   memberchk(Name-Index, LabelMap)
+    ->  true
+    ;   throw(error(wamo_entry_not_found(Name),
+            context(write_wam_object,
+                'entry predicate has no label in the merged object')))
+    ).
+
+%% wamo_all_instr_parts(+Records, -AllParts)
+%  Concatenate every record's parsed instruction Parts in emission order.
+wamo_all_instr_parts([], []).
+wamo_all_instr_parts([Rec|Rest], All) :-
+    ( Rec = wam(_, _, RawInstrs, _, _, _) -> true ; RawInstrs = [] ),
+    wamo_all_instr_parts(Rest, RestAll),
+    append(RawInstrs, RestAll, All).
+
+% --- object-local string interning tables (string -> dense index) ---------
+
+tab_intern(Str, tab(P0, N0), Idx, tab(P1, N1)) :-
+    (   wamo_tab_lookup(P0, Str, I)
+    ->  Idx = I, P1 = P0, N1 = N0
+    ;   Idx = N0, N1 is N0 + 1, P1 = [N0-Str | P0]
+    ).
+
+wamo_tab_lookup([I-S | _], Str, I) :- S == Str, !.
+wamo_tab_lookup([_ | T], Str, I) :- wamo_tab_lookup(T, Str, I).
+
+wamo_table_list(tab(Pairs, _), List) :-
+    keysort(Pairs, Sorted),
+    findall(S, member(_-S, Sorted), List).
+
+% --- per-instruction encoding ---------------------------------------------
+
+wamo_encode_step(LabelMap, Parts, ws(E0, A0, F0), ws([Enc|E0], A1, F1)) :-
+    wamo_enc(Parts, LabelMap, A0, A1, F0, F1, Enc).
+
+%% wamo_enc(+Parts, +LabelMap, +A0, -A1, +F0, -F1, -enc(Tag,Op1,Op2,Reloc))
+%  Encode one parsed WAM instruction into the object's triple form,
+%  threading the atom (A) and functor (F) interning tables.
+
+% constants
+wamo_enc(["get_constant", C, Ai], _, A0, A1, F, F, enc(0, Op1, Op2, R)) :- !,
+    clean_comma(C, CC), clean_comma(Ai, CAi),
+    atom_string(CAiA, CAi), reg_name_to_index(CAiA, Reg),
+    wamo_const(CC, A0, A1, Op1, Tag, R),
+    Op2 is (Tag << 16) \/ Reg.
+wamo_enc(["unify_constant", C], _, A0, A1, F, F, enc(7, Op1, Op2, R)) :- !,
+    clean_comma(C, CC),
+    wamo_const(CC, A0, A1, Op1, Tag, R),
+    Op2 is Tag << 16.
+wamo_enc(["put_constant", C, Ai], _, A0, A1, F, F, enc(8, Op1, Op2, R)) :- !,
+    clean_comma(C, CC), clean_comma(Ai, CAi),
+    atom_string(CAiA, CAi), reg_name_to_index(CAiA, Reg),
+    wamo_const(CC, A0, A1, Op1, Tag, R),
+    Op2 is (Tag << 16) \/ Reg.
+wamo_enc(["set_constant", C], _, A0, A1, F, F, enc(15, Op1, Tag, R)) :- !,
+    clean_comma(C, CC),
+    wamo_const(CC, A0, A1, Op1, Tag, R).
+
+% structures
+wamo_enc(["get_structure", FN, Ai], _, A, A, F0, F1, enc(3, Idx, Op2, functor)) :- !,
+    wamo_structure(FN, Ai, F0, F1, Idx, Op2).
+wamo_enc(["put_structure", FN, Ai], _, A, A, F0, F1, enc(11, Idx, Op2, functor)) :- !,
+    wamo_structure(FN, Ai, F0, F1, Idx, Op2).
+
+% two-register
+wamo_enc(["get_variable", Xn, Ai], _, A, A, F, F, enc(1, X, Y, none)) :- !, wamo_reg2(Xn, Ai, X, Y).
+wamo_enc(["get_value",    Xn, Ai], _, A, A, F, F, enc(2, X, Y, none)) :- !, wamo_reg2(Xn, Ai, X, Y).
+wamo_enc(["put_variable", Xn, Ai], _, A, A, F, F, enc(9, X, Y, none)) :- !, wamo_reg2(Xn, Ai, X, Y).
+wamo_enc(["put_value",    Xn, Ai], _, A, A, F, F, enc(10, X, Y, none)) :- !, wamo_reg2(Xn, Ai, X, Y).
+
+% one-register
+wamo_enc(["get_list", Ai], _, A, A, F, F, enc(4, R, 0, none)) :- !, wamo_reg1(Ai, R).
+wamo_enc(["put_list", Ai], _, A, A, F, F, enc(12, R, 0, none)) :- !, wamo_reg1(Ai, R).
+wamo_enc(["unify_variable", Xn], _, A, A, F, F, enc(5, R, 0, none)) :- !, wamo_reg1(Xn, R).
+wamo_enc(["unify_value", Xn], _, A, A, F, F, enc(6, R, 0, none)) :- !, wamo_reg1(Xn, R).
+wamo_enc(["set_variable", Xn], _, A, A, F, F, enc(13, R, 0, none)) :- !, wamo_reg1(Xn, R).
+wamo_enc(["set_value", Xn], _, A, A, F, F, enc(14, R, 0, none)) :- !, wamo_reg1(Xn, R).
+wamo_enc(["get_level", Yn], _, A, A, F, F, enc(33, R, 0, none)) :- !, wamo_reg1(Yn, R).
+wamo_enc(["cut", Yn], _, A, A, F, F, enc(34, R, 0, none)) :- !, wamo_reg1(Yn, R).
+
+% nullary
+wamo_enc(["allocate"],   _, A, A, F, F, enc(16, 0, 0, none)) :- !.
+wamo_enc(["deallocate"], _, A, A, F, F, enc(17, 0, 0, none)) :- !.
+wamo_enc(["proceed"],    _, A, A, F, F, enc(20, 0, 0, none)) :- !.
+wamo_enc(["trust_me"],   _, A, A, F, F, enc(24, 0, 0, none)) :- !.
+wamo_enc(["cut_ite"],    _, A, A, F, F, enc(31, 0, 0, none)) :- !.
+
+% builtins (ids host-stable per UnifyWeaver version)
+wamo_enc(["builtin_call", Op, N], _, A, A, F, F, enc(21, Id, Num, none)) :- !,
+    clean_comma(Op, COp), clean_comma(N, CN),
+    ( number_string(Num, CN) -> true ; Num = 0 ),
+    ( atom(COp) -> OpA = COp ; atom_string(OpA, COp) ),
+    builtin_op_to_id(OpA, Id).
+
+% control-flow with label operands (self-relative indexes into the object)
+wamo_enc(["call", P, N], LabelMap, A, A, F, F, enc(18, Idx, Arity, none)) :- !,
+    clean_comma(P, CP), clean_comma(N, CN),
+    ( number_string(Arity, CN) -> true ; Arity = 0 ),
+    wamo_label(CP, LabelMap, Idx).
+wamo_enc(["execute", P], LabelMap, A, A, F, F, enc(19, Idx, 0, none)) :- !,
+    clean_comma(P, CP),
+    wamo_label(CP, LabelMap, Idx).
+wamo_enc(["try_me_else", L], LabelMap, A, A, F, F, enc(22, Idx, 0, none)) :- !,
+    clean_comma(L, CL), lookup_label_index(CL, LabelMap, Idx).
+wamo_enc(["retry_me_else", L], LabelMap, A, A, F, F, enc(23, Idx, 0, none)) :- !,
+    clean_comma(L, CL), lookup_label_index(CL, LabelMap, Idx).
+
+% type-based dispatch: nop fallthrough (tag 26), matching the interpreter's
+% runtime semantics. The try_me_else / retry_me_else chain still runs, so
+% the predicate is correct (just unindexed). No switch table is needed.
+wamo_enc(["switch_on_term" | _],      _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["switch_on_term_a2" | _],   _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["switch_on_structure" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["try" | _],   _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["retry" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+wamo_enc(["trust" | _], _, A, A, F, F, enc(26, 0, 0, none)) :- !.
+
+% everything else is outside the slice-1 loadable subset
+wamo_enc(["switch_on_constant" | _], _, _, _, _, _, _) :-
+    throw(error(wamo_unsupported(switch_on_constant),
+        context(write_wam_object,
+            'first-argument constant indexing needs a switch table (not in slice 1)'))).
+wamo_enc(["switch_on_constant_a2" | _], _, _, _, _, _, _) :-
+    throw(error(wamo_unsupported(switch_on_constant_a2),
+        context(write_wam_object,
+            'second-argument constant indexing needs a switch table (not in slice 1)'))).
+wamo_enc(Parts, _, _, _, _, _, _) :-
+    throw(error(wamo_unsupported(instruction(Parts)),
+        context(write_wam_object,
+            'instruction is outside the loadable WAM object subset'))).
+
+%% wamo_const(+Str, +A0, -A1, -Op1, -Tag, -Reloc)
+%  Encode a constant operand. Integers embed directly (Tag=1, no reloc);
+%  atoms intern into the object atom table (Tag=0, reloc=atom, Op1=index);
+%  floats are rejected (slice 1).
+wamo_const(CC, A0, A1, Op1, Tag, R) :-
+    (   number_string(N, CC)
+    ->  (   integer(N)
+        ->  Op1 = N, Tag = 1, R = none, A1 = A0
+        ;   throw(error(wamo_unsupported(float_constant(CC)),
+                context(write_wam_object,
+                    'float constants are not in slice 1')))
+        )
+    ;   strip_quoted_atom(CC, Inner),
+        wamo_to_string(Inner, InnerStr),
+        tab_intern(InnerStr, A0, Idx, A1),
+        Op1 = Idx, Tag = 0, R = atom
+    ).
+
+%% wamo_structure(+FN, +Ai, +F0, -F1, -FunctorIdx, -Op2)
+wamo_structure(FN, Ai, F0, F1, Idx, Op2) :-
+    clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    atom_string(CAiA, CAi), reg_name_to_index(CAiA, Reg),
+    atom_string(CFN, CFNStr),
+    split_functor_arity(CFNStr, NameStr0, Arity),
+    wamo_to_string(NameStr0, NameStr),
+    tab_intern(NameStr, F0, Idx, F1),
+    Op2 is (Arity << 16) \/ Reg.
+
+wamo_to_string(X, S) :- ( string(X) -> S = X ; atom_string(X, S) ).
+
+wamo_reg1(S, R) :-
+    clean_comma(S, CS), atom_string(CSA, CS), reg_name_to_index(CSA, R).
+wamo_reg2(Xn, Ai, X, Y) :-
+    clean_comma(Xn, CXn), clean_comma(Ai, CAi),
+    atom_string(CXnA, CXn), atom_string(CAiA, CAi),
+    reg_name_to_index(CXnA, X), reg_name_to_index(CAiA, Y).
+
+%% wamo_label(+P, +LabelMap, -Idx)
+%  Resolve a call/execute target. call/N meta-calls are outside slice 1.
+wamo_label(CP, _, _) :-
+    wam_meta_call_label(CP), !,
+    throw(error(wamo_unsupported(meta_call(CP)),
+        context(write_wam_object,
+            'call/N meta-calls need the apply machinery (not in slice 1)'))).
+wamo_label(CP, LabelMap, Idx) :-
+    lookup_label_index(CP, LabelMap, Idx).
+
+% --- serialization to the .wamo byte stream --------------------------------
+
+wamo_reloc_id(none, 0).
+wamo_reloc_id(atom, 1).
+wamo_reloc_id(functor, 2).
+
+wamo_serialize(EntryIndex, Atoms, Functors, PCs, EncInstrs, Codes) :-
+    length(Atoms, NA), length(Functors, NF),
+    length(PCs, NL), length(EncInstrs, NC),
+    format(codes(Head), "WAMO\n1\n~w\n~w\n", [EntryIndex, NA]),
+    maplist(wamo_string_codes, Atoms, AtomChunks),
+    format(codes(FHdr), "~w\n", [NF]),
+    maplist(wamo_string_codes, Functors, FunChunks),
+    format(codes(LHdr), "~w\n", [NL]),
+    maplist([PC, Cs]>>format(codes(Cs), "~w\n", [PC]), PCs, PCChunks),
+    format(codes(CHdr), "~w\n", [NC]),
+    maplist(wamo_instr_codes, EncInstrs, InstrChunks),
+    append([[Head], AtomChunks, [FHdr], FunChunks, [LHdr], PCChunks,
+            [CHdr], InstrChunks], Lists),
+    append(Lists, Codes).
+
+wamo_instr_codes(enc(T, O1, O2, R), Cs) :-
+    wamo_reloc_id(R, RI),
+    format(codes(Cs), "~w ~w ~w ~w\n", [T, O1, O2, RI]).
+
+%% wamo_string_codes(+Text, -Codes)
+%  Emit a length-prefixed byte string: "<bytelen> <utf8 bytes>\n".
+wamo_string_codes(Text, Codes) :-
+    ( atom(Text) -> atom_codes(Text, Cps)
+    ; string(Text) -> string_codes(Text, Cps)
+    ; Cps = Text
+    ),
+    wamo_utf8_bytes(Cps, Bytes),
+    length(Bytes, Len),
+    format(codes(Hdr), "~w ", [Len]),
+    append(Hdr, Bytes, C0),
+    append(C0, [0'\n], Codes).
+
+%% wamo_utf8_bytes(+CodePoints, -Bytes)
+%  Encode Unicode code points to UTF-8 byte values (all 0..255) so the
+%  object stream is byte-exact regardless of the source stream encoding.
+wamo_utf8_bytes([], []).
+wamo_utf8_bytes([C|Cs], Bytes) :-
+    (   C < 0x80
+    ->  B = [C]
+    ;   C < 0x800
+    ->  B0 is 0xC0 \/ (C >> 6),
+        B1 is 0x80 \/ (C /\ 0x3F),
+        B = [B0, B1]
+    ;   C < 0x10000
+    ->  B0 is 0xE0 \/ (C >> 12),
+        B1 is 0x80 \/ ((C >> 6) /\ 0x3F),
+        B2 is 0x80 \/ (C /\ 0x3F),
+        B = [B0, B1, B2]
+    ;   B0 is 0xF0 \/ (C >> 18),
+        B1 is 0x80 \/ ((C >> 12) /\ 0x3F),
+        B2 is 0x80 \/ ((C >> 6) /\ 0x3F),
+        B3 is 0x80 \/ (C /\ 0x3F),
+        B = [B0, B1, B2, B3]
+    ),
+    wamo_utf8_bytes(Cs, Rest),
+    append(B, Rest, Bytes).
+
+% --- native loader + call primitive ---------------------------------------
+
+%% wam_object_support_ir(-IR) is det.
+%
+%  The runtime support a host module needs to load and run .wamo objects:
+%    @wamo_next_int      - parse the next integer from a byte buffer
+%    @wam_object_load    - read a .wamo file, relocate, build a %WamState
+%    @wam_object_call_i64 - call the object's entry with N %Value args and
+%                           read back an Integer result ({value, ok})
+%
+%  Emitted into a host module when write_wam_llvm_project/3 is called with
+%  emit_wamo_loader(true). References only runtime helpers already present
+%  in the module (@wam_intern_atom, @wam_state_new, @run_loop, ...) plus
+%  libc @open/@read/@close/@malloc/@realloc/@free (already declared).
+wam_object_support_ir(
+'; --- .wamo loader (Phase 5 JIT slice 1) ---
+
+; Parse the next base-10 integer (optional leading -) from %buf, skipping
+; leading whitespace. Returns { value, cursor-past-digits }.
+define { i64, i64 } @wamo_next_int(i8* %buf, i64 %size, i64 %cur0) {
+entry:
+  br label %skip
+skip:
+  %c = phi i64 [ %cur0, %entry ], [ %c1, %skip_step ]
+  %at_end = icmp uge i64 %c, %size
+  br i1 %at_end, label %done_zero, label %look
+look:
+  %p = getelementptr i8, i8* %buf, i64 %c
+  %ch = load i8, i8* %p
+  %is_sp = icmp eq i8 %ch, 32
+  %is_nl = icmp eq i8 %ch, 10
+  %is_cr = icmp eq i8 %ch, 13
+  %is_tab = icmp eq i8 %ch, 9
+  %w1 = or i1 %is_sp, %is_nl
+  %w2 = or i1 %is_cr, %is_tab
+  %ws = or i1 %w1, %w2
+  br i1 %ws, label %skip_step, label %num_init
+skip_step:
+  %c1 = add i64 %c, 1
+  br label %skip
+num_init:
+  %np = getelementptr i8, i8* %buf, i64 %c
+  %nch = load i8, i8* %np
+  %isneg = icmp eq i8 %nch, 45
+  %cplus1 = add i64 %c, 1
+  %start = select i1 %isneg, i64 %cplus1, i64 %c
+  br label %dloop
+dloop:
+  %dc = phi i64 [ %start, %num_init ], [ %dc1, %dstep ]
+  %acc = phi i64 [ 0, %num_init ], [ %acc1, %dstep ]
+  %dend = icmp uge i64 %dc, %size
+  br i1 %dend, label %finish, label %dcheck
+dcheck:
+  %dp = getelementptr i8, i8* %buf, i64 %dc
+  %dch = load i8, i8* %dp
+  %ge0 = icmp uge i8 %dch, 48
+  %le9 = icmp ule i8 %dch, 57
+  %isd = and i1 %ge0, %le9
+  br i1 %isd, label %dstep, label %finish
+dstep:
+  %digit = sub i8 %dch, 48
+  %digit64 = zext i8 %digit to i64
+  %acc10 = mul i64 %acc, 10
+  %acc1 = add i64 %acc10, %digit64
+  %dc1 = add i64 %dc, 1
+  br label %dloop
+finish:
+  %neg_val = sub i64 0, %acc
+  %val = select i1 %isneg, i64 %neg_val, i64 %acc
+  %r0 = insertvalue { i64, i64 } undef, i64 %val, 0
+  %r1 = insertvalue { i64, i64 } %r0, i64 %dc, 1
+  ret { i64, i64 } %r1
+done_zero:
+  %z0 = insertvalue { i64, i64 } undef, i64 0, 0
+  %z1 = insertvalue { i64, i64 } %z0, i64 %c, 1
+  ret { i64, i64 } %z1
+}
+
+; Load a .wamo object. Returns { vm, entry_pc }; vm is null on any failure
+; (open, bad magic). The code + label arrays are malloc''d and owned by the
+; returned VM for its lifetime; functor string copies live as long as the
+; code array references them.
+define { %WamState*, i32 } @wam_object_load(i8* %path) {
+entry:
+  %fd = call i32 @open(i8* %path, i32 0, i32 0)
+  %fd_bad = icmp slt i32 %fd, 0
+  br i1 %fd_bad, label %fail, label %read_init
+read_init:
+  %buf0 = call i8* @malloc(i64 65536)
+  br label %read_loop
+read_loop:
+  %buf = phi i8* [ %buf0, %read_init ], [ %bufc, %after_read ]
+  %cap = phi i64 [ 65536, %read_init ], [ %capc, %after_read ]
+  %total = phi i64 [ 0, %read_init ], [ %total3, %after_read ]
+  %free = sub i64 %cap, %total
+  %low = icmp ult i64 %free, 32768
+  br i1 %low, label %do_grow, label %do_read
+do_grow:
+  %cap.d = mul i64 %cap, 2
+  %buf.d = call i8* @realloc(i8* %buf, i64 %cap.d)
+  br label %do_read
+do_read:
+  %bufc = phi i8* [ %buf.d, %do_grow ], [ %buf, %read_loop ]
+  %capc = phi i64 [ %cap.d, %do_grow ], [ %cap, %read_loop ]
+  %freec = sub i64 %capc, %total
+  %dst = getelementptr i8, i8* %bufc, i64 %total
+  %n = call i64 @read(i32 %fd, i8* %dst, i64 %freec)
+  %eof = icmp sle i64 %n, 0
+  br i1 %eof, label %read_done, label %after_read
+after_read:
+  %total3 = add i64 %total, %n
+  br label %read_loop
+read_done:
+  %close_ignore = call i32 @close(i32 %fd)
+  %r = call { %WamState*, i32 } @wam_object_load_bytes(i8* %bufc, i64 %total)
+  call void @free(i8* %bufc)
+  ret { %WamState*, i32 } %r
+fail:
+  %fnull = insertvalue { %WamState*, i32 } undef, %WamState* null, 0
+  %fret = insertvalue { %WamState*, i32 } %fnull, i32 0, 1
+  ret { %WamState*, i32 } %fret
+}
+
+; Parse a .wamo object from an in-memory buffer. Does NOT free %bufc --
+; the caller owns it (the file loader above frees it after; an
+; eval-from-value caller keeps its own bytes alive). Re-interns atoms,
+; copies functor strings, patches operands, builds the VM. Returns
+; { vm, entry_pc }; null vm on a short or bad-magic buffer.
+define { %WamState*, i32 } @wam_object_load_bytes(i8* %bufc, i64 %total) {
+entry:
+  ; magic check: need >= 5 bytes and buf[0..3] == "WAMO"
+  %too_small = icmp ult i64 %total, 5
+  br i1 %too_small, label %fail, label %magic
+magic:
+  %m0p = getelementptr i8, i8* %bufc, i64 0
+  %m0 = load i8, i8* %m0p
+  %m1p = getelementptr i8, i8* %bufc, i64 1
+  %m1 = load i8, i8* %m1p
+  %m2p = getelementptr i8, i8* %bufc, i64 2
+  %m2 = load i8, i8* %m2p
+  %m3p = getelementptr i8, i8* %bufc, i64 3
+  %m3 = load i8, i8* %m3p
+  %ok0 = icmp eq i8 %m0, 87
+  %ok1 = icmp eq i8 %m1, 65
+  %ok2 = icmp eq i8 %m2, 77
+  %ok3 = icmp eq i8 %m3, 79
+  %okA = and i1 %ok0, %ok1
+  %okB = and i1 %ok2, %ok3
+  %magic_ok = and i1 %okA, %okB
+  br i1 %magic_ok, label %parse, label %fail
+parse:
+  ; version
+  %pv = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 4)
+  %cur_v = extractvalue { i64, i64 } %pv, 1
+  ; entry index
+  %pe = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_v)
+  %entry_idx64 = extractvalue { i64, i64 } %pe, 0
+  %cur_e = extractvalue { i64, i64 } %pe, 1
+  ; atom count
+  %pa = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %cur_e)
+  %natoms = extractvalue { i64, i64 } %pa, 0
+  %cur_a0 = extractvalue { i64, i64 } %pa, 1
+  %atom_bytes = mul i64 %natoms, 8
+  %atom_mem = call i8* @malloc(i64 %atom_bytes)
+  %atomIds = bitcast i8* %atom_mem to i64*
+  br label %aloop
+aloop:
+  %ai = phi i64 [ 0, %parse ], [ %ai1, %astep ]
+  %acur = phi i64 [ %cur_a0, %parse ], [ %acur2, %astep ]
+  %adone = icmp uge i64 %ai, %natoms
+  br i1 %adone, label %fdr_init, label %astep
+astep:
+  %alen_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %acur)
+  %alen = extractvalue { i64, i64 } %alen_r, 0
+  %acur_d = extractvalue { i64, i64 } %alen_r, 1
+  %astr_off = add i64 %acur_d, 1
+  %astr = getelementptr i8, i8* %bufc, i64 %astr_off
+  %aid = call i64 @wam_intern_atom(i8* %astr, i64 %alen)
+  %aslot = getelementptr i64, i64* %atomIds, i64 %ai
+  store i64 %aid, i64* %aslot
+  %acur2 = add i64 %astr_off, %alen
+  %ai1 = add i64 %ai, 1
+  br label %aloop
+fdr_init:
+  ; functor count
+  %pf = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %acur)
+  %nfun = extractvalue { i64, i64 } %pf, 0
+  %cur_f0 = extractvalue { i64, i64 } %pf, 1
+  %fun_bytes = mul i64 %nfun, 8
+  %fun_mem = call i8* @malloc(i64 %fun_bytes)
+  %funPtrs = bitcast i8* %fun_mem to i8**
+  br label %floop
+floop:
+  %fi = phi i64 [ 0, %fdr_init ], [ %fi1, %fstep ]
+  %fcur = phi i64 [ %cur_f0, %fdr_init ], [ %fcur2, %fstep ]
+  %fdone = icmp uge i64 %fi, %nfun
+  br i1 %fdone, label %lbl_init, label %fstep
+fstep:
+  %flen_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %fcur)
+  %flen = extractvalue { i64, i64 } %flen_r, 0
+  %fcur_d = extractvalue { i64, i64 } %flen_r, 1
+  %fstr_off = add i64 %fcur_d, 1
+  %fstr = getelementptr i8, i8* %bufc, i64 %fstr_off
+  %fcopy_sz = add i64 %flen, 1
+  %fcopy = call i8* @malloc(i64 %fcopy_sz)
+  call void @llvm.memcpy.p0i8.p0i8.i64(i8* %fcopy, i8* %fstr, i64 %flen, i1 false)
+  %fnul = getelementptr i8, i8* %fcopy, i64 %flen
+  store i8 0, i8* %fnul
+  %fpslot = getelementptr i8*, i8** %funPtrs, i64 %fi
+  store i8* %fcopy, i8** %fpslot
+  %fcur2 = add i64 %fstr_off, %flen
+  %fi1 = add i64 %fi, 1
+  br label %floop
+lbl_init:
+  ; label count
+  %pl = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %fcur)
+  %nlbl = extractvalue { i64, i64 } %pl, 0
+  %cur_l0 = extractvalue { i64, i64 } %pl, 1
+  %lbl_bytes = mul i64 %nlbl, 4
+  %lbl_mem = call i8* @malloc(i64 %lbl_bytes)
+  %labels = bitcast i8* %lbl_mem to i32*
+  br label %lloop
+lloop:
+  %li = phi i64 [ 0, %lbl_init ], [ %li1, %lstep ]
+  %lcur = phi i64 [ %cur_l0, %lbl_init ], [ %lcur2, %lstep ]
+  %ldone = icmp uge i64 %li, %nlbl
+  br i1 %ldone, label %code_init, label %lstep
+lstep:
+  %lpc_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %lcur)
+  %lpc = extractvalue { i64, i64 } %lpc_r, 0
+  %lcur2 = extractvalue { i64, i64 } %lpc_r, 1
+  %lpc32 = trunc i64 %lpc to i32
+  %lslot = getelementptr i32, i32* %labels, i64 %li
+  store i32 %lpc32, i32* %lslot
+  %li1 = add i64 %li, 1
+  br label %lloop
+code_init:
+  ; code count
+  %pc_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %lcur)
+  %ncode = extractvalue { i64, i64 } %pc_r, 0
+  %cur_c0 = extractvalue { i64, i64 } %pc_r, 1
+  %instr_sz = ptrtoint %Instruction* getelementptr (%Instruction, %Instruction* null, i32 1) to i64
+  %code_bytes = mul i64 %ncode, %instr_sz
+  %code_mem = call i8* @malloc(i64 %code_bytes)
+  %code = bitcast i8* %code_mem to %Instruction*
+  br label %cloop
+cloop:
+  %ci = phi i64 [ 0, %code_init ], [ %ci1, %cstore ]
+  %ccur = phi i64 [ %cur_c0, %code_init ], [ %ccur4, %cstore ]
+  %cdone = icmp uge i64 %ci, %ncode
+  br i1 %cdone, label %build_vm, label %cstep
+cstep:
+  %tag_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ccur)
+  %tag64 = extractvalue { i64, i64 } %tag_r, 0
+  %ccur1 = extractvalue { i64, i64 } %tag_r, 1
+  %op1_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ccur1)
+  %op1 = extractvalue { i64, i64 } %op1_r, 0
+  %ccur2 = extractvalue { i64, i64 } %op1_r, 1
+  %op2_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ccur2)
+  %op2 = extractvalue { i64, i64 } %op2_r, 0
+  %ccur3 = extractvalue { i64, i64 } %op2_r, 1
+  %rel_r = call { i64, i64 } @wamo_next_int(i8* %bufc, i64 %total, i64 %ccur3)
+  %reloc = extractvalue { i64, i64 } %rel_r, 0
+  %ccur4 = extractvalue { i64, i64 } %rel_r, 1
+  %is_atom = icmp eq i64 %reloc, 1
+  br i1 %is_atom, label %patch_atom, label %chk_functor
+patch_atom:
+  %ai_slot = getelementptr i64, i64* %atomIds, i64 %op1
+  %aid_p = load i64, i64* %ai_slot
+  br label %cstore
+chk_functor:
+  %is_fun = icmp eq i64 %reloc, 2
+  br i1 %is_fun, label %patch_fun, label %cstore
+patch_fun:
+  %fp_slot = getelementptr i8*, i8** %funPtrs, i64 %op1
+  %fp = load i8*, i8** %fp_slot
+  %fpi = ptrtoint i8* %fp to i64
+  br label %cstore
+cstore:
+  %op1_final = phi i64 [ %aid_p, %patch_atom ], [ %fpi, %patch_fun ], [ %op1, %chk_functor ]
+  %tag32 = trunc i64 %tag64 to i32
+  %ip = getelementptr %Instruction, %Instruction* %code, i64 %ci
+  %ip_tag = getelementptr %Instruction, %Instruction* %ip, i32 0, i32 0
+  store i32 %tag32, i32* %ip_tag
+  %ip_op1 = getelementptr %Instruction, %Instruction* %ip, i32 0, i32 1
+  store i64 %op1_final, i64* %ip_op1
+  %ip_op2 = getelementptr %Instruction, %Instruction* %ip, i32 0, i32 2
+  store i64 %op2, i64* %ip_op2
+  %ci1 = add i64 %ci, 1
+  br label %cloop
+build_vm:
+  ; entry pc = labels[entry_idx]
+  %eslot = getelementptr i32, i32* %labels, i64 %entry_idx64
+  %entry_pc = load i32, i32* %eslot
+  ; scratch pointer arrays no longer needed: atom strings were copied by
+  ; @wam_intern_atom, functor string copies are owned by %code, and the
+  ; source buffer belongs to the caller.
+  call void @free(i8* %atom_mem)
+  call void @free(i8* %fun_mem)
+  %ncode32 = trunc i64 %ncode to i32
+  %nlbl32 = trunc i64 %nlbl to i32
+  %vm = call %WamState* @wam_state_new(%Instruction* %code, i32 %ncode32, i32* %labels, i32 %nlbl32)
+  %ret0 = insertvalue { %WamState*, i32 } undef, %WamState* %vm, 0
+  %ret1 = insertvalue { %WamState*, i32 } %ret0, i32 %entry_pc, 1
+  ret { %WamState*, i32 } %ret1
+fail:
+  %fnull = insertvalue { %WamState*, i32 } undef, %WamState* null, 0
+  %fret = insertvalue { %WamState*, i32 } %fnull, i32 0, 1
+  ret { %WamState*, i32 } %fret
+}
+
+; Call a loaded object''s entry predicate with %nargs %Value arguments (in
+; registers A0..A_{nargs-1}) and read back an Integer from register
+; %out_reg. Returns { value, ok }; ok=false on failure or non-integer.
+; Saves/restores the VM heap top and rewinds the arena so repeated calls
+; run in constant memory -- same discipline as the plawk foreign bridge.
+define { i64, i1 } @wam_object_call_i64(%WamState* %vm, i32 %entry_pc, i32 %nargs, %Value* %args, i32 %out_reg) {
+entry:
+  %vm_null = icmp eq %WamState* %vm, null
+  br i1 %vm_null, label %fail, label %do_call
+do_call:
+  %hs_ptr = getelementptr %WamState, %WamState* %vm, i32 0, i32 6
+  %hs_saved = load i32, i32* %hs_ptr
+  %unb = call %Value @value_unbound(i8* null)
+  %out_addr = call i32 @wam_heap_push(%WamState* %vm, %Value %unb)
+  %out_ref = call %Value @value_ref(i32 %out_addr)
+  call void @wam_prepare_call(%WamState* %vm, i32 %entry_pc)
+  br label %argloop
+argloop:
+  %ai = phi i32 [ 0, %do_call ], [ %ai1, %argstep ]
+  %adone = icmp sge i32 %ai, %nargs
+  br i1 %adone, label %args_done, label %argstep
+argstep:
+  %aidx64 = sext i32 %ai to i64
+  %ap = getelementptr %Value, %Value* %args, i64 %aidx64
+  %av = load %Value, %Value* %ap
+  call void @wam_set_reg(%WamState* %vm, i32 %ai, %Value %av)
+  %ai1 = add i32 %ai, 1
+  br label %argloop
+args_done:
+  call void @wam_set_reg(%WamState* %vm, i32 %out_reg, %Value %out_ref)
+  %ok = call i1 @run_loop(%WamState* %vm)
+  br i1 %ok, label %read_out, label %rewind_fail
+read_out:
+  %out = call %Value @wam_deref_value(%WamState* %vm, %Value %out_ref)
+  %out_tag = extractvalue %Value %out, 0
+  %out_is_int = icmp eq i32 %out_tag, 1
+  br i1 %out_is_int, label %good, label %rewind_fail
+good:
+  %payload = extractvalue %Value %out, 1
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  %g0 = insertvalue { i64, i1 } undef, i64 %payload, 0
+  %g1 = insertvalue { i64, i1 } %g0, i1 true, 1
+  ret { i64, i1 } %g1
+rewind_fail:
+  store i32 %hs_saved, i32* %hs_ptr
+  call void @wam_cleanup()
+  br label %fail
+fail:
+  %f0 = insertvalue { i64, i1 } undef, i64 0, 0
+  %f1 = insertvalue { i64, i1 } %f0, i1 false, 1
+  ret { i64, i1 } %f1
+}').

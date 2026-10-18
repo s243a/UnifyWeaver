@@ -1,0 +1,6 @@
+{
+  "name": "cli-args-oracle",
+  "private": true,
+  "type": "module",
+  "description": "Scoping file only: makes the vendored peerhailer cliArgs.js load as ESM under UnifyWeaver's CommonJS-default root package.json."
+}

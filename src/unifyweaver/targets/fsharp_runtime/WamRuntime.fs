@@ -57,7 +57,7 @@ type AggFrame = { AggType: string; AggValReg: int; AggResReg: int; AggReturnPC: 
 type BuiltinState =
     | FactRetry      of varId: int * remaining: string list * retPC: int
     | HopsRetry      of varId: int * remaining: int list   * retPC: int
-    | FFIStreamRetry of outRegs: int list * outVars: int list * remaining: Value list list * retPC: int
+    | FFIStreamRetry of outRegs: int list * outVars: int list * remaining: Value list list * retPC: int * returnCP: int * returnCutBar: int * returnB0Stack: int list
 
 type EnvFrame = { EfSavedCP: int; EfYRegs: Map<int, Value> }
 
@@ -151,6 +151,7 @@ and Instruction =
     | Call           of pred: string * arity: int
     | CallResolved   of pc: int * arity: int
     | CallForeign    of pred: string * arity: int
+    | ExecuteForeign of pred: string
     | Execute        of pred: string
     | ExecutePc      of pc: int
     | Proceed
@@ -221,6 +222,48 @@ let bindOutput (reg: int) (value: Value) (s: WamState) : WamState option =
     | Some existing when existing = value -> Some s
     | _ -> None
 
+/// Structural unify with VList <-> Str("[|]", [h;t]) cons-cell aliasing.
+/// Mirrors wam_fsharp_target.pl unifyTerms (FS-LIST-PARTIAL-TAIL). Does not
+/// advance WsPC — callers (GetValue) bump PC on success.
+let rec unifyTerms (a: Value) (b: Value) (s: WamState) : WamState option =
+    let a = derefVar s.WsBindings a
+    let b = derefVar s.WsBindings b
+    let bindUnbound vid v st =
+        { st with
+            WsBindings = Map.add vid v st.WsBindings
+            WsTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid st.WsBindings } :: st.WsTrail
+            WsTrailLen = st.WsTrailLen + 1 }
+    match a, b with
+    | Unbound vid, v -> Some (bindUnbound vid v s)
+    | v, Unbound vid -> Some (bindUnbound vid v s)
+    | VList [], Atom "[]" -> Some s
+    | Atom "[]", VList [] -> Some s
+    | VList (h1 :: t1), VList (h2 :: t2) ->
+        match unifyTerms h1 h2 s with
+        | None    -> None
+        | Some s1 -> unifyTerms (VList t1) (VList t2) s1
+    | VList (h :: t), Str ("[|]", [hb; tb]) ->
+        match unifyTerms h hb s with
+        | None    -> None
+        | Some s1 -> unifyTerms (VList t) tb s1
+    | Str ("[|]", [ha; ta]), VList (h :: t) ->
+        match unifyTerms ha h s with
+        | None    -> None
+        | Some s1 -> unifyTerms ta (VList t) s1
+    | Str (f1, args1), Str (f2, args2)
+        when f1 = f2 && List.length args1 = List.length args2 ->
+        let rec go xs ys st =
+            match xs, ys with
+            | [], [] -> Some st
+            | x :: xt, y :: yt ->
+                match unifyTerms x y st with
+                | None     -> None
+                | Some st1 -> go xt yt st1
+            | _ -> None
+        go args1 args2 s
+    | x, y when x = y -> Some s
+    | _               -> None
+
 /// Append to the current builder (PutStructure / PutList sequence).
 let addToBuilder (value: Value) (s: WamState) : WamState option =
     match s.WsBuilder with
@@ -248,6 +291,12 @@ let rec evalArith (bindings: Map<int, Value>) (v: Value) : float option =
     | Str ("/", [a; b]) ->
         match evalArith bindings a, evalArith bindings b with
         | Some x, Some y when y <> 0.0 -> Some (x / y)
+        | _ -> None
+    | Str ("//", [a; b]) ->
+        // Prolog integer division: truncate quotient toward zero (SWI default,
+        // integer_rounding_function = toward_zero).
+        match evalArith bindings a, evalArith bindings b with
+        | Some x, Some y when y <> 0.0 -> Some (float (truncate (x / y)))
         | _ -> None
     | Str ("mod", [a; b]) ->
         match evalArith bindings a, evalArith bindings b with
@@ -368,19 +417,24 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                  WsBindings = Map.add vid (Integer h) cp.CpBindings
                  WsCPs      = newCPs
                  WsCPsLen   = List.length newCPs }
-    | FFIStreamRetry (_, _, [], _) ->
+    | FFIStreamRetry (_, _, [], _, _, _, _) ->
         backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
-    | FFIStreamRetry (outRegs, outVars, tuple :: restTuples, retPC) ->
+    | FFIStreamRetry (outRegs, outVars, tuple :: restTuples, retPC,
+                      returnCP, returnCutBar, returnB0Stack) ->
         let newRegs     = List.fold2 (fun m rN v -> Map.add rN v m) cp.CpRegs outRegs tuple
         let newBindings = List.fold2
                             (fun m vid v -> if vid = -1 then m else Map.add vid v m)
                             cp.CpBindings outVars tuple
         let newCPs = match restTuples with
                      | [] -> rest
-                     | _  -> { cp with CpBuiltin = Some (FFIStreamRetry (outRegs, outVars, restTuples, retPC)) } :: rest
+                     | _  -> { cp with CpBuiltin = Some (FFIStreamRetry (outRegs, outVars, restTuples, retPC,
+                                                                         returnCP, returnCutBar, returnB0Stack)) } :: rest
         let base_ = restoreCommon diff
         Some { base_ with
                  WsPC       = retPC
+                 WsCP       = returnCP
+                 WsCutBar   = returnCutBar
+                 WsB0Stack  = returnB0Stack
                  WsRegs     = newRegs
                  WsBindings = newBindings
                  WsCPs      = newCPs
@@ -444,6 +498,8 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                      WsTrail    = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
                      WsTrailLen = s.WsTrailLen + 1 }
         | Some existing when existing = c -> Some s1
+        // Atom "[]" <-> VList [] empty-list equivalence (read path).
+        | Some (VList []) when c = Atom "[]" -> Some s1
         | _ -> backtrack s
 
     | GetVariable (xn, ai) ->
@@ -453,12 +509,14 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         Some { s1 with WsRegs = Map.add xn src s.WsRegs }
 
     | GetValue (xn, ai) ->
-        // Full unification needed; delegate to unify helper
-        let v1 = Map.tryFind xn s.WsRegs |> Option.map (derefVar s.WsBindings)
-        let v2 = Map.tryFind ai s.WsRegs |> Option.map (derefVar s.WsBindings)
-        match v1, v2 with
-        | Some a, Some b when a = b -> Some s1
-        | _ -> backtrack s  // simplified: full unify handled by generator
+        // Structural unify (VList <-> "[|]"/2), not F# `=`. See
+        // FS-LIST-PARTIAL-TAIL / wam_fsharp_target.pl GetValue.
+        match getReg xn s, getReg ai s with
+        | Some a, Some b ->
+            match unifyTerms a b s with
+            | Some st -> Some { st with WsPC = s1.WsPC }
+            | None    -> backtrack s
+        | _ -> backtrack s
 
     | PutConstant (c, ai) ->
         Some { s1 with WsRegs = Map.add ai c s.WsRegs }
@@ -498,7 +556,13 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         Some { s with WsPC = pc; WsCP = s.WsPC + 1 }
 
     | CallForeign (pred, _arity) ->
-        executeForeign ctx pred { s with WsCP = s.WsPC + 1 }
+        executeForeign ctx pred true
+            { s with WsCP      = s.WsPC + 1
+                     WsB0Stack = s.WsCutBar :: s.WsB0Stack
+                     WsCutBar  = s.WsCPsLen }
+
+    | ExecuteForeign pred ->
+        executeForeign ctx pred true { s with WsCutBar = s.WsCPsLen }
 
     | Execute pred ->
         dispatchCall ctx pred s
@@ -654,9 +718,10 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | _ -> backtrack s
 
     | GetList ai ->
-        let v = Map.tryFind ai s.WsRegs |> Option.map (derefVar s.WsBindings)
-        match v with
-        | Some (VList _) -> Some s1
+        // Accept both cons encodings (compact VList and Str "[|]"/2).
+        match getReg ai s with
+        | Some (VList (_ :: _)) | Some (Str ("[|]", [_; _])) -> Some s1
+        | Some (Unbound _) -> Some s1  // write-mode stub
         | _ -> backtrack s
 
     | UnifyVariable xn ->
@@ -738,11 +803,11 @@ and callIndexedFact2 (ctx: WamContext) (pred: string) (s: WamState) : WamState o
 
 /// Foreign predicate dispatch — auto-generated from kernel detection.
 /// This stub always fails; the generator emits the real version.
-and executeForeign (_ctx: WamContext) (_pred: string) (_s: WamState) : WamState option = None
+and executeForeign (_ctx: WamContext) (_pred: string) (_completeReturn: bool) (_s: WamState) : WamState option = None
 
 /// Foreign call entry point used from lowered functions.
 and callForeign (ctx: WamContext) (pred: string) (sc: WamState) : WamState option =
-    executeForeign ctx pred sc
+    executeForeign ctx pred false sc
 
 // ----------------------------------------------------------------------------
 // resolveCallInstrs — pre-resolve Call labels to PCs at load time (Phase C)
@@ -759,6 +824,8 @@ let resolveCallInstrs (labels: Map<string, int>) (foreignPreds: string list) (in
                 match Map.tryFind pred labels with
                 | Some pc -> CallResolved (pc, arity)
                 | None    -> instr
+        | Execute pred when List.contains pred foreignPreds ->
+            ExecuteForeign pred
         | Execute pred ->
             match Map.tryFind pred labels with
             | Some pc -> ExecutePc pc

@@ -1,0 +1,115 @@
+{
+ "fixes": {
+  "pysical": "physical",
+  "turbulance": "turbulence",
+  "equalibrium": "equilibrium",
+  "conservaton": "conservation",
+  "helmhotz": "helmholtz",
+  "mechaics": "mechanics",
+  "theorm": "theorem",
+  "volitility": "volatility",
+  "gibs": "gibbs",
+  "darcys": "darcy's",
+  "raoults": "raoult's",
+  "troutons": "trouton's"
+ },
+ "changed_titles": {
+  "Subjects/sci/phy/chem/phy/Pysical Chemistry.smmx": [
+   "Pysical Chemistry",
+   "Physical Chemistry"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/Mixtures (Pysical Chemistry) (chobits's conflicted copy 2015-11-03).smmx": [
+   "Mixtures (Pysical Chemistry) (chobits's conflicted copy 2015-11-03)",
+   "Mixtures"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/Mixtures (Pysical Chemistry).smmx": [
+   "Mixtures (Pysical Chemistry)",
+   "Mixtures (Physical Chemistry)"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/eq/VLE/Relative/Raoult/Raoults Law (Relative Volitility).smmx": [
+   "Raoults Law (Relative Volitility)",
+   "Raoult's Law (Relative Volatility)"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/eq/VLE/Relative/Relative Volitility.smmx": [
+   "Relative Volitility",
+   "Relative Volatility"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/eq/VLE/Vapour Liquid Equalibrium.smmx": [
+   "Vapour Liquid Equalibrium",
+   "Vapour Liquid Equilibrium"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/der/Helmhotz": [
+   "Helmhotz",
+   "Helmholtz"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/der/Helmhotz/derivative form (Helmhotz Chem Pot - VLE).smmx": [
+   "derivative form (Helmhotz Chem Pot - VLE)",
+   "derivative form (Helmholtz Chem Pot - VLE)"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/eq/VLE/mix/multi/partial/gibs": [
+   "gibs",
+   "Gibbs"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/eq/VLE/vap/vap/Entropy/Trouton/Troutons rule.smmx": [
+   "Troutons rule",
+   "Trouton's rule"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/sol/Solution (Pysical Chemistry).smmx": [
+   "Solution (Pysical Chemistry)",
+   "Solution (Physical Chemistry)"
+  ],
+  "Subjects/sci/phy/chem/phy/mix/sol/sol/Solvation (Pysical Chemistry).smmx": [
+   "Solvation (Pysical Chemistry)",
+   "Solvation (Physical Chemistry)"
+  ],
+  "Subjects/sci/phy/phy/Comp/Computational physics (DESKTOP-803I3EC's conflicted copy 2023-12-11).smmx": [
+   "Computational physics (DESKTOP-803I3EC's conflicted copy 2023-12-11)",
+   "Computational physics"
+  ],
+  "Subjects/sci/phy/phy/Conserv/Energy/Conservaton of Energy.smmx": [
+   "Conservaton of Energy",
+   "Conservation of Energy"
+  ],
+  "Subjects/sci/phy/phy/Conserv/Energy/Fluid/Navier/Navier-Stokes (Conserv of Energy)smmx.smmx": [
+   "Navier-Stokes (Conserv of Energy)smmx",
+   "Navier-Stokes (Conserv of Energy)"
+  ],
+  "Subjects/sci/phy/phy/fluid/Porous/Darcy/Darcys Law.smmx": [
+   "Darcys Law",
+   "Darcy's Law"
+  ],
+  "Subjects/sci/phy/phy/fluid/Turbulance": [
+   "Turbulance",
+   "Turbulence"
+  ],
+  "Subjects/sci/phy/phy/fluid/Turbulance/Turbulance.smmx": [
+   "Turbulance",
+   "Turbulence"
+  ],
+  "Subjects/sci/phy/phy/fluid/Turbulance/mixing/Kolmogorov/Kolmogorov Turbulance.smmx": [
+   "Kolmogorov Turbulance",
+   "Kolmogorov Turbulence"
+  ],
+  "Subjects/sci/phy/phy/mech/Mechanics  (physics) (basement_pup's conflicted copy 2016-08-14).smmx": [
+   "Mechanics  (physics) (basement_pup's conflicted copy 2016-08-14)",
+   "Mechanics"
+  ],
+  "Subjects/sci/phy/phy/mech/Mechanics  (physics) (fatdog64-243's conflicted copy 2015-09-21).smmx": [
+   "Mechanics  (physics) (fatdog64-243's conflicted copy 2015-09-21)",
+   "Mechanics"
+  ],
+  "Subjects/sci/phy/phy/mech/astro/Celestial Mechanics (basement_pup's conflicted copy 2016-08-14).smmx": [
+   "Celestial Mechanics (basement_pup's conflicted copy 2016-08-14)",
+   "Celestial Mechanics"
+  ],
+  "Subjects/sci/phy/phy/mech/astro/star/stars (Celestial Mechaics).smmx": [
+   "stars (Celestial Mechaics)",
+   "stars (Celestial Mechanics)"
+  ],
+  "Subjects/sci/phy/phy/mech/classical/viral/The Viral Theorm.smmx": [
+   "The Viral Theorm",
+   "The Viral Theorem"
+  ]
+ },
+ "note": "confident-typo class only; abbreviations and technical terms untouched"
+}

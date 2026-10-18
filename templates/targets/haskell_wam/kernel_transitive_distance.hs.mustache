@@ -1,24 +1,26 @@
--- | Native BFS with distance tracking for binary edge relations.
+-- | Native BFS shortest positive distance for binary edge relations.
 -- Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
--- Given a source node, returns a stream of (target, distance) pairs
--- where distance is the shortest path length from source to target
--- through the edge relation.
 --
--- Atoms are interned at the FFI boundary so lookups are IntMap-based
--- (no hashing in the hot loop). The returned target is an interned
--- Int that the executeForeign wrapper will de-intern back to an atom.
+-- Contract: dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md).
+-- Emit each reachable Target once with min positive edge distance.
+-- Source is emitted only for a self-loop (distance 1) or the shortest
+-- nonempty cycle back to Source. Visited tracks nodes discovered via an
+-- outgoing edge (not seeded with Source) — same pattern as F# TD3 / TC2.
+--
+-- Organization: Mustache kept (non-trivial handler; F# TD3 mirrors this
+-- file). Atoms are interned at the FFI boundary so traversal uses IntMap
+-- / IntSet.
 nativeKernel_transitive_distance :: EdgeLookup -> Int -> [(Int, Int)]
 nativeKernel_transitive_distance edges source =
-  bfs [(source, 0)] IS.empty []
+  go [(source, 0)] IS.empty []
   where
-    bfs [] _ acc = acc
-    bfs ((node, dist):queue) visited acc
-      | IS.member node visited = bfs queue visited acc
-      | otherwise =
-          let visited' = IS.insert node visited
-              neighbors = edges node
-              expanded = [(n, dist + 1) | n <- neighbors,
-                                          not (IS.member n visited')]
-              -- Don't emit the source itself (distance 0 is trivial)
-              acc' = if node == source then acc else acc ++ [(node, dist)]
-          in bfs (queue ++ expanded) visited' acc'
+    go [] _ acc = acc
+    go ((node, dist):queue) visited acc =
+      let nd = dist + 1
+          step (qAcc, vAcc, rAcc) n
+            | IS.member n vAcc = (qAcc, vAcc, rAcc)
+            | otherwise =
+                (qAcc ++ [(n, nd)], IS.insert n vAcc, rAcc ++ [(n, nd)])
+          (queue', visited', acc') =
+            foldl step (queue, visited, acc) (edges node)
+      in go queue' visited' acc'

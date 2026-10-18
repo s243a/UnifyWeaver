@@ -1,0 +1,3 @@
+libtmpl.so.1 #PACKAGE# #MINVER#
+ (symver)LIB_1 1.0
+ plain_fn@LIB_1 1.0

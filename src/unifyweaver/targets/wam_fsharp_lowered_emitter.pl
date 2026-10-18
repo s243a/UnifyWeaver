@@ -1101,22 +1101,28 @@ emit_one_fs(get_constant(CStr, AiStr), _PC, SV, SVout, I, _FP) :-
     format("~w       | _ -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
-% GetValue Xn Ai — inline: deref both regs, equal -> succeed, Unbound ai ->
-% bind to xn's value, else fail.
+% GetValue Xn Ai — structural unification, exactly as the interpreter's
+% GetValue case does it.
+%
+% This used to inline `a = x` shallow equality plus a single
+% Unbound-on-Ai binding branch. That is the FS-LIST-PARTIAL-TAIL bug
+% the interpreter path had fixed and this one never received: a list
+% reached as a cons TAIL materialises as Str("[|]", [h; t]) while the
+% same list arriving as an argument is a compact VList, so shallow
+% equality rejects two spellings of one term. `cnil_tail([a,b], [b])`
+% and `ctail([tk(a),tk(b)], a, [tk(b)])` both failed here while their
+% single-element forms (tail = []) passed, because an empty tail
+% happens to have the same spelling either way. Shallow equality also
+% could not bind through a variable that was already aliased, which is
+% what broke the repeated-variable head in `csame(p(X, X), X)`.
+%
+% unifyVal already knows the VList <-> "[|]"/2 equivalence and does the
+% trailing, so delegate rather than re-deriving it a second time.
 emit_one_fs(get_value(XnStr, AiStr), _PC, SV, SVout, I, _FP) :-
     reg_to_int_fs(XnStr, Xn), reg_to_int_fs(AiStr, Ai),
     fresh_sv_fs(SV, SVout),
     format("~wmatch (match getReg ~w ~w, getReg ~w ~w with~n", [I, Ai, SV, Xn, SV]),
-    format("~w       | Some a, Some x when a = x -> Some ~w~n", [I, SV]),
-    format("~w       | Some (Unbound vid), Some x ->~n", [I]),
-    format("~w           let r = Array.copy ~w.WsRegs~n", [I, SV]),
-    format("~w           r.[~w] <- x~n", [I, Ai]),
-    format("~w           Some { ~w with~n", [I, SV]),
-    format("~w                    WsRegs = r~n", [I]),
-    format("~w                    WsBindings = Map.add vid x ~w.WsBindings~n", [I, SV]),
-    format("~w                    WsTrail = { TrailVarId = vid; TrailOldVal = Map.tryFind vid ~w.WsBindings } :: ~w.WsTrail~n",
-           [I, SV, SV]),
-    format("~w                    WsTrailLen = ~w.WsTrailLen + 1 }~n", [I, SV]),
+    format("~w       | Some a, Some x -> unifyVal a x ~w~n", [I, SV]),
     format("~w       | _ -> None) with~n", [I]),
     format("~w| Some ~w ->~n", [I, SVout]).
 
@@ -1406,11 +1412,12 @@ emit_one_fs(trust_me, PC, SV, SVout, I, _FP) :-
     format("~w| Some ~w ->~n", [I, SVout]).
 
 % Execute — tail call; returns directly (no WsCP change)
-emit_one_fs(execute(PredStr), _PC, SV, SV, I, FP) :-
+emit_one_fs(execute(PredStr), PC, SV, SV, I, FP) :-
     atom_string(PredAtom, PredStr),
     escape_dq_fs(PredStr, EscPred),
     (   member(PredAtom, FP)
-    ->  format("~wcallForeign ctx \"~w\" ~w~n", [I, EscPred, SV])
+    ->  format("~wstep ctx { ~w with WsPC = ~w } (ExecuteForeign \"~w\")~n",
+               [I, SV, PC, EscPred])
     ;   format("~wdispatchCall ctx \"~w\" ~w~n", [I, EscPred, SV])
     ).
 
@@ -1595,15 +1602,30 @@ reg_to_int_fs(Reg, Int) :-
     ).
 
 %% parse_functor_fs(+FnStr, -Name, -Arity)
+%  Split "name/N" on the *last* "/". Functors that contain "/" themselves
+%  — integer-div "//" (WAM text `///2`) and float-div "/" (`//2`) — must
+%  not soft-cut on the first slash: the previous `(sub_atom(...'/') -> …)`
+%  committed to Before=0, then `atom_number('//2', _)` failed and the
+%  whole parse failed. That made emit_one_fs(put_structure("///2",…))
+%  fail mid-body for cbi_arith under emit_mode(functions), so
+%  lower_all_fs never finished (FS-FUNCTIONS-BUILTINS-LOWER). Mirrors
+%  Scala/R/Lua last_slash_index / parse_functor_arity.
 parse_functor_fs(FnStr, Name, Arity) :-
     atom_string(FA, FnStr),
-    (   sub_atom(FA, B, 1, _, '/')
+    (   last_slash_index_fs(FA, B)
     ->  sub_atom(FA, 0, B, _, Name),
         B1 is B + 1,
         sub_atom(FA, B1, _, 0, AS),
         atom_number(AS, Arity)
     ;   Name = FA, Arity = 0
     ).
+
+%% last_slash_index_fs(+Atom, -Index)
+%  Index of the last "/" in Atom, or fails if none.
+last_slash_index_fs(Atom, Index) :-
+    findall(B, sub_atom(Atom, B, 1, _, '/'), Bs),
+    Bs \= [],
+    last(Bs, Index).
 
 %% escape_dq_fs(+Str, -Escaped)
 %  Escape backslashes and double quotes for F# string literals.

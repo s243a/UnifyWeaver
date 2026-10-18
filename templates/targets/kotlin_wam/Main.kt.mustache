@@ -14,15 +14,94 @@ fun buildProgram(): WamProgram {
 
 fun main(args: Array<String>) {
     val program = buildProgram()
-    val predicate = args.firstOrNull() ?: program.predicateNames().firstOrNull()
-    if (predicate == null) {
-        println("No WAM predicates registered")
+    val runtime = WamRuntime(program)
+{{#benchmark_main}}
+    // In-process timing (warmup + min/median of timed batches). Does NOT include JVM/gradle startup.
+    val predicate = "{{benchmark_predicate}}"
+    val iterations = args.getOrNull(0)?.toIntOrNull() ?: {{benchmark_iterations}}
+    val warmupBatches = args.getOrNull(1)?.toIntOrNull() ?: {{benchmark_warmup}}
+    val timedBatches = args.getOrNull(2)?.toIntOrNull() ?: {{benchmark_batches}}
+    // Optional: PROFILE=1 enables nanoTime counters; SKIP_RECURSIVE_SNAP=0 forces legacy per-hop snapshot.
+    val profile = args.contains("PROFILE=1") || System.getenv("WAM_KT_PROFILE") == "1"
+    val skipRecursive = !(args.contains("SKIP_RECURSIVE_SNAP=0") || System.getenv("WAM_KT_SKIP_RECURSIVE_SNAP") == "0")
+    runtime.skipRecursiveNativeSnapshot = skipRecursive
+    runtime.profileNativeDispatch = profile
+    fun freshState(): WamState = {{benchmark_state_setup}}
+    // Correctness smoke before timing.
+    val probeOk = runtime.tryRun(predicate, freshState())
+    if (!probeOk) {
+        println("BENCH predicate=$predicate ok=false (probe failed; refusing to time)")
         return
     }
-    val runtime = WamRuntime(program)
+    repeat(warmupBatches) {
+        repeat(iterations) {
+            if (!runtime.tryRun(predicate, freshState())) {
+                println("BENCH predicate=$predicate ok=false (warmup failure)")
+                return
+            }
+        }
+    }
+    if (profile) runtime.resetProfileCounters()
+    val batchMs = DoubleArray(timedBatches)
+    for (b in 0 until timedBatches) {
+        val t0 = System.nanoTime()
+        repeat(iterations) {
+            val st = freshState()
+            if (!runtime.tryRun(predicate, st)) {
+                println("BENCH predicate=$predicate ok=false (timed failure)")
+                return
+            }
+            runtime.noteStateProfile(st)
+        }
+        batchMs[b] = (System.nanoTime() - t0) / 1_000_000.0
+    }
+    batchMs.sort()
+    val minMs = batchMs[0]
+    val median = batchMs[timedBatches / 2]
+    println(
+        "BENCH predicate=$predicate iterations=$iterations warmup_batches=$warmupBatches " +
+            "timed_batches=$timedBatches min_ms=${"%.3f".format(minMs)} " +
+            "median_ms=${"%.3f".format(median)} skip_recursive_snap=$skipRecursive ok=true"
+    )
+    if (profile) {
+        val snapMs = runtime.profileSnapNs / 1_000_000.0
+        val wallMs = batchMs.sum()
+        val frac = if (wallMs > 0.0) snapMs / wallMs else 0.0
+        val avgMap = if (runtime.profileSnapCount > 0L) {
+            runtime.profileSumRegisterMapSize.toDouble() / runtime.profileSnapCount.toDouble()
+        } else {
+            0.0
+        }
+        println(
+            "PROFILE snap_ms=${"%.3f".format(snapMs)} timed_wall_ms=${"%.3f".format(wallMs)} " +
+                "snap_fraction_of_wall=${"%.3f".format(frac)} snap_count=${runtime.profileSnapCount} " +
+                "native_entries=${runtime.profileNativeEntries} " +
+                "max_register_map_size=${runtime.profileMaxRegisterMapSize} " +
+                "avg_register_map_size_at_snap=${"%.1f".format(avgMap)}"
+        )
+    }
+{{/benchmark_main}}
+{{^benchmark_main}}
+    val predicate = args.firstOrNull() ?: program.predicateNames().firstOrNull()
+    if (predicate == null) {
+{{#conformance_main}}
+        println("false")
+{{/conformance_main}}
+{{^conformance_main}}
+        println("No WAM predicates registered")
+{{/conformance_main}}
+        return
+    }
+{{#conformance_main}}
+    val ok = runtime.tryRun(predicate, stateFromCliArgs(args.drop(1)))
+    println(if (ok) "true" else "false")
+{{/conformance_main}}
+{{^conformance_main}}
     val state = runtime.run(predicate, stateFromCliArgs(args.drop(1)))
     println("Ran $predicate")
     state.snapshotRegisters().forEach { (name, value) ->
         println("$name=$value")
     }
+{{/conformance_main}}
+{{/benchmark_main}}
 }

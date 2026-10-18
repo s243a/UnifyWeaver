@@ -476,3 +476,229 @@ records=4
 ERROR disk
 ERROR network
 ```
+
+## Binary records, from the beginning
+
+Everything above processed *text*: lines, split into fields by spaces.
+PLAWK can also process *binary* records — and since several binary
+concepts come from outside both awk and Prolog, this section builds
+them up from zero.
+
+### What a binary record is
+
+A text record says `200 2.5` and makes the machine parse "200" from
+digits every single time. A binary record stores the number 200 as the
+8 bytes a CPU register already uses, so reading it is one load
+instruction — no parsing. `BEGIN { BINFMT = "i64 f64" }` declares:
+every record is exactly 16 bytes — an 8-byte integer, then an 8-byte
+float:
+
+```text
+byte offset:   0        8        16
+              +--------+--------+
+              |  i64   |  f64   |     $1 = the i64, $2 = the f64
+              +--------+--------+
+```
+
+After that BEGIN line, the same awk you already write —
+`$1 > 100 { sum += float($2) }` — runs over these 16-byte records.
+The `$N` variables just mean "the Nth declared slot" instead of "the
+Nth space-separated word".
+
+### Strings in binary records
+
+Two flavors:
+
+- `s8` — a **fixed** 8-byte slot. Short values are padded with zero
+  bytes ("alpha" + three zeros). Simple, but always 8 bytes.
+- `lps16` — a **length-prefixed string** ("lps"): the wire carries an
+  8-byte length, then exactly that many bytes (up to the cap, 16).
+  `"bee"` costs 8+3 = 11 bytes instead of a padded 16:
+
+```text
+              +--------+---+
+              |   3    |bee|      an lps16 holding "bee"
+              +--------+---+
+```
+
+Records containing an `lps` field have different sizes on the wire —
+but PLAWK copies each one into a fixed-size buffer in memory, so to
+your program an `lps16` field looks exactly like an `s16`. That
+"variable on the wire, fixed in memory" trick is the foundation for
+everything below.
+
+### Tagged unions: one stream, several kinds of record
+
+The name comes from C, not from awk or Prolog (Prolog's analogue is
+different functors: `metric(Id,V)` vs `event(Name,Code)`; Rust calls
+them enums; type theory says sum types). The situation it solves is
+everyday, though: **a stream where not every record has the same
+shape.** A telemetry feed might interleave *metrics* (an id and a
+reading) with *events* (a name and a code). Different layouts, one
+pipe.
+
+The binary convention: every record starts with a small number — the
+**tag** (or *discriminator*) — announcing which layout follows. Each
+possible layout is called an **arm** (pattern-matching vocabulary:
+the arms of a match). On the wire:
+
+```text
+a metric:   +--------+--------+--------+
+            | tag=0  |  i64   |  f64   |
+            +--------+--------+--------+
+an event:   +--------+--------+-----------+--------+
+            | tag=1  | len    | name bytes|  i64   |
+            +--------+--------+-----------+--------+
+```
+
+In PLAWK you declare the arms in BINFMT, separated by `|`:
+
+```awk
+BEGIN { BINFMT = "case(i64 f64 | lps16 i64)" }
+```
+
+meaning: tag 0 → the record continues `i64 f64`; tag 1 → it continues
+`lps16 i64`.
+
+### case blocks: routing rules by record kind
+
+Here is the part that is genuinely new syntax (awk has no switch;
+gawk bolted one on later): you group your rules into one block per
+arm, and **inside a block, everything is ordinary awk** — the block
+only fixes what `$1, $2, …` mean there:
+
+```awk
+BEGIN { BINFMT = "case(i64 f64 | lps16 i64)" }
+case 0 {                               # metric records: $1=i64, $2=f64
+  $1 > 100 { msum += float($2) }
+}
+case 1 {                               # event records: $1=lps16, $2=i64
+  $1 == "boom" { events++ }
+}
+END { print msum, events }
+```
+
+Reading it aloud: "when a record's tag is 0, treat it as a metric and
+run these rules on it; when the tag is 1, treat it as an event and run
+those." Scalars like `msum` and `events`, plus `NR`, `next`, `break`,
+and the END report, are shared across the blocks — there is still only
+one stream and one loop.
+
+Why blocks rather than writing the tag into each guard? Because the
+*types* of `$1, $2` depend on the arm: the compiler must know which arm
+a rule belongs to before it can decide whether `$1 == "boom"` is a
+string comparison or nonsense. With a block, that is decided by where
+the rule sits on the page.
+
+That said, for a program with only a rule or two per arm, a block per
+arm is ceremony. So the guard spelling exists as **shorthand**: a rule
+may lead with `TAG == K`, and it means exactly the same as putting the
+rest of the rule inside `case K { ... }`:
+
+```awk
+BEGIN { BINFMT = "case(i64 f64 | lps16 i64)" }
+TAG == 0 && $1 > 100 { msum += float($2) }
+TAG == 1 && $1 == "boom" { events++ }
+END { print msum, events }
+```
+
+This compiles to *identical* code as the block version — it is pure
+sugar, not a second mechanism. The one rule: the `TAG == K` test must
+come first in the guard (and every rule must have one), because it is
+what tells the compiler which arm's types the rest of the rule is
+checked against. `TAG == 0 || TAG == 1` is rejected for the same
+reason — such a rule would need two different type checks at once.
+Pick whichever spelling reads better; don't mix both in one program.
+
+### What the compiled program actually does
+
+Per record: read 8 bytes (the tag) → a native `switch` jumps to that
+arm's reader → the arm's fields are copied to fixed positions in one
+buffer → the rules run, each first checking the tag matches its block.
+No interpreter, no allocation; a malformed record (unknown tag,
+truncated bytes) exits with the read-error code, and record kinds you
+wrote no block for are still read and skipped, so the stream never
+loses its framing.
+
+### Repetition: records that contain a list
+
+Some records carry a variable number of sub-items — an order with up
+to 4 line items, a reading with up to 8 samples. The wire convention
+mirrors `lps`: a count, then that many elements:
+
+```text
+            +--------+--------+--------+--------+--------+--------+
+            |  i64   | count=2| elem 1 (i64,f64)| elem 2 (i64,f64)|
+            +--------+--------+--------+--------+--------+--------+
+```
+
+Declared as `BINFMT = "i64 rep4(i64 f64)"` — "an i64, then up to 4
+(i64, f64) elements". To process the elements, `foreach { ... }` runs
+its block once per element, and inside the block `$1, $2` mean *the
+current element's* fields:
+
+```awk
+BEGIN { BINFMT = "i64 rep4(i64 f64)" }
+$1 > 0 { foreach { n++ ; wsum += float($2) } }
+END { print n, wsum }
+```
+
+The compiler emits a genuine native loop: each iteration copies the
+current element into a fixed scratch slot and runs the block over it,
+carrying your counters around the loop in registers. Constant memory,
+and the code size does not depend on the cap — `rep64` compiles to
+the same loop as `rep4`.
+
+Elements can carry strings too. `BINFMT = "i64 rep4(lps8 i64)"`
+declares elements that each start with a length-prefixed name of up to
+8 bytes. On the wire every element can be a different size, so the
+reader parses them one at a time (each string lands in a fixed 8-byte
+slot, NUL-padded, exactly like a top-level `lps` field); inside
+`foreach`, string fields guard and print like any other:
+
+```awk
+BEGIN { BINFMT = "i64 rep4(lps8 i64)" }
+{ foreach { if ($1 == "hot") { hits++ }; total += $2 } }
+END { print hits, total }
+```
+
+Repetition also composes with tagged unions: an arm of a `case(...)`
+layout may carry its own `repK(...)`, and `foreach` inside that arm's
+rules (block or `TAG == K` spelling) iterates that arm's elements.
+
+### Handing payloads to Prolog
+
+Everything so far was compiled to plain native code. But PLAWK lives
+inside a Prolog compiler, and some payloads deserve a real parser. A
+`blob32` field is a length-prefixed chunk of bytes that PLAWK itself
+never interprets - its only use is as an argument to a compiled Prolog
+predicate:
+
+```awk
+BEGIN { BINFMT = "i64 blob32" }
+$1 > 0 { total += payload_sum($2) }
+END { print total }
+```
+
+Here `payload_sum/2` is ordinary Prolog compiled into the same binary -
+typically `atom_codes` on the payload followed by a DCG over the byte
+list, with unification and backtracking intact. The division of labor:
+the native loop does the framing (find each record, check lengths,
+skip what doesn't match), and Prolog does the understanding. The
+hand-off costs about 0.2 microseconds and no memory growth - the
+payload travels in a single reused buffer.
+
+Numbers cross the bridge in both directions and both widths: `i64`
+fields arrive in Prolog as integers, `f64` fields as floats. When the
+predicate's answer is itself fractional, wrap the call in `float(...)`:
+
+```awk
+BEGIN { BINFMT = "i64 f64" }
+{ wsum += float(weight($1, $2)) }
+END { print wsum }
+```
+
+Without the wrapper a call is an integer expression (fractions would
+be truncated); with it, the result stays a double - whether the
+predicate bound an integer or a float. A call that fails contributes
+`0.0`, mirroring awk's forgiving arithmetic.

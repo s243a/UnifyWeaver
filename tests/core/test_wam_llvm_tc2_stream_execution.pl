@@ -5,12 +5,14 @@
 % via BFS and yields them one at a time through the multi-result
 % foreign dispatch iterator.
 %
-% Graph: a -> b -> c -> d
+% Graphs: a -> b -> c -> d, plus e -> f -> g -> e with an exit g -> h
+% and a duplicate e -> f edge.
 %
 % Tests:
 %   1. Stream from 'a' yields 3 reachable nodes (b, c, d).
 %   2. Stream from 'c' yields 1 reachable node (d).
 %   3. Stream from 'd' yields 0 (isolated sink → fail).
+%   4. Stream from cyclic 'e' yields f, g, e, h exactly once each.
 
 :- use_module('../../src/unifyweaver/targets/wam_llvm_target',
     [write_wam_llvm_project/3,
@@ -23,6 +25,11 @@
 tc_edge(a, b).
 tc_edge(b, c).
 tc_edge(c, d).
+tc_edge(e, f).
+tc_edge(e, f).
+tc_edge(f, g).
+tc_edge(g, e).
+tc_edge(g, h).
 
 :- dynamic can_reach/2.
 can_reach(_, _) :- fail.
@@ -95,7 +102,7 @@ run_stream_case(Label, StartAtom, Expected) :-
         LLPath),
     read_file_to_string(LLPath, Src, []),
     extract_atom_id_for(Src, 'tc2_inst_can_reach_0_edges',
-        [a-b, b-c, c-d], AtomIds),
+        [a-b, b-c, c-d, e-f, e-f, f-g, g-e, g-h], AtomIds),
     get_dict(StartAtom, AtomIds, StartId),
     extract_instr_count(Src, can_reach, IC),
     extract_label_count(Src, can_reach, LC),
@@ -175,7 +182,8 @@ test_tc2_stream :-
     ( process_which('clang'), process_which('llc')
     -> run_stream_case('all from a', a, 3),
        run_stream_case('one from c', c, 1),
-       run_stream_case('none from d', d, 0)
+       run_stream_case('none from d', d, 0),
+       run_stream_case('cycle from e includes source once', e, 4)
     ;  format('  SKIP: clang or llc not found~n')
     ).
 
@@ -188,7 +196,10 @@ process_which(Tool) :-
         ), _, fail).
 
 test_all :-
-    catch(test_tc2_stream, E,
-        format('  ERROR: ~w~n', [E])).
+    ( catch(test_tc2_stream, E,
+          ( format(user_error, '  ERROR: ~w~n', [E]), fail ))
+    -> true
+    ;  halt(1)
+    ).
 
 :- initialization(test_all, main).

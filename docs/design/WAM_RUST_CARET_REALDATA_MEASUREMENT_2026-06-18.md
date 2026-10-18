@@ -336,3 +336,197 @@ the adaptive, membership-aware form of bounded-depth scoping. *Density caveat:* 
 nodes to `μ=0`, so it only stays connected if every in-domain *connector* is scored; here the scored
 physics nodes form a connected high-`μ` subgraph so it does not over-prune, but a sparser domain would
 need denser `μ`.
+
+## Addendum (2026-06-21) — the fan-out bridge detector: leaks read from the positive side
+
+The bridge detector (`WAM_RUST_BRIDGE_DETECTOR_{PHILOSOPHY,SPECIFICATION,IMPLEMENTATION_PLAN}.md`,
+theory §5f–§5g) is the **positive framing** of the cone-purity leak finding above: the same two
+quantities — branching *diversity* (`n_eff`, §5g) and domain *coherence* (`cone_purity`, the addendum
+above) — are orthogonal axes, and together they sort every high-fan-out node into a quadrant. *Leaks
+are one quadrant of the bridge map.* The detector is a pure read-out (no new math): `fanout_diversity`
+reads `n_eff = n·μ(⋃E_i)/Σμ(E_i)` off the path-gated universe `U_P = descendant_mu_mass_gated(P)`, and
+`bridge_classify` combines it with `cone_purity` over the raw cone. It is additive — the existing
+`descendant_mu_mass_gated`, `gated_ic`, and similarity functions are untouched — and the μ map stays an
+**input** (the directional model #3302, the symmetric map, or any dense `name→μ`).
+
+**Measured classification (raw 10k graph, 8247 nodes, 90-node μ fixture, `θ=0.3`, `τ_pure=0.05`).**
+Run via `boundary_cache::tests::wikipedia_bridge_detector_classifies_apexes` (env-gated on
+`UW_CATEGORY_TSV` + `UW_FUZZY_NODES`) **directly on the raw, cyclic graph** — the exact bridge functions
+are cycle-safe (BFS `seen` dedup), so no SCC condensation is needed:
+
+| node | `n_eff` | raw-cone purity | in-domain fan-out | class |
+|---|---:|---:|---:|---|
+| `Matter` / `Physical_objects` | 1.58 | **0.00485** | 3 | **LeakConduit** |
+| `Time` | — | 0.00066 | 1 | NotCandidate |
+| `Astronomical_objects` | — | 0.00038 | 1 | NotCandidate |
+| `Thermodynamics` | — | 0.11224 | 1 | NotCandidate |
+| `Mechanics` | 1.78 | 0.03557 | 2 | LeakConduit |
+| `Subfields_of_physics` | 3.68 | 0.01885 | 5 | LeakConduit |
+| `Energy` | 3.42 | 0.01351 | 4 | LeakConduit |
+
+Top candidates by `n_eff·purity` (13 candidates total): `Waves` (`n_eff 2.00`, purity **0.250**,
+**Bridge**), `Temperature` (`2.00`, **0.094**, **Bridge**), then `Subfields_of_physics`, `Mechanics`,
+`Chemical_elements`, `Energy`, `Groups_(periodic_table)`, `Electromagnetism` — all **LeakConduit**.
+Mean raw-cone purity: clean hubs **0.045** vs leak conduits **0.0020** — a **~23× separation**, exactly
+the cone-purity addendum's finding.
+
+**What confirmed, what surprised:**
+
+1. **The leak-conduit quadrant is recovered from the positive side.** `Matter` lands as a `LeakConduit`
+   (`n_eff 1.58`, purity `0.0049`) — diagnosed as "diverse-but-out-of-domain", the same node the
+   cone-purity read flagged, now read positively. The ~23× clean/leak purity gap holds.
+
+2. **Path-gating prunes several documented apexes below the branch-point threshold.** `Time`,
+   `Astronomical_objects`, and even the clean `Thermodynamics` come back `NotCandidate` — gating at
+   `μ ≥ 0.3` leaves them `< 2` *in-domain* children. The membership frontier cuts the out-of-domain
+   fan-out so hard that these nodes have no in-domain branching to diagnose. (This is the
+   `descendant_mu_mass_gated` "Matter's cone collapses 8328 → 48" effect seen one level down, at the
+   immediate children.)
+
+3. **Raw-cone purity is too low even for *genuine* bridges — confirming gated purity is the needed
+   refinement.** The headline surprise: `Subfields_of_physics` (the real semantic hub of the curated-set
+   study) scores raw purity `0.019` and classifies `LeakConduit`, as do `Energy` (`0.014`) and
+   `Electromagnetism` (`0.012`). On the associative graph their raw cones reach most of the encyclopedia,
+   so *no* single `τ_pure` admits them as bridges while still excluding `Matter`. Only small-cone clean
+   nodes (`Waves` `0.25`, `Temperature` `0.094`) clear the bar. The mean-purity *separation* survives
+   (0.045 vs 0.002), but a raw-cone-purity *threshold* cannot isolate the big in-domain bridges. This is
+   the same lesson as `descendant_mu_mass_gated`: the **gated-cone** purity is the sharp signal (gating
+   lifts `Matter` from `0.005` to `0.76`), and a future additive refinement should read `bridge_classify`
+   purity over `descendant_mu_mass_gated`'s cone rather than the raw cone. The current detector follows
+   the spec (raw-cone `cone_purity`) and tunes `τ_pure` to the real-data scale; the gated-purity variant
+   is the clear next step.
+
+**What the test asserts (robust to the above):** a documented leak conduit (`Matter`) has strictly lower
+raw-cone purity than a clean hub (`Thermodynamics`) — `0.0049 < 0.112` ✓; a candidate leak conduit is
+never classified `Bridge` ✓; the clean hubs out-purify the leak conduits on average — `0.045 > 0.0020` ✓.
+The per-node *class labels* are reported (not asserted), since #3 shows the raw-cone cut mislabels big
+in-domain hubs — the honest read is the continuous `(n_eff, purity)`, with the gated-purity refinement
+flagged. Cost note: `rank_bridges` here is the exact `O(V·(V+E))` per-node cone walk (~99 s for 8247
+nodes) — fine for a gated one-off; the sketch path (`fanout_diversity_sketched`) is the scale answer, and
+its real-data run is left to a follow-up (the μ fixture is 1 %-dense, the same sketch-underflow caveat as
+the cone-purity addendum applies, so the exact path is the right tool at this density).
+
+## Addendum (2026-06-21) — the purity refinement: in-domain-frame purity fixes the mislabel
+
+The previous addendum's finding #3 (raw-cone purity mislabels genuine in-domain hubs as `LeakConduit`)
+prompted the spec to change the classifier's purity definition (`WAM_RUST_BRIDGE_DETECTOR_SPECIFICATION.md`,
+"Purity" — *in the same frame as `n_eff`*, **not** the raw cone). This addendum reports the implementation
+and its real-data result. `bridge_classify` now reads purity **in the in-domain frame**; `cone_purity`
+(raw) stays available but is no longer the classifier input. Additive — `descendant_mu_mass_gated`,
+`gated_ic`, the similarity functions, and `cone_purity` are untouched.
+
+**Two variants tried; the in-domain *fraction* won.** Both candidates from the spec were measured on the
+raw 10k graph (`θ=0.3`), per node `P`:
+
+| node (class) | `n_eff` | **fraction** `\|gated_desc\|/\|desc\|` | gated **avg-μ** `m_μ(gated)/\|gated\|` | (old) raw purity |
+|---|---:|---:|---:|---:|
+| `Subfields_of_physics` (hub) | 3.68 | **0.0184** | 0.846 | 0.0189 |
+| `Energy` (hub) | 3.42 | **0.0172** | 0.717 | 0.0135 |
+| `Electromagnetism` (hub) | 3.00 | **0.0103** | 0.725 | 0.0119 |
+| `Mechanics` (hub) | 1.78 | **0.0395** | 0.900 | 0.0356 |
+| `Matter` (leak) | 1.58 | **0.0023** | 0.583 | 0.0049 |
+| `Physical_objects` (leak) | 2.00 | **0.0015** | 0.533 | 0.0049 |
+| `Chemical_elements` (chem-adjacent) | 2.00 | 0.0381 | 0.462 | 0.0243 |
+
+- **The in-domain fraction separates cleanly.** Leak conduits `Matter`/`Physical_objects` read
+  `0.0015–0.0023`; every genuine physics hub reads `≥ 0.010` — a ~5–17× gap, so a single `τ_pure = 0.01`
+  isolates the leaks while admitting the hubs. The fraction measures exactly "what fraction of `P`'s
+  reachable cone stays in-domain": a leak conduit reaches the whole encyclopedia (tiny in-domain
+  frontier ⇒ tiny fraction), a coherent hub's cone is contained.
+- **The gated average-μ does *not* separate.** Because the gated cone is in-domain *by construction*, its
+  average μ is high (`0.5–0.9`) for everyone, and it inverts on the chemistry boundary: `Matter` (leak)
+  reads `0.583` **above** `Chemical_elements` (`0.462`), so no threshold separates leak from hub. The
+  gated cone *size relative to the raw cone* is the signal, not its average membership. The fraction is
+  the cleaner separator, so it is the implementation; the average-μ is recorded here and rejected.
+
+**Before → after (the corrected labels, asserted by `wikipedia_bridge_detector_classifies_apexes`).** With
+`τ_pure` on the in-domain fraction (`0.01`):
+
+| node | #3306 raw-cone purity → class | #3307 in-domain fraction → class |
+|---|---|---|
+| `Subfields_of_physics` | 0.019 → **LeakConduit** (wrong) | 0.0184 → **Bridge** ✓ |
+| `Energy` | 0.014 → **LeakConduit** (wrong) | 0.0172 → **Bridge** ✓ |
+| `Electromagnetism` | 0.012 → **LeakConduit** (wrong) | 0.0103 → **Bridge** ✓ |
+| `Mechanics` | 0.036 → **LeakConduit** (wrong) | 0.0395 → **Bridge** ✓ |
+| `Matter` | 0.0049 → **LeakConduit** | 0.0023 → **LeakConduit** ✓ (still a leak) |
+| `Physical_objects` | 0.0049 → **LeakConduit** | 0.0015 → **LeakConduit** ✓ |
+
+The test now **asserts** these labels (the prior test could only assert qualitative ordering because raw
+purity mislabeled). `Matter`/`Physical_objects` correctly stay leak conduits — the refinement promotes the
+genuine hubs without dragging the real leaks along. The top of the `n_eff·purity` ranking is now physics
+(`Waves`, `Temperature`, `Chemical_elements`, `Mechanics`, `Subfields_of_physics`, `Energy`, …), all
+labeled `Bridge`, instead of the raw read's "everything but the two smallest cones is a leak."
+
+**`RedundantHub` is asserted on a grounded synthetic fan-out, and the earlier "X_by_country → RedundantHub"
+framing is corrected.** The physics fixture has *no* in-domain redundant hub: the `X_by_country` apexes
+(`Physicists_by_nationality` and friends) are out-of-domain (`μ = 0` ⇒ `NotCandidate`), and — correcting
+the first addendum — a by-country fan-out is **diverse**, not redundant (each nationality's cone is
+disjoint ⇒ high `n_eff`), so it would be a `LeakConduit`/`NotCandidate`, never a `RedundantHub`. A true
+redundant hub needs *overlapping* child cones, so that quadrant is asserted on a synthetic reconverging
+fan-out (3 in-domain children funnelling into one shared in-domain subtree ⇒ low `n_eff`).
+
+**Spec ↔ implementation match confirmed.** The SPECIFICATION's "Purity" is the in-domain fraction
+`|gated_desc(P)| / |desc(P)|` (primary candidate; gated average-μ the alternative); `bridge_classify`
+implements exactly the primary candidate (`path_gated_cone(P).len() / raw_cone_set(P).len()`), and the
+increment-5 validation picked the fraction as the cleaner separator as the spec directs. Full suite stays
+green (**97/97**). The gated-purity-as-*average-μ* idea from the previous addendum's #3 is the variant that
+was tried and rejected here; the gated-*fraction* is the read that actually fixes the mislabel.
+
+## Addendum (2026-06-21) — self-calibrating `τ_pure`: the classifier ports to any graph
+
+The previous addendum fixed *which* purity to use, but left the cut `τ_pure` hand-tuned to `0.01` —
+correct only for the physics-exploded 10k slice, where in-domain fractions are tiny (`~0.002–0.04`). On a
+graph of a different scale (a clean tree has hub purities near `1`) a fixed `0.01` labels everything a
+bridge. This addendum makes `τ_pure` **derived per graph**, so the same code ports anywhere.
+
+**The distribution is log-bimodal, so a log-gap finds the split.** The in-domain fraction of a leak
+conduit (cone reaches the whole graph) is *orders of magnitude* below a coherent hub's, so the candidate
+purities form a low **leak cluster** and a higher **hub cluster** separated by a gap on the log scale.
+`calibrate_tau_pure` sorts the purities, takes consecutive `ln`-gaps, and picks the **largest gap whose
+low side is a minority** — `τ_pure` = the geometric mean of the two bracketing purities. A bimodality
+test (`split gap ≥ 2× median gap`) falls back to a low percentile for the unimodal (no-leak) case.
+
+**Why the minority-low constraint is load-bearing on real data.** The 10k candidate purities, sorted:
+
+```
+Physical_objects 0.00154 | Matter 0.00230 ‖ Electricity 0.00742  Electromagnetism 0.01032
+Classical_mechanics 0.01702  Energy 0.01724  Subfields_of_physics 0.01843  Groups 0.02927
+Gases 0.03015  Chemical_elements 0.03810  Mechanics 0.03953 ‖ Temperature 0.12500  Waves 0.31250
+```
+
+The two largest `ln`-gaps are almost tied: **0.508** at `Matter → Electricity` (the true leak/hub
+boundary, `‖` left) and **0.500** at `Mechanics → Temperature` (a couple of tiny-cone outlier hubs above
+the main cluster, `‖` right). A naive "largest gap" picks the leak/hub split here only by a **2 % margin**
+— fragile. But the outlier gap has the *majority* (11 of 13) below it: taking it would label 11 candidates
+leaks and 2 bridges, absurd for a physics graph. The **minority-low constraint** (`#below ≤ n/2`) rejects
+it outright and robustly selects the leak/hub boundary, which has just 2 nodes (the minority) below.
+
+**Result — 10k graph: auto-derived `τ_pure = 0.00413`** (geometric mean of `0.00230` and `0.00742`),
+vs the old hand-tuned `0.01`. Both land in the valid window `(0.0023, 0.0103]`, so the labels are
+identical — but `0.00413` is *computed from the graph*, not a constant:
+
+| node | purity | class (auto `τ_pure = 0.00413`) |
+|---|---:|---|
+| `Subfields_of_physics` | 0.0184 | Bridge |
+| `Energy` | 0.0172 | Bridge |
+| `Electromagnetism` | 0.0103 | Bridge |
+| `Mechanics` | 0.0395 | Bridge |
+| `Matter` | 0.0023 | LeakConduit |
+| `Physical_objects` | 0.0015 | LeakConduit |
+
+**Portability proven on a different scale.** A synthetic test
+(`rank_bridges_auto_tau_ports_to_a_different_purity_scale`) plants two clusters at purities `~0.3` and
+`~0.9` (built from gadgets with tuned in-domain/out-of-domain descendant counts). The auto-calibration
+derives `τ_pure ≈ 0.53` there — two orders of magnitude above the 10k value — and labels the `0.9`
+gadgets `Bridge`, the `0.3` gadgets `LeakConduit`, with no constant changed.
+`calibrate_tau_pure_is_scale_invariant_and_robust` additionally checks scale-invariance (scaling all
+purities by `100×` scales `τ_pure` by `100×`), the minority-low rejection of high outliers, and the
+unimodal percentile fallback.
+
+**Implementation & spec.** `BridgeParams.tau_pure` is now `Option<f64>` — `None` (default)
+self-calibrates in `rank_bridges`, `Some(x)` pins an explicit cut (tests, hand-tuning). Additive:
+`bridge_classify` is unchanged for the explicit path (and uses `0.5` for the no-distribution single-node
+`None` case), `descendant_mu_mass_gated` / `gated_ic` / the similarity functions are untouched. The
+SPECIFICATION's "Classification" section now documents `τ_pure` as derived. Full suite **99/99** (97 +
+the two new self-calibration tests); the gated 10k validation passes with the auto threshold and no
+hard-coded `0.01`.

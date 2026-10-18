@@ -1011,6 +1011,147 @@ nodes are is a read-out; this increment is the read-out.
 `category_faith` answer per-pair queries against them — eager-edge only (the sketch needs the
 in-memory parent map), `None` until the sketches are built.
 
+### 5f. Gating breaks IC similarity — and the node-gated fix
+
+§5e's whole edifice rests on one structural fact, stated there in passing: *cones only grow as you go
+up, so IC only falls as you go up*. That monotonicity is what makes the `MICA` a **lowest** common
+ancestor and, with it, guarantees `IC(MICA) ≤ min(IC(u), IC(v))` — shared information cannot exceed
+either node's own information. That bound is exactly what keeps Lin and FaITH in `[0,1]`. **μ-gating
+quietly violates it**, and that breaks all three measures. This subsection is the cautionary sequel.
+
+**Two ways to gate a cone, and they are not the same.** Once nodes carry a fuzzy membership `μ ∈ [0,1]`
+(the graded-membership work, real-data doc §"Fuzzy / graded membership") we want IC to be *domain-aware*
+— count only in-domain mass. There are two constructions:
+
+- **Path-gated** (`descendant_mu_mass_gated`): BFS down from `t`, but **stop descending** at any child
+  with `μ < θ`. The cone is "what you can reach from `t` *without leaving the domain*" — the
+  frontier-stopping, curved-space cone used for **membership**.
+- **Node-gated** (`descendant_mu_mass_node_gated`): descend into **every** child (the full subtree) but
+  only **count** a node's μ when `μ ≥ θ`. The cone is `{ d ∈ desc(t) : μ(d) ≥ θ }` — every in-domain
+  descendant, *regardless of the path* taken to reach it.
+
+**Path-gating is non-monotone — that is the bug.** A common ancestor reachable only *through* a low-μ
+connector loses that whole subtree under path-gating, so its gated cone can be **smaller** than its own
+descendant's — and a smaller cone means a *higher* IC. The "IC only falls going up" guarantee is gone. A
+connector `M` whose only links down to `u` and `v` pass through out-of-domain nodes ends up with a tiny
+path-gated cone `{M}` and a *high* IC — higher than `IC(u)` or `IC(v)`. Then `IC(MICA) > min(IC(u),IC(v))`
+and:
+
+- **Resnik** reports more shared information than either node contains — incoherent.
+- **Lin** `2·IC(MICA)/(IC(u)+IC(v))` exceeds `1` (the implementation clamps to `1`).
+- **FaITH**'s denominator `IC(u)+IC(v)−IC(MICA)` shrinks; once `IC(MICA) ≥ IC(u)+IC(v)` it goes `≤ 0`
+  and the measure is undefined (`None`). (Lin and FaITH overshoot at the *same* threshold,
+  `IC(MICA) > (IC(u)+IC(v))/2`; FaITH merely fails harder past it.)
+
+This is not a corner case. On the 90-node Haiku physics fixture, **1233 of 1275 in-domain pairs (96.7%)
+saturate at `Lin = 1.0`** under path-gated IC — gated Lin is, in practice, a constant (median *un-clamped*
+Lin 1.39). Measured in `prototypes/mu_cosine/REPORT_control_baseline.md`.
+
+**The fix: node-gated IC is monotone by construction.** Feed the *similarity* IC from the node-gated
+cone. Raw descendant **sets** are nested along ancestry (`desc(ancestor) ⊇ desc(descendant)`), and the
+membership filter `μ ≥ θ` is the *same node property* applied everywhere, so the filtered sets stay
+nested: `cone(ancestor) ⊇ cone(descendant)`. Mass is therefore monotone, IC is monotone, `IC(MICA) ≤ min`
+is restored, and Lin/FaITH are graded in `[0,1]` again. The MICA *node* is unchanged — still the deepest
+common ancestor — only its IC *value* becomes domain-aware. On the same fixture, node-gating drops
+saturation `96.7% → 0.1%` (431 distinct Lin values; `Temperature/Fire`'s MICA IC falls `6.24 → 3.07`, back
+under the `min` bound, Lin `1.0 → 0.74`). Implementation: `gated_ic_node_filtered`, fed to the unchanged
+`lin_from_ic` / `resnik_from_ic` / `faith_from_ic` (they are generic over the IC source). Proof:
+`prototypes/mu_cosine/node_gated_ic.py`; Rust test: `node_gated_ic_restores_lin_monotonicity`.
+
+**Keep both cones — they answer different questions.** Node-gating does *not* retire path-gating; the two
+mean different things and both are wanted:
+
+- *Membership* — "can I reach `d` from `t` **without leaving the domain**?" — wants **path-gating** (the
+  frontier cone).
+- *Similarity IC* — "is `d` an in-domain thing **under** `t`?" — wants **node-gating** (the
+  downward-closed, monotone cone).
+
+The one semantic wrinkle: node-gating counts in-domain descendants reachable only *through* an
+out-of-domain connector (a domain that dips out and comes back). For shared-generality similarity that is
+the more sensible count; for membership it over-includes — which is exactly why the two stay separate.
+
+**The deeper fork (deferred).** Path-1 above keeps the MICA machinery by fixing the IC. A second path
+abandons the MICA entirely: under gating the "shared part" of `u` and `v` need not be a single ancestor
+node — it is the **overlap of their gated cones** `E_u ∩ E_v`. That leads to a Jaccard/Dice read directly
+on the cones, `I(E_u ∩ E_v) / I(E_u ∪ E_v)`, for which the carry-weight KMV sketches already exist
+(`sketch_mu_overlap` / `sketch_mu_overlap_lift`). It measures shared *descendants* (instances) rather than
+a shared *ancestor* (generality) — the right tool for comparing broad internal categories by content,
+degenerate for leaves with empty cones. We land path-1 now (a small additive change; the measures are
+already generic over IC) and leave path-2 for the first consumer that wants content-overlap — its gate
+choice is worked out in §5g.
+
+### 5g. Parent-relative overlap — the fan-out / bridge diagnostic (deferred, path-2)
+
+Path-2's first intended consumer is the **fan-out bridge detector**: given a candidate bridge node `P`,
+do its child branches carve out *distinct* sub-regions (a genuine fan-out across sub-domains) or
+*overlapping* ones (redundant branches)? That question fixes how to gate — and, crucially, it is **not**
+§5f's monotonicity repair.
+
+**MICA proposes, overlap disposes — the two measures compose.** §5e/§5f's MICA is the *upward* primitive:
+it finds the merge points where otherwise-separate branches join, so a node that serves as the MICA for
+many *distant* pairs is a **candidate** bridge. But being a merge point (high fan-out) is necessary, not
+sufficient — a node with a hundred near-identical children is a redundant hub, not a bridge. The
+parent-relative overlap is the **qualifier**: a good bridge has high *diversity* of branching, not just
+high branching. So MICA generates candidates (look up), overlap-diversity keeps the ones whose branches
+are genuinely distinct, and μ (below) keeps the ones whose branches are in-domain — a three-signal test.
+
+**Gate relative to the parent, not the children.** Jaccard/Dice compare two sets, and the comparison is
+only well-posed inside a **common universe**. For the bridge question that universe is `P`'s own evidence
+— what `P` is responsible for organizing — so gate by `P`, not by each child's private gate:
+
+```
+U_P      = gated_cone(P)                          # P's PATH-gated cone — the local admissible universe
+E_u^P    = desc(u) ∩ U_P                           # child u's contribution within P's frame (low-μ child ⇒ ∅)
+J_P(u,v) = μ(E_u^P ∩ E_v^P) / μ(E_u^P ∪ E_v^P)     # or Dice: 2·μ(∩) / (μ(E_u^P)+μ(E_v^P))
+```
+
+The superscript `P` is the whole point: the overlap is measured *inside the parent's frame of reference*.
+Contrast §5f, where the gate logic ran the other way — child gates forcing closure *upward* to keep
+`IC(MICA) ≤ IC(child)`. Here there is no MICA and no IC ratio, so monotonicity is irrelevant; the only
+requirement is a shared universe, which `U_P` supplies. (Use `P`'s path-gated cone for `U_P` — the
+membership frontier is the natural reading of "the evidence `P` organizes.")
+
+**Reading it.** `J_P(u,v) ≈ 0` ⇒ inside `P`, the branches of `u` and `v` are distinct (`P` fans out into
+different regions); `J_P(u,v) ≈ 1` ⇒ they reconverge (`P`'s children are redundant). Aggregate the
+pairwise `J_P` over `P`'s children (e.g. mean) for a single **fan-out score** per candidate `P` — low mean
+= clean fan-out / strong bridge.
+
+**A whole-node diversity score (cheaper than averaging pairs).** Rather than aggregate the `O(children²)`
+pairwise `J_P`, read the diversity off the **union** directly:
+
+```
+diversity(P) = μ(⋃_i E_{c_i}^P) / Σ_i μ(E_{c_i}^P)   ∈ [1/n, 1]
+n_eff(P)     = n · diversity(P)                        # effective number of DISTINCT branches
+```
+
+`diversity(P)` is `1` when the children are disjoint (every branch covers new ground) and `1/n` when they
+fully overlap (`n` redundant copies); `n_eff` then equals the child count `n` for disjoint branches and
+**collapses to `1` for identical ones**. That single number *is* "diversity of branching, not just
+branching": a 100-child apex of near-duplicates scores `n_eff ≈ 1` (not a bridge), a 100-child node with
+distinct branches scores `n_eff ≈ 100` (strong bridge). Union mass and per-child masses are both direct
+KMV-sketch reads, so it is cheap. This is an effective-count / entropy reading of the branching — the same
+effective-number idea the hierarchy objective uses for `H`, applied to cone overlap instead of a label
+histogram. (Mass-weight by `Σμ` rather than count `n` if you want branch *importance* over branch *count*.)
+
+**Reuses the existing sketches.** `μ(E_u^P ∩ E_v^P)` is exactly the carry-weight KMV overlap
+(`sketch_mu_overlap`) restricted to `U_P`. For *ranking* bridges across different parents — whose universes
+differ in size — don't compare raw Jaccards; use the configuration-model **lift**
+(`sketch_mu_overlap_lift`, shared mass against the `m_u·m_v/|U_P|` null), the same normalization the
+fan-in hub work already uses. Plain Jaccard for `P`-local branch diversity; lift for a global ranking.
+
+**Two cautions.**
+- *Tree-triviality.* In a pure tree, siblings have disjoint subtrees, so `J_P ≡ 0` and *every* node looks
+  like a perfect fan-out. The measure only discriminates on a **DAG**, where it detects branch
+  *reconvergence* (shared descendants) — exactly the regime Wikipedia categories live in.
+- *Fan-out ≠ meaningful bridge.* Low overlap says `P` fans into structurally-distinct regions, but a
+  generic apex (`Main_topic_classifications`) also fans into distinct — *unrelated* — regions. Telling a
+  real conceptual bridge from a leak conduit needs the membership signal: a bridge fans into **in-domain**
+  (high-μ) branches, a leak conduit into low-μ junk (the leak-conduit structure of the real-data doc's
+  cone-purity addendum). Pair the fan-out score with μ; don't read it alone.
+
+Deferred until the bridge detector is built; documented here so its gate choice is settled. The detector
+itself is specified in `WAM_RUST_BRIDGE_DETECTOR_{PHILOSOPHY,SPECIFICATION,IMPLEMENTATION_PLAN}.md`.
+
 ## 6. Aside: the kernel-trick analogy
 
 *(A mnemonic, not load-bearing — the mechanics above stand on their own; skip if you only
@@ -1293,13 +1434,18 @@ buy diminishing returns and is not carried).
 - `WAM_RUST_BOUNDARY_DISTRIBUTION_CACHE_PLAN.md` — phase status of shipped work.
 - This note — the algebraic generalization (product semirings, ancestor-space domain,
   the implicit-functional / kernel-trick framing) that the next increments build on.
+- `prototypes/mu_cosine/` — the ML side that *produces* the dense `μ` the gated read-outs
+  consume: `REPORT_control_baseline.md` (where the §5f path-gated Lin saturation was first
+  measured, 96.7%), `node_gated_ic.py` (the §5f fix, proven on real data), and
+  `DESIGN_directional_attention.md` (the learned directional-μ successor, which feeds these
+  same `gated_ic` / similarity functions and is validated against the node-gated Lin of §5f).
 
 ## 10. References
 
 Collected for understanding the theory and as a citation base for possible future write-up.
 Each is referenced inline at the section that uses it.
 
-**Information-content semantic similarity (§5d, §5e).**
+**Information-content semantic similarity (§5d, §5e, §5f).**
 - Resnik, P. (1995). *Using Information Content to Evaluate Semantic Similarity in a Taxonomy.*
   IJCAI-95. — `resnik_similarity = IC(MICA)`.
 - Lin, D. (1998). *An Information-Theoretic Definition of Similarity.* ICML 1998. —

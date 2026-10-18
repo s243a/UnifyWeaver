@@ -1,0 +1,200 @@
+# REVIEW REQUIRED — no expansion applied without owner sign-off
+dir	leaf	proposed_expansion	member_titles_sample
+Myth	Myth		Myth & Error
+Places/America/North/Can	Can	Canada	Canada
+Places/America/North/USA	USA		USA
+Subjects/sci	sci		
+Subjects/sci/Ap	Ap	Applied	Applied Science
+Subjects/sci/Ap/Info	Info	Information	Information science
+Subjects/sci/Ap/Info/Arch	Arch	architecture	Information architecture
+Subjects/sci/Ap/Info/Data	Data		Data mining
+Subjects/sci/Ap/Info/Data/Algo	Algo	algorithms	Data mining algorithms
+Subjects/sci/Ap/Info/Knowledge/Lang	Lang	languages	Knowledge representation languages
+Subjects/sci/Ap/Info/Knowledge/Lang/CycL	CycL		CycL (Ontology Language)
+Subjects/sci/Ap/Info/Knowledge/Onto	Onto	Ontology	Ontology (information science)
+Subjects/sci/Ap/Info/Knowledge/Onto/Edit	Edit	editors	Ontology editors
+Subjects/sci/Ap/Info/Knowledge/Soft	Soft	software	Knowledge representation software
+Subjects/sci/Ap/Info/Knowledge/Soft/Map	Map	mapping	Concept- and mind-mapping software
+Subjects/sci/Ap/Metr	Metr	Metrology	Metrology
+Subjects/sci/Ap/Metr/Measure/Inst	Inst	instruments	Measuring instruments
+Subjects/sci/Ap/Space/Astron	Astron	Astronomical	Astronomical sub-disciplines; Astronomy
+Subjects/sci/Ap/Space/Astron/Obj	Obj	objects	Astronomical objects
+Subjects/sci/Ap/Space/Astron/Obj/Co-orb/Troj	Troj	Trojans	Trojans (astronomy)
+Subjects/sci/Ap/Space/Astron/Obj/Co-orb/Troj/MinorP	MinorP		Trojan minor planets
+Subjects/sci/Ap/Space/Astron/Planet/Atm	Atm	atmospheres	Planetary atmospheres
+Subjects/sci/Ap/Space/Astron/Planet/Def	Def	Definition	Definition of planet‎
+Subjects/sci/Ap/Space/Astron/Planet/Exo	Exo	Exoplanetology	Exoplanetology‎
+Subjects/sci/Ap/Space/Astron/Planet/Geo	Geo	Geography	Geography by planet
+Subjects/sci/Ap/Space/Astron/Planet/Meteor/ites	ites		Meteorites
+Subjects/sci/Ap/Space/Astron/Planet/Moon	Moon	Moons	Moons
+Subjects/sci/Ap/Space/Astron/Planet/Moon/Moon	Moon		Moon
+Subjects/sci/Ap/Space/Astron/Planet/Moon/Moon/Sci	Sci	science	Lunar science
+Subjects/sci/Ap/Space/Astron/Planet/Planemo	Planemo	Planemos	Planemos (Planetary-mass objects)
+Subjects/sci/Ap/Space/Astron/Planet/Planemo/Dwarf/Eris	Eris		Eris (dwarf planet)
+Subjects/sci/Ap/Space/Astron/Planet/Planemo/Planet/PotSS	PotSS		Planets of the Solar System
+Subjects/sci/Ap/Space/Astron/Planet/Planemo/Planet/PotSS/Mars	Mars		Mars
+Subjects/sci/Ap/Space/Astron/Planet/Planemo/Planet/Type	Type	Types	Types of planet
+Subjects/sci/Ap/Space/Astron/Planet/Sys	Sys	systems	Planetary systems
+Subjects/sci/BLDG	BLDG		Scientific buildings
+Subjects/sci/BLDG/Lab	Lab	Laboratories	Laboratories
+Subjects/sci/phy	phy		
+Subjects/sci/phy/chem	chem	Chemistry	Chemistry; Subfields of chemistry
+Subjects/sci/phy/chem/Acid	Acid	Acidbase	Acidbase chemistry
+Subjects/sci/phy/chem/Analyt	Analyt	Analytical	Analytical chemistry
+Subjects/sci/phy/chem/Colloid/Surfactant	Surfactant	Surfactants	Surfactants
+Subjects/sci/phy/chem/Inorganic/React/Thermite	Thermite		Thermite
+Subjects/sci/phy/chem/Nuc	Nuc	Nuclear	Nuclear chemistry
+Subjects/sci/phy/chem/Nuc/Iso	Iso	Isotopes	Isotopes
+Subjects/sci/phy/chem/Organic/Comp	Comp	compounds	Organic compounds
+Subjects/sci/phy/chem/Organic/Comp/H-C/Conj	Conj	Conjugated	Conjugated hydrocarbons
+Subjects/sci/phy/chem/Organic/Comp/H-C/Conj/Aro	Aro	Aromatic	Aromatic hydrocarbons
+Subjects/sci/phy/chem/Organic/Comp/H-C/Conj/Aro/C6H6/Deriv	Deriv	derivatives	Benzene derivatives
+Subjects/sci/phy/chem/Organic/Grp	Grp		Functional groups
+Subjects/sci/phy/chem/Organic/Grp/Ket	Ket	Ketones	Ketones
+Subjects/sci/phy/chem/Organic/Grp/Ket/Poly	Poly	Polyketones	Polyketones
+Subjects/sci/phy/chem/Organic/Grp/Ket/Poly/Di	Di	Diketones	Diketones
+Subjects/sci/phy/chem/Organic/Grp/Ket/Poly/Di/Quin	Quin	Quinones	Quinones
+Subjects/sci/phy/chem/Organic/Grp/Phos	Phos	Phosphate	Phosphate - Functional group
+Subjects/sci/phy/chem/Organic/Phys	Phys	Physical	Physical organic chemistry
+Subjects/sci/phy/chem/Organic/Phys/R-intermed/Rad	Rad	radicals	Free radicals
+Subjects/sci/phy/chem/Organic/Phys/R-intermed/Rad/ROS	ROS		Reactive oxygen species (ROS)
+Subjects/sci/phy/chem/Organic/Phys/R-intermed/Rad/ROS/Perox	Perox	Peroxides	Peroxides
+Subjects/sci/phy/chem/Organic/Phys/R-intermed/Rad/ROS/S-ox/SGS	SGS		Superoxide generating substances
+Subjects/sci/phy/chem/Organic/Phys/R-intermed/Rad/ROS/S-ox/SGS/Enz	Enz	enzymes	Superoxide generating enzymes
+Subjects/sci/phy/chem/Wave	Wave		Microwave chemistry; Photochemistry
+Subjects/sci/phy/chem/Wave/Elec	Elec		Photoelectrochemistry
+Subjects/sci/phy/chem/concept/El	El	elements	Chemical elements
+Subjects/sci/phy/chem/concept/El/Period/Grp	Grp		Grouping Methods (Periodic Table)
+Subjects/sci/phy/chem/concept/El/Period/Grp/Blk	Blk		Blocks (Periodic Table)
+Subjects/sci/phy/chem/concept/El/Period/Grp/Blk/Act	Act	Actinides	Actinides (B5fP7)
+Subjects/sci/phy/chem/concept/El/Period/Grp/Blk/Lanth	Lanth	Lanthanides	Lanthanides (B4fP6)
+Subjects/sci/phy/chem/concept/El/Period/Grp/Grp	Grp		Groups (periodic table)
+Subjects/sci/phy/chem/concept/El/Period/Grp/Grp/Chal	Chal	Chalcogens	Chalcogens
+Subjects/sci/phy/chem/concept/El/Period/Grp/Grp/Chal/Comp	Comp	compounds	Chalcogen compounds
+Subjects/sci/phy/chem/concept/El/Period/Grp/Grp/Chal/Comp/ides	ides		Chalcogenides
+Subjects/sci/phy/chem/concept/El/Period/Grp/Prd	Prd		Periods (Periodic Table)
+Subjects/sci/phy/chem/concept/El/Set	Set	Sets	Sets of chemical elements
+Subjects/sci/phy/chem/concept/React/Catalys	Catalys	Catalysis	Catalysis
+Subjects/sci/phy/chem/concept/React/Catalys/ts	ts		Catalysts
+Subjects/sci/phy/chem/concept/Substance/Comp	Comp	compounds	Chemical compounds
+Subjects/sci/phy/chem/concept/Substance/Comp/Salt	Salt	Salts	Salts
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ	Typ	type	Chemical compounds by type
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ/Bond	Bond		Chemical compounds by chemical bond
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ/El	El	element	Chemical compounds by element
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ/El/C	C	Carbon	Carbon compounds
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ/El/C/Carbonyl	Carbonyl		Carbonyl compounds
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ/El/Cd	Cd		Cadmium compounds
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ/El/O	O	Oxygen	Oxygen compounds
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ/El/O/Oxides/Poly	Poly	Polyoxides	Polyoxides
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ/El/P	P	Phosphorus	Phosphorus compounds
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ/El/P/O	O	oxygen	Phosphorus–oxygen compounds
+Subjects/sci/phy/chem/concept/Substance/Comp/Typ/Phys	Phys	physiological	Chemical compounds by physiological function
+Subjects/sci/phy/chem/concept/Substance/Harm	Harm	Harmful	Harmful chemical substances
+Subjects/sci/phy/chem/concept/Substance/Harm/Tox	Tox	Toxicants	Toxicants
+Subjects/sci/phy/chem/concept/Substance/Harm/Tox/Organ/Hemo	Hemo	Hemotoxin	Hemotoxin
+Subjects/sci/phy/chem/concept/Substance/Ion	Ion	Ions	Ions
+Subjects/sci/phy/chem/concept/Substance/Ion/An	An	Anions	Anions
+Subjects/sci/phy/chem/concept/Substance/Ion/An/Carbo	Carbo	Carboxylate	Carboxylate anions
+Subjects/sci/phy/chem/concept/Substance/Ion/An/Ozon	Ozon	Ozonides	Ozonides
+Subjects/sci/phy/chem/concept/Substance/Ion/An/Surf	Surf	surfactants	Anionic surfactants
+Subjects/sci/phy/chem/concept/Substance/Ion/Cat	Cat	Cations	Cations
+Subjects/sci/phy/chem/concept/Substance/Ion/Cat/Carbo	Carbo	Carbocations	Carbocations
+Subjects/sci/phy/chem/concept/Substance/Ion/Cat/Carbo/Cyclo	Cyclo	Cycloheptatrienyl	Cycloheptatrienyl complexes
+Subjects/sci/phy/chem/concept/Substance/Ion/Cat/Oxy	Oxy	Oxycations	Oxycations
+Subjects/sci/phy/chem/concept/Substance/Ion/Cat/Oxy/Ium	Ium		Oxonium compounds
+Subjects/sci/phy/chem/concept/Substance/Ion/Cat/Surf	Surf	surfactants	Cationic surfactants
+Subjects/sci/phy/chem/concept/Substance/Metal/El	El	elements	Metallic elements‎
+Subjects/sci/phy/chem/concept/Substance/Metal/El/Alk-EM/Ca	Ca	Calcium	Calcium‎
+Subjects/sci/phy/chem/concept/Substance/Metal/El/Trans/Grp12/Cd	Cd		Cadmium
+Subjects/sci/phy/chem/concept/Substance/Metal/Urgy	Urgy		Metallurgy (Chemistry)
+Subjects/sci/phy/chem/concept/Substance/Use	Use		Chemical substances by use
+Subjects/sci/phy/chem/concept/Substance/Use/Proc	Proc	Process	Process chemicals
+Subjects/sci/phy/chem/mole	mole		Mole (Chemistry)
+Subjects/sci/phy/chem/mole/vol	vol	Volume	Molar Volume
+Subjects/sci/phy/chem/phy	phy		Pysical Chemistry
+Subjects/sci/phy/chem/phy/elec	elec	Electrochemistry	Electrochemistry
+Subjects/sci/phy/chem/phy/equilibrium/constant/Hoff	Hoff		Van 't Hoff equation
+Subjects/sci/phy/chem/phy/mix	mix	Mixing	Mixing (Physical Chemistry); Mixtures (Pysical Chemistry) (chobits's c
+Subjects/sci/phy/chem/phy/mix/eq	eq	Equilibrium	Phase Equilibrium (Mixtures)
+Subjects/sci/phy/chem/phy/mix/eq/VLE	VLE		Vapour Liquid Equalibrium
+Subjects/sci/phy/chem/phy/mix/eq/VLE/Azeotrope	Azeotrope		Azeotrope
+Subjects/sci/phy/chem/phy/mix/eq/VLE/Relative/DePriester	DePriester		DePriester Chart
+Subjects/sci/phy/chem/phy/mix/eq/VLE/Relative/Raoult	Raoult	Raoults	Raoults Law (Relative Volitility)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/der	der	derivative	derivative form (Chemical Potential - VLE)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/der/Helmhotz	Helmhotz		derivative form (Helmhotz Chem Pot - VLE)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/der/U	U		Const_S_V_der form Chem Potential
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/gas	gas		Gas Chemical Potential (VLE)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/gas/real	real		Real Gas Chemical Potential (VLE)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/gas/real/fugacity	fugacity		fugacity
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/gas/real/fugacity/EOS	EOS		EOS (fugacity)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/gas/real/fugacity/EOS/real	real		Real Gas  (fugacity)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/gas/real/fugacity/Waals	Waals		Fugacity (Van der Waals)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/liq	liq	Liquids	Liquids Chemical Potential VLE
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/liq/activity/Gibbs/Margulas	Margulas		Margulas Equation (Activity)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/liq/activity/coef	coef	Coefficient	Activity Coefficient
+Subjects/sci/phy/chem/phy/mix/eq/VLE/chen_pot/liq/activity/coef/state/enthalpy	enthalpy		Enthalpy (Activity)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/mix	mix	Mixing	Mixing (Physical Chemistry)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/mix/Raoult	Raoult		Raoult's Law (Physical Chemistry)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/mix/multi/partial/gibs	gibs		Partial Gibbs
+Subjects/sci/phy/chem/phy/mix/eq/VLE/mix/real	real		Mixing - Real Gas (Physical Chemistry)
+Subjects/sci/phy/chem/phy/mix/eq/VLE/vap	vap	Vapour	Vapour Pressure
+Subjects/sci/phy/chem/phy/mix/eq/VLE/vap/vap	vap	Vaporization	Vaporization
+Subjects/sci/phy/chem/phy/mix/eq/VLE/vap/vap/Entropy/Trouton	Trouton	Troutons	Troutons rule
+Subjects/sci/phy/chem/phy/mix/partial/homo	homo	Homogeneous	Homogeneous Systems & Mixture
+Subjects/sci/phy/chem/phy/mix/partial/vol	vol	Volume	Partial Molar Volume
+Subjects/sci/phy/chem/phy/mix/sol	sol	Solution	Solution (Pysical Chemistry)
+Subjects/sci/phy/chem/phy/mix/sol/sol	sol	Solvation	Solvation (Pysical Chemistry)
+Subjects/sci/phy/chem/phy/pot	pot	Potential	Chemical Potential
+Subjects/sci/phy/chem/phy/pot/Duhem	Duhem		Gibbs-Duhem Equation
+Subjects/sci/phy/chem/phy/pot/Duhem/temp	temp		Constant T (Gibbs-Duhem Equation)
+Subjects/sci/phy/chem/phy/pot/Hess	Hess		Hess's law (Chemical Potential)
+Subjects/sci/phy/chem/phy/prop	prop	Properties	Properties of Materials
+Subjects/sci/phy/chem/phy/prop/HC	HC		Hydrocarbons
+Subjects/sci/phy/chem/phy/prop/HC/alkane	alkane	alkanes	alkanes
+Subjects/sci/phy/chem/phy/prop/HC/alkane/gas	gas	Gasses	Alkanes Gasses
+Subjects/sci/phy/chem/phy/prop/HC/alkane/gas/EOS	EOS		Equation of State (Alkanes Gasses)
+Subjects/sci/phy/chem/phy/prop/HC/alkane/liq	liq	Liquid	Liquid Alkanes
+Subjects/sci/phy/phy	phy		
+Subjects/sci/phy/phy/Chem	Chem	Chemical	Chemical physics
+Subjects/sci/phy/phy/Comp	Comp	Computational	Computational physics (DESKTOP-803I3EC's conflicted copy 2023-12-11); 
+Subjects/sci/phy/phy/Conserv	Conserv	Conservation	Conservation Principles
+Subjects/sci/phy/phy/Conserv/Energy/Fluid/Navier	Navier		Navier-Stokes (Conserv of Energy)smmx
+Subjects/sci/phy/phy/Conserv/Mass	Mass		Conservation of Mass
+Subjects/sci/phy/phy/Mat	Mat	Materials	Materials science
+Subjects/sci/phy/phy/Mol	Mol	Molecular	Molecular physics
+Subjects/sci/phy/phy/Mol/Molecule/Membrane/Iono	Iono	Ionophores	Ionophores
+Subjects/sci/phy/phy/Nuc	Nuc	Nuclear	Nuclear physics
+Subjects/sci/phy/phy/Part	Part	Particle	Particle physics
+Subjects/sci/phy/phy/Theory/CFT	CFT		Classical Field Theory
+Subjects/sci/phy/phy/Theory/CFT/Grav	Grav	Gravity	Gravity
+Subjects/sci/phy/phy/Theory/Math	Math	Mathematical	Mathematical physics
+Subjects/sci/phy/phy/Theory/QFT	QFT		Quantum field theory
+Subjects/sci/phy/phy/fluid/Incompressible	Incompressible		Incompressible Flow
+Subjects/sci/phy/phy/fluid/Laminar	Laminar		Laminar Flow
+Subjects/sci/phy/phy/fluid/Quantity/dimless	dimless		Dimensionless Quantities
+Subjects/sci/phy/phy/fluid/Turbulance	Turbulance		Turbulance
+Subjects/sci/phy/phy/fluid/Turbulance/mixing/Kolmogorov	Kolmogorov		Kolmogorov Turbulance
+Subjects/sci/phy/phy/fluid/Viscosity/Dyn	Dyn	Dynamic	Dynamic Viscosity
+Subjects/sci/phy/phy/fluid/Viscosity/Kin	Kin	Kinematic	Kinematic Viscosity
+Subjects/sci/phy/phy/fluid/Viscosity/bulk	bulk		Bulk Viscosity
+Subjects/sci/phy/phy/fluid/pipe	pipe		pipe flow
+Subjects/sci/phy/phy/fluid/pipe/Vorticity	Vorticity		Vorticity
+Subjects/sci/phy/phy/fluid/pipe/Wiseback	Wiseback		Darcy Wiseback
+Subjects/sci/phy/phy/fluid/pipe/Wiseback/Friction/Colebrook	Colebrook		Colebrook–White equation
+Subjects/sci/phy/phy/fluid/pipe/Wiseback/Poiseuille	Poiseuille		Hagen-Poiseuille equation
+Subjects/sci/phy/phy/fluid/pipe/sim	sim	Simulations	Hydraulic Simulations
+Subjects/sci/phy/phy/fluid/vorticity	vorticity		vorticity
+Subjects/sci/phy/phy/fluid/wall	wall		law of the wall (Fluid Dynamics)
+Subjects/sci/phy/phy/mech	mech	Mechanics	Mechanics  (physics) (basement_pup's conflicted copy 2016-08-14); Mech
+Subjects/sci/phy/phy/mech/astro	astro		Celestial Mechanics (basement_pup's conflicted copy 2016-08-14); Celes
+Subjects/sci/phy/phy/mech/astro/star	star	stars	stars (Celestial Mechaics)
+Subjects/sci/phy/phy/mech/astro/star/solar/our	our		our solar system
+Subjects/sci/phy/phy/mech/astro/star/solar/our/sun	sun		The Sun
+Subjects/sci/phy/phy/mech/astro/star/solar/our/sun/rad	rad	Radiation	Solar Radiation
+Subjects/sci/phy/phy/mech/astro/star/solar/our/sun/rad/ref	ref	References	References (Solar Radiation)
+Subjects/sci/phy/phy/mech/astro/star/solar/our/sun/time	time		solar time
+Subjects/sci/phy/phy/mech/classical/Kin	Kin	Kinematics	Kinematics
+Subjects/sci/phy/phy/mech/classical/Rotate/3D/Precess	Precess	Precession	Precession
+Subjects/sci/phy/phy/mech/classical/constraint/holonomic	holonomic		Holonomic Constraint
+Subjects/sci/phy/phy/mech/classical/constraint/holonomic/lagrange/monogenic	monogenic		monogenic system
+car	car		

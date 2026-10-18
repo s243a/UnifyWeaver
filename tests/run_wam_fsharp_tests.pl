@@ -1,14 +1,39 @@
 :- encoding(utf8).
 %% run_wam_fsharp_tests.pl — aggregate runner for the F# WAM target tests.
 %%
-%% Each F# WAM test file uses `:- initialization(run_tests, main)` and
-%% `halt(0/1)` on completion, so they can't be `use_module`'d in-process.
-%% This script spawns each as a subprocess and aggregates pass/fail.
+%% The files use incompatible top-level runners and shared dynamic fixtures,
+%% so this script loads each in an isolated subprocess with an explicit goal
+%% and aggregates pass/fail.
 %%
 %% Tests run:
 %%   tests/test_wam_fsharp_target.pl
 %%     - Source-level codegen assertions.  Runs everywhere swipl is
 %%       available; no external toolchain required.
+%%   tests/test_wam_tc2_contract_parity.pl
+%%     - fleet TC2 strict R+ oracle/structural checks plus executable F#/C/Rust
+%%       retry, binding-mode, cycle, and native-vs-oracle coverage.
+%%   tests/test_wam_td3_contract_parity.pl
+%%     - fleet TD3 dist+ oracle/structural checks plus executable F#/C/Rust
+%%       retry, binding-mode, cycle, and no-kernels coverage.
+%%   tests/test_wam_tpd4_contract_parity.pl
+%%     - fleet TPD4 shortest-positive-parents oracle/structural checks plus
+%%       executable F#/C/Rust/Elixir coverage; LLVM remains capability-gated.
+%%   tests/test_wam_tspd5_contract_parity.pl
+%%     - fleet TSPD5 shortest-positive correlated step/parent oracle/structural
+%%       checks plus executable F#/C/Rust/Elixir/Go coverage; LLVM remains
+%%       capability-gated.
+%%   tests/test_wam_wsp3_contract_parity.pl
+%%     - fleet WSP3 finite nonnegative Dijkstra oracle/structural checks plus
+%%       executable F#/C/Rust/Elixir/Go/Haskell/R/Scala coverage; LLVM keeps
+%%       its existing Dijkstra stream suite.
+%%   tests/test_wam_astar4_contract_parity.pl
+%%     - fleet A* correctness-safe Dijkstra-minimum oracle/structural checks
+%%       plus executable F#/C coverage and cross-target contract markers.
+%%   focused Rust, Go, Scala, R, Haskell, Elixir, and LLVM TD3/TPD4/TSPD5 regressions
+%%     - exercise transactional correlated-tuple binding, the R aggregate
+%%       path, Elixir ordinary retries, and LLVM exact paired streaming /
+%%       range safety.
+%%       Runtime legs skip only when their external compiler is unavailable.
 %%   tests/core/test_wam_fsharp_dotnet_smoke.pl
 %%     - dotnet build + run smokes (8 cases including category-ancestor
 %%       end-to-end + NAF micro-benchmark).  Each sub-case skips
@@ -35,24 +60,103 @@ repo_root(Root) :-
     file_directory_name(This, TestsDir),
     file_directory_name(TestsDir, Root).
 
-%% (RelativePath, HumanLabel).  Order matters — codegen first (fast),
+%% (RelativePath, HumanLabel, Goal).  Order matters — codegen first (fast),
 %% then dotnet smokes (slower, may skip on toolchain-less machines).
 fsharp_test('tests/test_wam_fsharp_target.pl',
-            'F# WAM codegen tests').
+            'F# WAM codegen tests', run_tests).
+fsharp_test('tests/core/test_wam_fsharp_kernel_gate_tc.pl',
+            'F# WAM kernel capability gate + native transitive_closure2',
+            run_tests).
+fsharp_test('tests/test_wam_tc2_contract_parity.pl',
+            'TC2 strict R+ fleet contract + F# native kernel', run_tests).
+fsharp_test('tests/test_wam_td3_contract_parity.pl',
+            'TD3 strict dist+ fleet contract + F# native kernel', run_tests).
+fsharp_test('tests/test_wam_tpd4_contract_parity.pl',
+            'TPD4 shortest-positive-parents fleet contract + F# native kernel',
+            run_tests).
+fsharp_test('tests/test_wam_tspd5_contract_parity.pl',
+            'TSPD5 shortest-positive correlated step/parent fleet contract + F# native kernel',
+            run_tests).
+fsharp_test('tests/test_wam_wsp3_contract_parity.pl',
+            'WSP3 finite nonnegative Dijkstra fleet contract + F# native kernel',
+            run_tests).
+fsharp_test('tests/test_wam_astar4_contract_parity.pl',
+            'A* correctness-safe Dijkstra-minimum fleet contract + F# native kernel',
+            run_tests).
+fsharp_test('tests/test_wam_rust_foreign_tuple_aliases.pl',
+            'Rust correlated foreign-tuple alias/retry cleanup', run_tests).
+fsharp_test('tests/test_wam_go_foreign_tuple_aliases.pl',
+            'Go correlated foreign-tuple alias/retry cleanup', run_tests).
+fsharp_test('tests/test_wam_go_foreign_lowering.pl',
+            'Go A* configured heuristic relation + weighted-fact validation',
+            run_tests(wam_go_foreign_lowering:
+                      astar_configured_direct_pred_validates_atom_source_rows)).
+fsharp_test('tests/test_wam_scala_foreign_tuple_aliases.pl',
+            'Scala correlated foreign-tuple alias/retry cleanup', run_tests).
+fsharp_test('tests/test_wam_r_generator.pl',
+            'R TPD4/TSPD5 aggregate, binding-mode, alias, and retry contract',
+            run_tests([wam_r_generator:kernel_tpd4_e2e_rscript,
+                       wam_r_generator:kernel_tspd5_e2e_rscript])).
+fsharp_test('tests/test_wam_scala_kernels.pl',
+            'TD3/TPD4/TSPD5 Scala kernel structural + runtime parity',
+            ( run_tests(wam_scala_kernels_structural:
+                        distance_kernel_emits_handler_and_stub),
+              run_tests(wam_scala_kernels_structural:
+                        parent_distance_kernel_emits_handler_and_stub),
+              run_tests(wam_scala_kernels_structural:
+                        step_parent_distance_kernel_emits_handler_and_stub),
+              run_tests(wam_scala_kernels_runtime:
+                        transitive_distance_rejects_non_atom_source),
+              run_tests(wam_scala_kernels_runtime:
+                        transitive_parent_distance_rejects_non_atom_nodes),
+              run_tests(wam_scala_kernels_runtime:
+                        transitive_step_parent_distance_parity),
+              run_tests(wam_scala_kernels_runtime:
+                        transitive_step_parent_distance_rejects_non_atom_nodes) )).
+fsharp_test('tests/test_wam_haskell_target.pl',
+            'TD3/TPD4/TSPD5/A* Haskell kernel regressions',
+            (test_multi_output_foreign_filters_bound_results,
+             test_multi_output_foreign_retry_filters_and_pops,
+             test_same_kind_kernel_body_deduplicated,
+             test_tpd4_generated_ghc_smoke,
+             test_tspd5_generated_ghc_smoke,
+             test_astar_weighted_facts_wired_into_generated_project)).
+fsharp_test('tests/test_wam_elixir_target.pl',
+            'TD3/TPD4/TSPD5/A* Elixir kernel regressions',
+            (test_graph_kernel_transitive_distance_uses_distplus_bfs,
+             test_kernel_dispatch_emits_transitive_distance_module,
+             test_kernel_dispatch_transitive_distance_e2e,
+             test_graph_kernel_transitive_parent_distance_uses_bfs_parent_sets,
+             test_kernel_dispatch_emits_transitive_parent_distance_module,
+             test_kernel_dispatch_transitive_parent_distance_e2e,
+             test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime,
+             test_graph_kernel_tspd_uses_bfs_correlated_contract,
+             test_kernel_dispatch_emits_transitive_step_parent_distance_module,
+             test_shared_detector_finds_transitive_step_parent_distance,
+             test_graph_kernel_astar_shortest_path_emitted_in_runtime,
+             test_graph_kernel_astar_uses_minkowski_f_cost,
+             test_kernel_dispatch_emits_astar_shortest_path_module,
+             test_shared_detector_finds_astar_shortest_path)).
+fsharp_test('tests/core/test_wam_llvm_reach_execution.pl',
+            'TD3 LLVM bound-distance + range-safety execution', test_all).
+fsharp_test('tests/core/test_wam_llvm_td3_stream_execution.pl',
+            'TD3 LLVM exact paired-stream execution', test_all).
 fsharp_test('tests/core/test_wam_fsharp_dotnet_smoke.pl',
-            'F# WAM dotnet runtime smoke').
+            'F# WAM dotnet runtime smoke', run_tests).
 fsharp_test('tests/core/test_wam_lmdb_cross_target_conformance.pl',
-            'WAM LMDB cross-target conformance (F# eager/lazy/cached vs oracle; Rust opt-in)').
+            'WAM LMDB cross-target conformance (F# eager/lazy/cached vs oracle; Rust opt-in)',
+            run_tests).
 
-run_one(RelPath, Label, Status) :-
+run_one(RelPath, Label, Goal, Status) :-
     repo_root(Root),
     atom_concat(Root, '/', Root1),
     atom_concat(Root1, RelPath, AbsPath),
     format('~n──── ~w ────~n', [Label]),
     format('     ~w~n', [RelPath]),
     catch(
-        (   process_create(path(swipl),
-                ['-q', '-g', 'run_tests', '-t', 'halt', AbsPath],
+        (   term_to_atom(Goal, GoalAtom),
+            process_create(path(swipl),
+                ['-q', '-l', AbsPath, '-g', GoalAtom, '-t', 'halt'],
                 [stdout(std), stderr(std), process(Pid)]),
             process_wait(Pid, exit(EC))
         ),
@@ -71,15 +175,15 @@ main :-
     format('~n========================================~n', []),
     format('F# WAM target test suite~n', []),
     format('========================================~n', []),
-    findall(P-L, fsharp_test(P, L), Tests),
+    findall(test(P, L, G), fsharp_test(P, L, G), Tests),
     length(Tests, Total),
     run_all(Tests, [], Results),
     summarize(Results, Total).
 
 run_all([], Acc, Reversed) :-
     reverse(Acc, Reversed).
-run_all([P-L|Rest], Acc, Out) :-
-    run_one(P, L, Status),
+run_all([test(P, L, G)|Rest], Acc, Out) :-
+    run_one(P, L, G, Status),
     run_all(Rest, [Status|Acc], Out).
 
 summarize(Results, Total) :-

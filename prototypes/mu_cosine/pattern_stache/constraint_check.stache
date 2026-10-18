@@ -1,0 +1,11 @@
+{{! dialect(pattern_stache, 1) }}
+{{match constraint}}
+{{case has_type(X, substrate(pearltrees))}}checker(pt_lineage_walk({{q:X}}), phase(elaboration))
+{{case has_type(X, substrate(C))}}checker(substrate_table({{q:X}}, {{q:C}}), phase(elaboration))
+{{case has_type(X, judge(J))}}checker(judge_registry({{q:X}}, {{q:J}}), phase(elaboration))
+{{case non_amplifying(Op)}}checker(closed_fact(non_amplifying({{q:Op}})), phase(elaboration))
+{{case owns(S, C)}}checker(ownership_table({{q:S}}, {{q:C}}), phase(elaboration))
+{{case mu_bounded(Op, B)}}checker(property_test(mu_bounded({{q:Op}}, {{q:B}})), phase(obligation))
+{{case in_support(K, V)}}checker(corpus_data(in_support({{q:K}}, {{q:V}})), phase(runtime))
+{{default}}checker(none, phase(no_checker))
+{{/match}}

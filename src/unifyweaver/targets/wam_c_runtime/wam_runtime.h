@@ -16,6 +16,8 @@
 
 #define WAM_HALT -1
 #define WAM_ERR_OOB -2
+#define WAM_ERR_UNSUPPORTED -11
+#define WAM_ERR_NOMEM -12
 #define WAM_MAX_REGS 256
 #define WAM_INITIAL_CAP 64
 #define WAM_PRED_HASH_SIZE 256
@@ -33,7 +35,9 @@
 #define WAM_META_DISJ_RIGHT -7
 #define WAM_META_ITE_THEN -8
 #define WAM_META_ITE_ELSE -9
-#define WAM_FACT_TABLE_RETRY -10
+#define WAM_FACT_TABLE_RETRY -13
+#define WAM_FOREIGN_STREAM_NEXT -10
+#define WAM_MEMBER_NEXT -12
 
 typedef struct WamState WamState;
 typedef bool (*WamForeignHandler)(WamState *state, const char *pred, int arity);
@@ -55,27 +59,56 @@ typedef struct {
     } data;
 } WamValue;
 
-/* Trail entry */
+/* Trail entry. Heap cells are stored by index so realloc of H_array
+   cannot dangle. Non-heap cells (A/X/Y registers) keep a raw pointer. */
 typedef struct {
-    WamValue *cell;
+    WamValue *cell;  /* non-heap location; NULL when heap_addr >= 0 */
+    int heap_addr;   /* heap index, or -1 if cell is not in H_array */
     WamValue old_val;
 } TrailEntry;
+
+/* Environment Frame */
+typedef struct {
+    int cp;
+    int saved_e;
+    WamValue y_regs[32];
+} EnvFrame;
 
 /* Choice point */
 typedef struct {
     int next_pc;
+    bool is_ite;
     int cp;
     int heap_size;
     int trail_size;
     int stack_size;
     int call_base_top;
+    /* Active call barriers are mutable stack slots. A caller CALL may reuse
+       and overwrite a slot after this alternative returns, so restoring only
+       call_base_top is insufficient for retrying a cut-bearing callee. */
+    int call_bases[WAM_CALL_STACK_SIZE];
+    bool call_base_preserve_choice[WAM_CALL_STACK_SIZE];
     int aggregate_group_top;
     int conj_top;
     int disj_top;
     int ite_top;
     int fact_table_top;
+    int arg_ctx_top;   /* read-mode arg-context depth at push time */
     int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
+    /* Environment slots are reused after deallocate. Snapshot every live
+       frame so a later backtrack restores the Y-register values as well as E. */
+    EnvFrame *env_frames;
+    int env_count;
+    /* Owned only when next_pc == WAM_FOREIGN_STREAM_NEXT. */
+    WamValue *foreign_results;
+    int foreign_result_count;
+    int foreign_result_index;
+    int foreign_result_reg;
+    int foreign_resume_pc;
+    /* Live remaining tail when next_pc == WAM_MEMBER_NEXT. Heap-shared:
+       tag+ref_addr into cells older than this CP heap_size. */
+    WamValue member_rest;
 } ChoicePoint;
 
 typedef struct {
@@ -161,13 +194,6 @@ typedef struct {
     int return_pc;
 } WamFactTableFrame;
 
-/* Environment Frame */
-typedef struct {
-    int cp;
-    int saved_e;
-    WamValue y_regs[32];
-} EnvFrame;
-
 /* Wam Mode */
 typedef enum {
     MODE_READ = 0,
@@ -185,6 +211,11 @@ typedef enum {
     INSTR_CALL, INSTR_EXECUTE, INSTR_PROCEED,
     INSTR_ALLOCATE, INSTR_DEALLOCATE,
     INSTR_TRY_ME_ELSE, INSTR_RETRY_ME_ELSE, INSTR_TRUST_ME,
+    /* Indexed-dispatch chain ops (wam_target format_dispatch_chain).
+     * Distinct from TRY_ME_ELSE / RETRY_ME_ELSE / TRUST_ME: the
+     * instruction target is the clause body, and the choice-point
+     * next_pc is the next chain instruction (P+1). */
+    INSTR_TRY, INSTR_RETRY, INSTR_TRUST,
     INSTR_GET_LEVEL, INSTR_CUT, INSTR_CUT_ITE, INSTR_JUMP,
     INSTR_SWITCH_ON_CONSTANT, INSTR_SWITCH_ON_STRUCTURE, INSTR_SWITCH_ON_TERM,
     INSTR_BUILTIN_CALL, INSTR_CALL_FOREIGN,
@@ -198,9 +229,13 @@ typedef struct {
     int target_pc;
 } HashEntry;
 
+/* Predicate registry flags */
+#define WAM_PRED_FACT_ELIGIBLE (1U << 0)
+
 typedef struct {
     const char *name;
     int pc;
+    unsigned int flags;
 } PredEntry;
 
 typedef struct AtomEntry {
@@ -219,11 +254,35 @@ typedef struct {
     const char *parent;
 } CategoryEdge;
 
+/* Predicate-isolated directed edge for TSPD5 (and similar) kernels. */
+typedef struct {
+    const char *relation;
+    const char *child;
+    const char *parent;
+} RelationEdge;
+
+/* Maps a foreign kernel (pred, arity) onto its edge relation name.
+ * heur_relation is set for astar_shortest_path4; NULL for other kernels. */
+typedef struct {
+    const char *pred;
+    int arity;
+    const char *relation;
+    const char *heur_relation;
+} KernelEdgeBinding;
+
 typedef struct {
     const char *source;
     const char *target;
     double weight;
 } WeightedEdge;
+
+/* Predicate-isolated weighted edge for WSP3 (mirrors RelationEdge for TSPD5). */
+typedef struct {
+    const char *relation;
+    const char *source;
+    const char *target;
+    double weight;
+} WeightedRelationEdge;
 
 typedef struct {
     WamState *owner_state;
@@ -324,6 +383,7 @@ typedef struct {
 typedef struct {
     int target_pc;
     int arity;
+    int is_ite;
 } WamChoiceInstr;
 
 typedef struct {
@@ -370,12 +430,57 @@ typedef struct {
 } Instruction;
 
 /* WAM state */
+/* Saved read-mode argument context.
+ *
+ * S is a single register, but the compiler emits nested terms
+ * INTERLEAVED with the enclosing term's arguments rather than after
+ * them. A head like `p([tk(X)|R], X, R)` compiles to
+ *
+ *     get_list A1
+ *     unify_variable X1        % cons head
+ *     get_structure tk/1, X1   % nested -- overwrites S
+ *     unify_variable X2        % tk's argument
+ *     unify_variable X3        % must read the cons TAIL
+ *
+ * With a bare S register the nested get_structure destroys the pointer
+ * to the cons tail, and the last unify_variable reads whatever follows
+ * tk's arguments on the heap -- past H entirely for a one-element list.
+ * That was a wrong answer at -O0 and a SIGSEGV at -O1.
+ *
+ * Each read-mode get_structure/get_list pushes the S it is about to
+ * overwrite together with a countdown of the arguments the new term
+ * owns; when that countdown reaches zero the unify_* instruction
+ * restores the enclosing S.
+ *
+ * WRITE mode has the same defect for the same reason. Building the same
+ * head with an unbound output, the cons cell reserves two heap slots but
+ * the nested get_structure then allocates at H, so the following
+ * unify_* appended AFTER the nested term's arguments and the cons TAIL
+ * slot was left uninitialised -- `mk(X, [tk(X)|[]])` produced a list
+ * whose tail was garbage, and every such query silently failed. Write
+ * contexts therefore carry the destination address of the next argument
+ * cell rather than relying on H growing one cell per unify_*.
+ *
+ * WAM_ARG_CTX_MAX bounds nesting depth of a single head term, not
+ * program size. */
+#define WAM_ARG_CTX_MAX 64
+
+typedef struct {
+    int resume_s;   /* READ: S to restore once this term's args are done */
+    int dest;       /* WRITE: heap address of this term's next arg cell  */
+    int remaining;  /* argument cells still to be filled/read            */
+    int is_write;   /* 1 = write mode context, 0 = read mode             */
+} WamArgCtx;
+
+/* WAM state */
 struct WamState {
     int P;    // Program Counter
     int CP;   // Continuation Pointer
     int S;    // Structure Pointer
     int HB;   // Heap Backtrack Pointer
     WamMode mode; // Read/Write mode for structure unification
+    WamArgCtx arg_ctx[WAM_ARG_CTX_MAX]; // nested read-mode arg contexts
+    int arg_ctx_top;                    // number of active contexts
     
     /* Registers: A and X registers share the same space typically */
     WamValue A[WAM_MAX_REGS];
@@ -456,13 +561,32 @@ struct WamState {
     WamCategoryIdValueIndexEntry *category_id_by_value;
     int category_id_by_value_cap;
 
-    /* Native weighted_shortest_path3 kernel data */
+    /* Native weighted_shortest_path3 / astar kernel data (global bag; A* / legacy) */
     WeightedEdge *weighted_edges;
     int weighted_edge_count;
     int weighted_edge_cap;
     WeightedEdge *direct_distance_edges;
     int direct_distance_edge_count;
     int direct_distance_edge_cap;
+
+    /* Predicate-isolated weighted edges (WSP3; not global weighted_edges) */
+    WeightedRelationEdge *weighted_relation_edges;
+    int weighted_relation_edge_count;
+    int weighted_relation_edge_cap;
+
+    /* Predicate-isolated relation edges (TSPD5; not global category_edges) */
+    RelationEdge *relation_edges;
+    int relation_edge_count;
+    int relation_edge_cap;
+    KernelEdgeBinding *kernel_edge_bindings;
+    int kernel_edge_binding_count;
+    int kernel_edge_binding_cap;
+
+    /* Query-local runtime error. 0 = none. Distinct from WAM_HALT
+     * (logical failure). First error is kept until the next query. */
+    int error;
+    const char *error_op;
+    int error_arity;
 };
 
 bool step_wam(WamState* state, Instruction* instr);
@@ -474,7 +598,18 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity);
 bool wam_execute_foreign_predicate(WamState *state, const char *pred, int arity);
 void wam_register_category_parent(WamState *state, const char *child, const char *parent);
 void wam_register_transitive_edge(WamState *state, const char *child, const char *parent);
+void wam_register_relation_edge(WamState *state, const char *relation,
+                                const char *from, const char *to);
+void wam_bind_kernel_edge_relation(WamState *state, const char *pred, int arity,
+                                   const char *relation);
+void wam_bind_kernel_heur_relation(WamState *state, const char *pred, int arity,
+                                   const char *heur_relation);
+const char *wam_lookup_kernel_edge_relation(WamState *state, const char *pred, int arity);
+const char *wam_lookup_kernel_heur_relation(WamState *state, const char *pred, int arity);
 void wam_register_weighted_edge(WamState *state, const char *source, const char *target, double weight);
+void wam_register_relation_weighted_edge(WamState *state, const char *relation,
+                                         const char *from, const char *to,
+                                         double weight);
 void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, double distance);
 void wam_register_category_ancestor_kernel(WamState *state, const char *pred, int max_depth);
 void wam_register_bidirectional_ancestor_kernel(WamState *state, const char *pred,
@@ -485,9 +620,13 @@ void wam_register_bidirectional_ancestor_kernel(WamState *state, const char *pre
 void wam_register_transitive_closure_kernel(WamState *state, const char *pred);
 void wam_register_transitive_distance_kernel(WamState *state, const char *pred);
 void wam_register_transitive_parent_distance_kernel(WamState *state, const char *pred);
-void wam_register_transitive_step_parent_distance_kernel(WamState *state, const char *pred);
-void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred);
-void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred);
+void wam_register_transitive_step_parent_distance_kernel(WamState *state, const char *pred,
+                                                         const char *edge_relation);
+void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred,
+                                                const char *edge_relation);
+void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred,
+                                             const char *edge_relation,
+                                             const char *heur_relation);
 bool wam_category_ancestor_handler(WamState *state, const char *pred, int arity);
 bool wam_bidirectional_ancestor_handler(WamState *state, const char *pred, int arity);
 bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity);
@@ -587,6 +726,22 @@ static inline WamValue val_unbound(const char *name) {
     WamValue v; v.tag = VAL_UNBOUND; v.data.unbound_name = name; return v;
 }
 
+static inline void wam_clear_error(WamState *state) {
+    state->error = 0;
+    state->error_op = NULL;
+    state->error_arity = 0;
+}
+
+static inline void wam_set_unsupported_builtin(WamState *state,
+                                               const char *op,
+                                               int arity) {
+    if (state->error != 0)
+        return;
+    state->error = WAM_ERR_UNSUPPORTED;
+    state->error_op = op;
+    state->error_arity = arity;
+}
+
 static inline unsigned int wam_hash_string(const char *name) {
     unsigned int h = 5381;
     while (*name) h = ((h << 5) + h) ^ (unsigned char)*name++;
@@ -598,7 +753,8 @@ static inline unsigned int wam_pred_hash(const char *name) {
 }
 
 static inline void wam_register_predicate_hash(WamState *state,
-                                                const char *name, int pc) {
+                                               const char *name, int pc) {
+    if (!state || !name) return;
     unsigned int idx = wam_pred_hash(name);
     unsigned int probes = 0;
     while (state->pred_hash[idx].name != NULL &&
@@ -610,18 +766,59 @@ static inline void wam_register_predicate_hash(WamState *state,
     if (probes == WAM_PRED_HASH_SIZE) return;
     state->pred_hash[idx].name = name;
     state->pred_hash[idx].pc = pc;
+    /* Re-registering an ordinary/ineligible predicate clears previous eligibility flags */
+    state->pred_hash[idx].flags = 0;
 }
 
-static inline int resolve_predicate_hash(WamState *state, const char *name) {
+static inline void wam_set_predicate_fact_eligible(WamState *state,
+                                                   const char *name,
+                                                   bool eligible) {
+    if (!state || !name) return;
+    unsigned int idx = wam_pred_hash(name);
+    unsigned int probes = 0;
+    while (state->pred_hash[idx].name != NULL && probes < WAM_PRED_HASH_SIZE) {
+        if (strcmp(state->pred_hash[idx].name, name) == 0) {
+            if (eligible) {
+                state->pred_hash[idx].flags |= WAM_PRED_FACT_ELIGIBLE;
+            } else {
+                state->pred_hash[idx].flags &= ~WAM_PRED_FACT_ELIGIBLE;
+            }
+            return;
+        }
+        idx = (idx + 1) & (WAM_PRED_HASH_SIZE - 1);
+        probes++;
+    }
+}
+
+static inline const PredEntry *resolve_predicate_entry(WamState *state, const char *name) {
     unsigned int idx = wam_pred_hash(name);
     unsigned int probes = 0;
     while (state->pred_hash[idx].name != NULL && probes < WAM_PRED_HASH_SIZE) {
         if (strcmp(state->pred_hash[idx].name, name) == 0)
-            return state->pred_hash[idx].pc;
+            return &state->pred_hash[idx];
         idx = (idx + 1) & (WAM_PRED_HASH_SIZE - 1);
         probes++;
     }
-    return -1;
+    return NULL;
+}
+
+static inline int resolve_predicate_hash(WamState *state, const char *name) {
+    const PredEntry *entry = resolve_predicate_entry(state, name);
+    return entry ? entry->pc : -1;
+}
+
+static inline const PredEntry *wam_lookup_fact_eligible_entry(WamState *state,
+                                                              const char *goal_atom) {
+    if (!state || !goal_atom) return NULL;
+    if (strchr(goal_atom, '/') != NULL) return NULL;
+    char buf[256];
+    int n = snprintf(buf, sizeof(buf), "%s/1", goal_atom);
+    if (n <= 0 || (size_t)n >= sizeof(buf)) return NULL;
+    const PredEntry *entry = resolve_predicate_entry(state, buf);
+    if (entry && (entry->flags & WAM_PRED_FACT_ELIGIBLE)) {
+        return entry;
+    }
+    return NULL;
 }
 
 static inline void wam_register_predicate(WamState *state, const char *pred, int pc) {
@@ -773,7 +970,20 @@ static inline void trail_binding(WamState *state, WamValue *cell) {
         state->TR_cap = state->TR_cap ? state->TR_cap * 2 : WAM_INITIAL_CAP;
         state->TR_array = realloc(state->TR_array, sizeof(TrailEntry) * state->TR_cap);
     }
-    state->TR_array[state->TR].cell = cell;
+    /* Registers are separate allocations: pointer subtraction from the heap
+       would be undefined. Classify aligned addresses before deriving an index. */
+    uintptr_t addr = (uintptr_t)(void *)cell;
+    uintptr_t base = (uintptr_t)(void *)state->H_array;
+    uintptr_t offset = addr - base;
+    if (state->H_array && cell && addr >= base && state->H > 0 &&
+        offset % sizeof(WamValue) == 0 &&
+        offset / sizeof(WamValue) < (uintptr_t)state->H) {
+        state->TR_array[state->TR].cell = NULL;
+        state->TR_array[state->TR].heap_addr = (int)(offset / sizeof(WamValue));
+    } else {
+        state->TR_array[state->TR].cell = cell;
+        state->TR_array[state->TR].heap_addr = -1;
+    }
     state->TR_array[state->TR].old_val = *cell;
     state->TR++;
 }
@@ -1028,52 +1238,111 @@ static inline void wam_trim_fact_table_frames(WamState *state, int target_top) {
     state->fact_table_top = target_top;
 }
 
-static inline void push_choice_point(WamState *state, int next_pc, int arity) {
+static inline bool push_choice_point(WamState *state, int next_pc, int arity) {
     if (state->B >= state->B_cap) {
-        state->B_cap = state->B_cap ? state->B_cap * 2 : WAM_INITIAL_CAP;
-        state->B_array = realloc(state->B_array, sizeof(ChoicePoint) * state->B_cap);
+        int new_cap = state->B_cap ? state->B_cap * 2 : WAM_INITIAL_CAP;
+        ChoicePoint *grown = realloc(state->B_array,
+                                     sizeof(ChoicePoint) * (size_t)new_cap);
+        if (!grown) {
+            state->error = WAM_ERR_NOMEM;
+            return false;
+        }
+        state->B_array = grown;
+        state->B_cap = new_cap;
     }
     ChoicePoint *cp = &state->B_array[state->B];
+    memset(cp, 0, sizeof(ChoicePoint));
     cp->next_pc = next_pc;
     cp->cp = state->CP;
     cp->heap_size = state->H;
     cp->trail_size = state->TR;
     cp->stack_size = state->E;
     cp->call_base_top = state->call_base_top;
+    if (cp->call_base_top > 0) {
+        memcpy(cp->call_bases, state->call_bases,
+               sizeof(int) * (size_t)cp->call_base_top);
+        memcpy(cp->call_base_preserve_choice, state->call_base_preserve_choice,
+               sizeof(bool) * (size_t)cp->call_base_top);
+    }
     cp->aggregate_group_top = state->aggregate_group_top;
     cp->conj_top = state->conj_top;
     cp->disj_top = state->disj_top;
     cp->ite_top = state->ite_top;
     cp->fact_table_top = state->fact_table_top;
 
+    /* Read-mode argument contexts are per-clause-head: a clause that
+       fails partway through head unification leaves entries behind, and
+       the next clause's get_* would push on top of them. Restoring the
+       depth on backtracking keeps each clause's head starting clean. */
+    cp->arg_ctx_top = state->arg_ctx_top;
+
+    cp->env_count = state->E + 1;
+    if (cp->env_count > 0) {
+        cp->env_frames = malloc(sizeof(EnvFrame) * (size_t)cp->env_count);
+        if (cp->env_frames) {
+            memcpy(cp->env_frames, state->E_array,
+                   sizeof(EnvFrame) * (size_t)cp->env_count);
+        } else {
+            cp->env_count = 0;
+            state->error = WAM_ERR_NOMEM;
+            return false;
+        }
+    }
+    
     int save_arity = arity < 32 ? arity : 32;
     cp->arity = save_arity;
     memcpy(cp->a_regs, state->A, sizeof(WamValue) * save_arity);
     state->B++;
     state->HB = state->H;
+    return true;
 }
 static inline void unwind_trail(WamState *state, int target_tr) {
     while (state->TR > target_tr) {
         state->TR--;
         TrailEntry *te = &state->TR_array[state->TR];
-        *te->cell = te->old_val;
+        if (te->heap_addr >= 0) {
+            if (state->H_array && te->heap_addr < state->H_cap) {
+                state->H_array[te->heap_addr] = te->old_val;
+            }
+        } else if (te->cell) {
+            *te->cell = te->old_val;
+        }
     }
 }
 static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
     state->H = cp->heap_size;
     state->E = cp->stack_size;
+    if (cp->env_count > 0 && cp->env_frames) {
+        memcpy(state->E_array, cp->env_frames,
+               sizeof(EnvFrame) * (size_t)cp->env_count);
+    }
     state->CP = cp->cp;
     state->call_base_top = cp->call_base_top;
+    if (cp->call_base_top > 0) {
+        memcpy(state->call_bases, cp->call_bases,
+               sizeof(int) * (size_t)cp->call_base_top);
+        memcpy(state->call_base_preserve_choice, cp->call_base_preserve_choice,
+               sizeof(bool) * (size_t)cp->call_base_top);
+    }
     wam_trim_aggregate_group_iters(state, cp->aggregate_group_top);
     wam_trim_conj_frames(state, cp->conj_top);
     wam_trim_disj_frames(state, cp->disj_top);
     wam_trim_ite_frames(state, cp->ite_top);
     wam_trim_fact_table_frames(state, cp->fact_table_top);
     unwind_trail(state, cp->trail_size);
+    if (cp->arg_ctx_top >= 0 && cp->arg_ctx_top <= state->arg_ctx_top) {
+        state->arg_ctx_top = cp->arg_ctx_top;
+    }
     memcpy(state->A, cp->a_regs, sizeof(WamValue) * cp->arity);
 }
 static inline void pop_choice_point(WamState *state) {
     if (state->B > 0) {
+        ChoicePoint *cp = &state->B_array[state->B - 1];
+        free(cp->foreign_results);
+        cp->foreign_results = NULL;
+        free(cp->env_frames);
+        cp->env_frames = NULL;
+        cp->env_count = 0;
         state->B--;
         if (state->B > 0) {
             state->HB = state->B_array[state->B - 1].heap_size;
@@ -1110,54 +1379,50 @@ static inline void update_choice_point(WamState *state, int next_pc) {
     }
 }
 
-/* T9 fact-table enumerator.  Scans candidate rows from `start`, unifying each
- * bound query arg against the corresponding column (an unbound query arg matches
- * any column and is bound).  On the first match it leaves a fact-table choice
- * point (only if more candidates remain) so backtracking yields the next match,
- * binds the unbound args, and returns true.  Does NOT touch state->P: the
- * initial call advances via the INSTR_CALL_FOREIGN `state->P++`; the resume path
- * (wam_resume_fact_table) restores state->P from the frame return_pc.  Defined
- * here (static inline) so both the generated handlers and the resume function
- * can call it across translation units.  rows is row-major flattened. */
+/* Enumerate ground atom/integer rows in source order. Each attempted row is
+ * transactional: later aliased columns can reject an earlier binding. The CP
+ * saves the pre-binding registers/trail, including for direct register vars. */
 static inline bool wam_fact_table_scan(WamState *state, const WamValue *rows,
                                        int arity, const int *indices, int count,
                                        int start, int return_pc) {
-    if (arity > WAM_MAX_REGS) return false;
-    WamValue *cells[WAM_MAX_REGS];
-    for (int i = 0; i < arity; i++) {
-        cells[i] = wam_deref_ptr(state, &state->A[i]);
-    }
+    /* ChoicePoint currently snapshots at most 32 argument registers. */
+    if (!rows || arity < 1 || arity > 32 || count < 0 ||
+        start < 0 || start > count) return false;
     for (int pos = start; pos < count; pos++) {
         int row_index = indices ? indices[pos] : pos;
-        const WamValue *row = &rows[row_index * arity];
+        if (row_index < 0) return false;
+        const WamValue *row = &rows[(size_t)row_index * (size_t)arity];
+        int saved_tr = state->TR;
+        bool retry = pos + 1 < count;
+        if (retry) {
+            if (state->fact_table_top >= WAM_META_GOAL_STACK_SIZE) {
+                state->error = WAM_ERR_OOB;
+                return false;
+            }
+            WamFactTableFrame *frame = &state->fact_table_frames[state->fact_table_top++];
+            *frame = (WamFactTableFrame){ rows, indices, count, pos + 1, arity, return_pc };
+            if (!push_choice_point(state, WAM_FACT_TABLE_RETRY, arity)) {
+                state->fact_table_top--;
+                return false;
+            }
+        }
         bool match = true;
         for (int col = 0; col < arity; col++) {
-            if (!val_is_unbound(*cells[col]) && !val_equal(*cells[col], row[col])) {
+            WamValue *cell = wam_deref_ptr(state, &state->A[col]);
+            if (val_is_unbound(*cell)) {
+                trail_binding(state, cell);
+                *cell = row[col];
+            } else if (!val_equal(*cell, row[col])) {
                 match = false;
                 break;
             }
         }
-        if (!match) continue;
-        /* Leave a choice point for the remaining candidates BEFORE binding, so
-         * the snapshot captures the pre-binding registers and trail. */
-        if (pos + 1 < count) {
-            if (state->fact_table_top >= WAM_META_GOAL_STACK_SIZE) return false;
-            WamFactTableFrame *frame = &state->fact_table_frames[state->fact_table_top++];
-            frame->rows = rows;
-            frame->indices = indices;
-            frame->count = count;
-            frame->pos = pos + 1;
-            frame->arity = arity;
-            frame->return_pc = return_pc;
-            push_choice_point(state, WAM_FACT_TABLE_RETRY, arity);
+        if (match) return true;
+        unwind_trail(state, saved_tr);
+        if (retry) {
+            pop_choice_point(state);
+            state->fact_table_top--;
         }
-        for (int col = 0; col < arity; col++) {
-            if (val_is_unbound(*cells[col])) {
-                trail_binding(state, cells[col]);
-                *cells[col] = row[col];
-            }
-        }
-        return true;
     }
     return false;
 }

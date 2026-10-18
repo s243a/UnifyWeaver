@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: MIT OR Apache-2.0
+# Copyright (c) 2026 John William Creighton (s243a)
+#
+# THROWAWAY Stage-2 measurement spike. NOT part of the default build, NOT wired
+# into resolver.pl / the uw_resolve_wam crate. See docs/reports/wam_rust_stage2_spike.md.
+[package]
+name = "stage2_spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+
+[[bin]]
+name = "stage2_spike"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

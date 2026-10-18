@@ -1,0 +1,182 @@
+{
+  "schema": "unifyweaver.sm-fs-ranking-candidate-review.v2",
+  "review_document": "REVIEW_sm_fs_ranking_candidate_v2_lock.md",
+  "review_document_sha256": "0881dcaa24077a1cfbd3de5b4dd21b69b2bcfd32f8eba21248734bf83c3c8a70",
+  "review_status": "authentic-static-artifact-request-changes-before-step-4",
+  "reviewed_before": [
+    "ranking-optimizer-step",
+    "held-fold-score",
+    "reserve-access",
+    "step-4-prereg-amendment"
+  ],
+  "parent_contracts": {
+    "prior_candidate_review_id": "68e036c59c210002c50eafcbf6333cdb43393383fe916cd1449942f9fcc584f1",
+    "ranking_prereg_id": "0235521270c565a413d69feaa01a6e101fb533261942451a43ddf963e409aca2",
+    "ranking_protocol_sha256": "25bac71a67b317700f6a5123af238f01e9b57225bf4deaf71a6470486bd194f3",
+    "retention_prereg_id": "f3e1d123e6f81191489689d7f7e0fd121e25ff891ada330fe668b8b3238497c1",
+    "retention_protocol_sha256": "5cbe305ed3eb0c2ecbb78b6f032e326c5c0c72bf415d218c538bbe3abdacd3d8"
+  },
+  "candidate": {
+    "path": "~/mu_data/sm_fs_ranking_run_v2/candidate_lock_v2.json",
+    "schema": "unifyweaver.sm-fs-ranking-execution-lock.candidate.v2",
+    "sha256": "a490cff99178ca0187c1e11a880c6618e00594bc4b9e7e8757171440159440e3",
+    "git_commit": "64ee948ed94d502038e5c46421eab5844c9dd899",
+    "ranking_bundle_manifest_sha256": "e01e1e48b5464bd315cff3c982e035f390cab8ba2b4c3ee60322dac65bf35894",
+    "title_table_sha256": "78182f1559123bbbb8ac05a47bb2a32f9651225bee2c574688718a32acf8ba20",
+    "training_plan_sha256": null,
+    "initialized_checkpoints": {
+      "3997001": "a3bf4c0588cc3e4cf1ad335b66440c113e7ee11fd116bd7307a3cee57447098e",
+      "3997002": "fb353e693951819683793641464155e144caad73c553039fc64f1c6e253ad796",
+      "3997003": "f42bdea0071a64dca0dad5312178127906b96215ba6890f6a37ad19d87ffdd5a"
+    },
+    "code_sha256": {
+      "fine_tune_channel_heads.py": "4e156eebb6675d950a6b5b41bdeaa87e2d2df2780b6fd5706f5c0eb54d15395c",
+      "judge_cards.py": "71c8733a8dcdf782dc4620a65c99846e2575e2400032336fca599aaa1537844d",
+      "mu_attention.py": "778664fa6e2b95100bff526bab5751b3907887a2e77ea412897dcffffb788443",
+      "sm_fs_protocols.py": "a007663a9339ab371ec7093dfbaacafbd75c779c2149d6e63a26730814a903e4",
+      "sm_fs_ranking_construct.py": "40ed4212f218817166df305b78280966a6af9561d5e3a12440d40af9a2ff67bc",
+      "sm_fs_ranking_lock_verify.py": "1170f39707f4d6343b68628bb5f7934199f2e942679009387a091e89853031b1",
+      "sm_fs_ranking_pipeline.py": "8f81059cdbbb9300d97e8a0bb64bcc79a79a454391917a415e7634eb3850b36a"
+    },
+    "fitting_authorized": false,
+    "static_hashes_match": true,
+    "supplied_verifier_accepts": true,
+    "complete_state_reproduction_enforced": false
+  },
+  "grounding": {
+    "queries": 361,
+    "candidates": 359,
+    "pairs": 129599,
+    "lineage_blocks": 82,
+    "fold_query_counts": [
+      73,
+      72,
+      72,
+      72,
+      72
+    ],
+    "fold_assignment_sha256": "b5439b1acdfb5020ecb7fb4fad437fd183242408d09056e1ed7ec90d33335f37",
+    "fold0_projection_rows": 103392,
+    "fold0_held_queries_excluded": 73,
+    "fold0_projection_held_query_overlap": 0,
+    "fold0_projection_meta_sha256": "18a418d0abb1ab23c8199e1d6c89227acebdc798e3467e5cb7e31adebeca8695",
+    "fold0_projection_sha256": "3bd7feb3742895d72866d5ba5dc90427db34ad973ec95fa43fe5f878f664b539",
+    "countersigned_checkpoint_loads_in_pipeline": false,
+    "optimizer_reachable": false,
+    "fresh_training_plan_present": false,
+    "final_lock_emitter_present": false,
+    "verification_receipt_emitter_present": false,
+    "frozen_bootstrap_implemented": false,
+    "nonfinite_scores_fail_closed": false
+  },
+  "blocking_findings": [
+    "countersigned-checkpoint-config-incompatible-with-fit-and-evaluate",
+    "preregistration-id-cycle-remains-and-fresh-v2-plan-absent",
+    "final-lock-and-independent-receipt-not-candidate-bound",
+    "projection-fit-evaluation-and-decision-receipts-self-authenticate",
+    "claimed-environment-tokenizer-reference-augmentation-and-trainable-bindings-not-enforced",
+    "frozen-bootstrap-and-nonfinite-ranking-fail-closed-contract-not-implemented",
+    "transaction-rollback-directory-durability-and-private-mode-contract-incomplete",
+    "decision-bearing-fit-evaluate-finalize-and-bootstrap-tests-absent"
+  ],
+  "authorization": {
+    "step_4_prereg_amendment_authorized": false,
+    "retention_cascade_authorized": false,
+    "model_fitting_authorized": false,
+    "held_fold_scoring_authorized": false,
+    "reserve_access_authorized": false,
+    "checkpoint_release_authorized": false
+  },
+  "replacement_sequence": [
+    "extract-id-free-sampler-and-remove-hard-coded-prereg-ids-from-candidate-bound-code",
+    "fix-checkpoint-construction-and-smoke-all-three-initializations-through-optimizer",
+    "freeze-and-independently-verify-all-five-train-only-projections-before-candidate",
+    "emit-fresh-plan-binding-30-jobs-projections-code-exact-trainables-and-inference",
+    "implement-candidate-derived-final-lock-and-independent-review-receipt-verifier",
+    "chain-and-verify-fit-evaluation-and-decision-receipts-before-held-access",
+    "implement-frozen-sha256-bootstrap-nearest-rank-endpoints-and-finite-score-gates",
+    "complete-private-transaction-rollback-directory-fsync-mode-and-byte-handoff",
+    "add-real-load-one-step-evaluate-decide-known-answer-and-adversarial-tests",
+    "generate-fresh-plan-and-candidate-in-new-no-replace-namespace",
+    "independently-review-fresh-candidate",
+    "only-then-amend-ranking-prereg-and-cascade-retention-still-blocked"
+  ],
+  "frozen_later_amendment_requirements": {
+    "ranking_estimand_unchanged": true,
+    "queries": 361,
+    "candidates": 359,
+    "folds": 5,
+    "lineage_blocks": 82,
+    "fold_assignment_sha256": "b5439b1acdfb5020ecb7fb4fad437fd183242408d09056e1ed7ec90d33335f37",
+    "evidence_scope": "map-near-lineage-blocked-catalog-transductive",
+    "primary": {
+      "metric": "exact-destination-mrr",
+      "contrast": "graded-negative-minus-positive-only",
+      "minimum_point_gain": 0.01,
+      "interval_lower_strictly_greater_than": 0.0,
+      "tie_rule": "ascending-frozen-catalog-column",
+      "secondary_rescue_authorized": false,
+      "passing_authorizes": "new-reserve-preregistration-only"
+    },
+    "reserve_rows_untouched": 1481,
+    "ranking_seeds": [
+      3997001,
+      3997002,
+      3997003
+    ],
+    "track_t_independent_regrowth": true,
+    "track_t_seeds": [
+      3998101,
+      3998102,
+      3998103
+    ],
+    "bootstrap": {
+      "seed_average_within_query_before_contrast": true,
+      "unit": "frozen-adaptive-lineage-block",
+      "observed_eligible_blocks": 82,
+      "draws_per_replicate": 82,
+      "resamples": 9999,
+      "seed": 3997999,
+      "same_multiplicities_both_arms": true,
+      "query_weighted_mean_preserved": true,
+      "replicate_formula": "sum_b(m_b*sum_q_in_b(d_q))/sum_b(m_b*n_b)",
+      "sampler_schema": "unifyweaver.sm-fs-ranking-bootstrap-key.v1",
+      "sampler_id": "sm-fs-ranking-bootstrap-v1",
+      "sampler_serialization": "canonical-json-sorted-keys-compact-utf8-terminal-lf",
+      "sampler_key_fields": [
+        "draw",
+        "replicate",
+        "retry",
+        "sampler_id",
+        "schema",
+        "seed"
+      ],
+      "sampler_index": "sha256-unsigned-big-endian-rejection-then-modulo-82",
+      "lower_order_zero_based": 249,
+      "upper_order_zero_based": 9749,
+      "order_rule": "nearest-rank-ceil-p-times-resamples-one-based",
+      "minimum_observed_blocks": 20,
+      "minimum_unique_blocks_per_replicate": null
+    }
+  },
+  "retention_cascade": {
+    "only_allowed_source_changes": [
+      "ranking_protocol_sha256",
+      "ranking_prereg_id",
+      "negative_bundle_status",
+      "negative_bundle_sha256"
+    ],
+    "execution_authorized": false,
+    "null_ledger_status": "blocked-until-frozen-and-verified",
+    "null_ledger_sha256": null,
+    "behavior_panel_sha256": null,
+    "fresh_target_cohort_stays_blocked": true,
+    "reserve_rows_authorized": false,
+    "quarantined_rows_authorized": false,
+    "track_r_contract_unchanged": true,
+    "track_t_contract_unchanged": true,
+    "inference_and_bonferroni_unchanged": true,
+    "privacy_and_checkpoint_release_gates_unchanged": true
+  },
+  "review_id": "916cad2f7b3a9d99fa4b8549cd4423b4849c3f205075cd0734e3672a9044aa2d"
+}

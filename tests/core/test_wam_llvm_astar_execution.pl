@@ -11,10 +11,8 @@
 %      the %WeightedFact edge table.
 %   2. @wam_astar4_run passes both the edge table AND the heuristic
 %      pointer to @wam_astar_weighted_distance.
-%   3. The A* helper's min-scan computes f(n) = g(n) + h(n) where
-%      h(n)=0, confirming the extra fadd doesn't corrupt the result.
-%   4. The float bitcast return path (@wam_set_reg_double) is
-%      validated for A* specifically.
+%   3. The A* helper uses a correctness-safe g-primary frontier.
+%   4. The canonical A1/A2/A3/A4 ABI returns a typed float in A4.
 %
 % Test graph (same as M5.9 Dijkstra — greedy ≠ optimal):
 %
@@ -36,8 +34,8 @@ astar_wedge(b, c, 1.0).
 astar_wedge(c, d, 1.0).
 astar_wedge(a, d, 100.0).
 
-:- dynamic my_astar/3.
-my_astar(_, _, _) :- fail.
+:- dynamic my_astar/4.
+my_astar(_, _, _, _) :- fail.
 
 host_target_triple(Triple) :-
     ( catch(
@@ -78,10 +76,10 @@ zip_loop(_, _, A, S) :- sort(1, @<, A, S).
 add_b(L, _, A, A) :- memberchk(L-_, A), !.
 add_b(L, I, A, [L-I|A]).
 
-extract_instr_count(Src, P, C) :-
+extract_instr_count(Src, _P, C) :-
     Pat = "@module_code = private constant \\[(?<n>\\d+) x %Instruction\\]",
     re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
-extract_label_count(Src, P, C) :-
+extract_label_count(Src, _P, C) :-
     Pat = "@module_labels = private constant \\[(?<n>\\d+) x i32\\]",
     re_matchsub(Pat, Src, M, []), get_dict(n, M, NS), number_string(C, NS).
 
@@ -97,12 +95,12 @@ run_astar_test :-
     tmp_file_stream(text, LLPath, Stream), close(Stream),
     host_target_triple(Triple),
     write_wam_llvm_project(
-        [user:my_astar/3],
+        [user:my_astar/4],
         [ module_name('astar_exec'),
           target_triple(Triple),
           target_datalayout(''),
           foreign_predicates([
-              my_astar/3 - astar_shortest_path4 - [weight_pred(astar_wedge/3)]
+              my_astar/4 - astar_shortest_path4 - [weight_pred(astar_wedge/3)]
           ])
         ],
         LLPath),
@@ -115,11 +113,13 @@ run_astar_test :-
     ),
     ( sub_string(Src, _, _, _, 'zeroinitializer')
     -> format('  PASS: zero heuristic array emitted~n')
-    ;  format('  FAIL: heuristic array missing~n')
+    ;  format('  FAIL: heuristic array missing~n'),
+       throw(zero_heuristic_missing)
     ),
     ( sub_string(Src, _, _, _, 'call i1 @wam_astar4_run')
     -> format('  PASS: instance case calls @wam_astar4_run~n')
-    ;  format('  FAIL: @wam_astar4_run call missing~n')
+    ;  format('  FAIL: @wam_astar4_run call missing~n'),
+       throw(astar4_run_call_missing)
     ),
 
     % Extract atom IDs and build a driver main().
@@ -137,8 +137,10 @@ entry:
   %a1 = insertvalue %Value %a1_0, i64 ~w, 1
   %a2_0 = insertvalue %Value undef, i32 0, 0
   %a2 = insertvalue %Value %a2_0, i64 ~w, 1
-  %a3_0 = insertvalue %Value undef, i32 6, 0
-  %a3 = insertvalue %Value %a3_0, i64 0, 1
+  %a3_0 = insertvalue %Value undef, i32 1, 0
+  %a3 = insertvalue %Value %a3_0, i64 1, 1
+  %a4_0 = insertvalue %Value undef, i32 6, 0
+  %a4 = insertvalue %Value %a4_0, i64 0, 1
 
   %vm = call %WamState* @wam_state_new(
       %Instruction* getelementptr ([~w x %Instruction], [~w x %Instruction]* @module_code, i32 0, i32 0),
@@ -149,12 +151,18 @@ entry:
   call void @wam_set_reg(%WamState* %vm, i32 0, %Value %a1)
   call void @wam_set_reg(%WamState* %vm, i32 1, %Value %a2)
   call void @wam_set_reg(%WamState* %vm, i32 2, %Value %a3)
+  call void @wam_set_reg(%WamState* %vm, i32 3, %Value %a4)
 
   %ok = call i1 @run_loop(%WamState* %vm)
   br i1 %ok, label %hit, label %miss
 
 hit:
-  %dist = call double @wam_get_reg_double(%WamState* %vm, i32 2)
+  %cost_tag = call i32 @wam_get_reg_tag(%WamState* %vm, i32 3)
+  %is_float = icmp eq i32 %cost_tag, 2
+  br i1 %is_float, label %typed, label %miss
+
+typed:
+  %dist = call double @wam_get_reg_double(%WamState* %vm, i32 3)
   %dist100 = fmul double %dist, 1.0e2
   %dist_i32 = fptosi double %dist100 to i32
   ret i32 %dist_i32
@@ -207,7 +215,6 @@ process_which(Tool) :-
         ), _, fail).
 
 test_all :-
-    catch(test_astar_executes, E,
-        format('  ERROR: ~w~n', [E])).
+    test_astar_executes.
 
 :- initialization(test_all, main).

@@ -1,0 +1,136 @@
+{{match part}}{{case helpers}}
+    #[cfg(unix)]
+    fn filesystem_access(path: &str, mode: i64) -> bool {
+        extern "C" {
+            fn access(
+                path: *const std::os::raw::c_char,
+                mode: std::os::raw::c_int,
+            ) -> std::os::raw::c_int;
+        }
+
+        let path = match std::ffi::CString::new(path) {
+            Ok(path) => path,
+            Err(_) => return false,
+        };
+        unsafe { access(path.as_ptr(), mode as std::os::raw::c_int) == 0 }
+    }
+
+    #[cfg(not(unix))]
+    fn filesystem_access(_path: &str, _mode: i64) -> bool {
+        false
+    }
+
+    #[cfg(unix)]
+    fn filesystem_chmod(path: &str, mode: i64) -> bool {
+        extern "C" {
+            fn chmod(
+                path: *const std::os::raw::c_char,
+                mode: std::os::raw::c_uint,
+            ) -> std::os::raw::c_int;
+        }
+
+        let path = match std::ffi::CString::new(path) {
+            Ok(path) => path,
+            Err(_) => return false,
+        };
+        unsafe { chmod(path.as_ptr(), mode as std::os::raw::c_uint) == 0 }
+    }
+
+    #[cfg(not(unix))]
+    fn filesystem_chmod(_path: &str, _mode: i64) -> bool {
+        false
+    }
+
+    #[cfg(unix)]
+    fn filesystem_chown(path: &str, uid: i64, gid: i64) -> bool {
+        extern "C" {
+            fn chown(
+                path: *const std::os::raw::c_char,
+                uid: std::os::raw::c_uint,
+                gid: std::os::raw::c_uint,
+            ) -> std::os::raw::c_int;
+        }
+
+        let path = match std::ffi::CString::new(path) {
+            Ok(path) => path,
+            Err(_) => return false,
+        };
+        unsafe {
+            chown(
+                path.as_ptr(),
+                uid as std::os::raw::c_uint,
+                gid as std::os::raw::c_uint,
+            ) == 0
+        }
+    }
+
+    #[cfg(not(unix))]
+    fn filesystem_chown(_path: &str, _uid: i64, _gid: i64) -> bool {
+        false
+    }
+
+    #[cfg(unix)]
+    fn filesystem_mkfifo(path: &str, mode: i64) -> bool {
+        extern "C" {
+            fn mkfifo(
+                path: *const std::os::raw::c_char,
+                mode: std::os::raw::c_uint,
+            ) -> std::os::raw::c_int;
+        }
+
+        let path = match std::ffi::CString::new(path) {
+            Ok(path) => path,
+            Err(_) => return false,
+        };
+        unsafe { mkfifo(path.as_ptr(), mode as std::os::raw::c_uint) == 0 }
+    }
+
+    #[cfg(not(unix))]
+    fn filesystem_mkfifo(_path: &str, _mode: i64) -> bool {
+        false
+    }
+{{case arms}}
+            "access/2" | "chmod/2" | "mkfifo/2" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let mode = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(mode)) => mode,
+                    _ => return false,
+                };
+                let succeeded = match op {
+                    "access/2" => Self::filesystem_access(&path, mode),
+                    "chmod/2" => Self::filesystem_chmod(&path, mode),
+                    "mkfifo/2" => Self::filesystem_mkfifo(&path, mode),
+                    _ => unreachable!(),
+                };
+                if succeeded {
+                    self.pc += 1; true
+                } else {
+                    false
+                }
+            }
+            "chown/3" => {
+                let path = match self.builtin_path_arg("A1") {
+                    Some(path) => path,
+                    None => return false,
+                };
+                let uid = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(uid)) => uid,
+                    _ => return false,
+                };
+                let gid = match self.get_reg_raw("A3")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(gid)) => gid,
+                    _ => return false,
+                };
+                if Self::filesystem_chown(&path, uid, gid) {
+                    self.pc += 1; true
+                } else {
+                    false
+                }
+            }
+{{/match}}

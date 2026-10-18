@@ -1,0 +1,49 @@
+{
+ "stamp": "shadow-exploratory-tier1-not-decision-bearing",
+ "question": "does the identity probe read TOPIC, or CANDIDATE-SET SCALE?",
+ "candidate_counts": {
+  "enwiki_math": 2667,
+  "enwiki_stats": 481,
+  "enwiki_cyber": 208,
+  "pearltrees": 132,
+  "simplewiki": 2002
+ },
+ "K_all": 132,
+ "K_enwiki": 208,
+ "same_corpus_null": {
+  "enwiki_math": {
+   "acc_mean": 0.5516,
+   "acc_sd": 0.0046
+  },
+  "simplewiki": {
+   "acc_mean": 0.5337,
+   "acc_sd": 0.003
+  }
+ },
+ "within_enwiki_common_K": {
+  "enwiki_math_vs_enwiki_stats": {
+   "acc_mean": 0.6046,
+   "acc_sd": 0.0035
+  },
+  "enwiki_math_vs_enwiki_cyber": {
+   "acc_mean": 0.66,
+   "acc_sd": 0.0006
+  },
+  "enwiki_stats_vs_enwiki_cyber": {
+   "acc_mean": 0.6893,
+   "acc_sd": 0.0012
+  }
+ },
+ "cross_corpus_common_K": {
+  "acc_mean": 0.7641,
+  "acc_sd": 0.0028
+ },
+ "uncontrolled_reference": {
+  "within_enwiki": [
+   0.6621,
+   0.6964,
+   0.7031
+  ],
+  "cross_corpus": 0.8266
+ }
+}

@@ -22,7 +22,8 @@ All primary measurements at **scale 300** (6004 `category_parent` facts,
 | **F# WAM + FFI (functions mode)** | **11** | **159** | **1** | **Yes** | Lowered predicates; .NET 8 Release build |
 | **F# LMDB cached (two-level L1/L2)** | **2** | -- | **1** | **Yes** | Fact-access only (no WAM overhead); see below |
 | Python WAM | 215 | 689 | 1 | Yes | CPython 3.12; WAM interpreter, FFI for `category_parent/2` |
-| Go WAM | -- | -- | -- | Yes | Build OK; benchmark driver in progress |
+| R WAM (functions, kernels_on) | 160 | 687 | 1 | Yes | Hosted Ubuntu 24.04 CI, R 4.3.3; + PLAN-1 fused bulk-reduce plans (post NATIVE-HOPS-0); 3-rep median query (samples 772,160,159) |
+| Go WAM (accumulated, kernels_on) | 898 | 898 | 1 | Yes | Hosted Ubuntu 24.04 CI, go 1.24.7; 5-rep median; facts compiled in (load_ms=0) |
 
 **Key takeaway:** Atom interning (replacing `HashMap<String, Vec<String>>` with
 `HashMap<u32, Vec<u32>>`) delivers a **7.9x speedup** on the Rust FFI path at
@@ -51,14 +52,15 @@ workloads — see `tests/core/test_wam_fsharp_lmdb_scale_sweep.pl`.
 
 ## Test Environment
 
-- **Date**: 2026-04-18
-- **Platform**: Linux 6.1.158 (amd64), sandbox VM
-- **SWI-Prolog**: 9.2.9
+- **Date**: 2026-04-18 (R WAM row: 2026-07-22)
+- **Platform**: Linux 6.1.158 (amd64), sandbox VM; R measurement on hosted Ubuntu 24.04
+- **SWI-Prolog**: 9.2.9 (R measurement host: 10.0.2)
 - **Rust**: 1.95.0 (release build, `--release`)
 - **Haskell/GHC**: 9.6 (prior measurements on WSL2 4-core host)
 - **.NET**: 8.x (`/tmp/dotnet/dotnet`)
 - **Go**: 1.24.2
 - **Python**: 3.12.8 (CPython)
+- **R**: 4.3.3 (`Rscript`)
 - **Repetitions**: 3 per query (median) unless noted; Haskell uses 10-run median
 
 ## Methodology
@@ -282,12 +284,43 @@ cd /tmp/wam-bench/fsharp-300
 /tmp/dotnet/dotnet run -c Release -- /path/to/UnifyWeaver/data/benchmark/300 3
 ```
 
-### Go WAM (In Progress)
+### Go WAM
 
-The Go WAM target compiles successfully (after fixing `SharedWamCode`/
-`SharedWamLabels` export aliases), but the benchmark driver does not yet wire
-up fact data into the runtime. Status: **build OK, benchmark driver in
-progress**.
+Measured with `examples/benchmark/generate_wam_go_effective_distance_benchmark.pl`
+(accumulated variant, `kernels_on`) at scale 300 on hosted Ubuntu 24.04 CI,
+go 1.24.7. The generator emits a self-contained `package main` with the
+benchmark facts compiled in, so `load_ms` is 0 and `total_ms` is query plus
+aggregation only.
+
+| Scale | query_ms | total_ms | reps | seeds | tuples | articles |
+|-------|---------:|---------:|-----:|------:|-------:|---------:|
+| 300 | 898 | 898 | 5 (median) | 386 | 213 | 271 |
+
+Output verified against `data/benchmark/300/reference_output.tsv`: 271 rows,
+exact multiset match on (article, root_category, effective_distance) at 5
+decimal places.
+
+The driver takes the same `[factsDir] [reps]` arguments as the Rust driver so
+`run_wam_cross_target_benchmark.sh` invokes every target uniformly; `factsDir`
+is accepted and ignored because the facts are compiled in.
+
+Re-measured after the PARSE-GO unification fixes (get_list cons
+destructuring, get_structure deref order, nested write contexts,
+A-register snapshot range, atom-intern initialisation): query_ms moved
+1061 -> 898 and the output still matches the reference exactly.
+
+Go sits at the interpreter-bound end of the matrix, close to SWI-Prolog
+(336/409) rather than to the FFI-accelerated rows. The WAM path here runs
+`category_ancestor/4` through the shared bytecode loop; the foreign-kernel
+dispatch that gives Rust and F# their order-of-magnitude wins is registered
+for Go (`go_foreign_lowering`) but is not on this benchmark's hot path. That
+is the obvious next lever for the Go row, not a further tweak to the driver.
+
+**Historical note:** this row previously read `--` with "benchmark driver in
+progress". The driver did in fact wire facts into the runtime; what was
+missing was rep support and a harness block that invoked *this* generator
+(the harness called `generate_wam_go_optimized_benchmark.pl` and only built
+it). Both are fixed.
 
 ### Python WAM
 
@@ -338,6 +371,328 @@ swipl -q -s examples/benchmark/generate_wam_python_optimized_benchmark.pl -- \\
 cp src/unifyweaver/targets/wam_python_runtime/WamRuntime.py \\
    /tmp/wam-bench/python-300/wam_runtime.py
 python3 /tmp/wam-bench/python-300/main.py data/benchmark/300 3
+```
+
+### R WAM (functions mode)
+
+Measured 2026-07-26 in hosted GitHub Actions using
+`generate_wam_r_effective_distance_benchmark.pl`
+with `emit_mode(functions)`, auto-detected `category_ancestor/4` kernel
+(fleet hops layout), and `category_parent/2` FactSource via
+`grouped_by_first_atoms` (preserves Prolog atom identity for numeric-looking
+Wikipedia IDs). Host: Ubuntu 24.04 hosted runner, SWI-Prolog 10.0.2,
+R 4.3.3, single-core.
+
+| Scale | query_ms | total_ms | rows | Cores | vs reference |
+|-------|----------|----------|------|-------|--------------|
+| 300 | 1564 | 2077 | 271 | 1 | match (`normalize_three_column_float_rows`, 6 dp) |
+
+`query_ms` is the 3-run median of article×root enumeration only
+(samples: 2118, 1422, 1564). `total_ms` is setup (Rscript startup +
+generated-program / FactSource load + article/root TSV load) plus that
+median query. Output validated against
+`data/benchmark/300/reference_output.tsv` with canonical sort and 6-decimal
+float tolerance (not row-count-only). Prior hosted IDTABLE row was
+3412 / 4076 (samples 4078, 3412, 3268).
+
+The prior hosted GitHub Actions post-PERF-R-CA-IDDFS median was query_ms=7521 /
+total_ms=8341 (samples: 8260, 7509, 7521). PERF-R-CA-IDCACHE reduces that to
+4812 / 5610 (1.56x query). An independent same-host cloud-agent comparison
+(4612 to 2940 ms) also measured a 1.57x query improvement.
+
+PERF-R-CA-DIRECT reduced the hosted-runner query baseline from 62595 ms to
+10307 ms (6.07x) by giving the native CA kernel a capability-gated bound-arg1
+lookup over the existing FactSource index. PERF-R-CA-IDDFS then reduced the
+GHA median to 7521 ms (a further 1.37x; 8.32x cumulative vs original) by
+traversing intern IDs, carrying depth downward, and constructing `IntTerm`
+results only at the WAM boundary. PERF-R-CA-IDCACHE then memoizes ordered
+parent-id vectors by numeric atom id inside the in-memory indexed
+`lookup_ids` closure (bounded lazy list slots with sparse-id overflow;
+~151 KiB for the scale-300 adjacency image), avoiding repeated `paste0` key
+construction, index-env bucket walks, and parent extraction. Profiled
+scale-300 path: 516522
+`lookup_ids` calls over only 2273 distinct ids (99.56% hit opportunity);
+instrumented lookup time fell from ~4.3 s to ~1.0 s. Lazy/cached LMDB
+capabilities are unchanged (on-demand / existing bounded cache). Sources
+without these capabilities retain the TermValue and generic `iterate_goal`
+fallbacks. Residual cost is interpreted R DFS and lowered power-sum
+orchestration.
+
+PERF-R-CA-STACK (iterative integer-ID DFS frame stack) replaces recursive
+`category_ancestor_hops_rec_ids` with an explicit path/frame stack so sibling
+branches restore path length without R copy-on-write on every descent.
+Profiled post-IDCACHE scale-300 path on a Cursor cloud agent: 516522 DFS node
+visits, max depth 9, ~59k visited-vector grows under recursion; CA recursion
+was ~70% total / 26% self time. After STACK on the same host (3-rep):
+
+| Stage | query_ms | total_ms | samples |
+|-------|----------|----------|---------|
+| Post-IDCACHE (recursive ID DFS) | 3025 | 3568 | 3649, 3009, 3025 |
+| After STACK (iterative frames) | 2705 | 3226 | 3209, 2705, 2691 |
+
+Same-host cloud-agent query speedup ≈ 1.12×; Rprof `mem.total` for the CA hops
+helper fell ~3904 → ~1795. A subsequent GitHub-hosted run measured STACK at
+3679 / 4344 (samples: 4475, 3679, 3554), 1.31× faster than the hosted IDCACHE
+median of 4812 / 5610. This is about 17.0× faster than the original hosted R
+query result of 62595 ms. Lazy/cached LMDB policies and TermValue /
+`iterate_goal` fallbacks are unchanged.
+
+PERF-R-CA-PATHMARK investigated O(1) path-local membership counts as a
+follow-up to STACK. Post-STACK Rprof on a Cursor cloud agent attributes only
+~1.3% self time to `any` path scans; the ~1.7s instrumented membership total
+was dominated by per-check `proc.time` overhead. A trial dense+sparse count
+implementation preserved 271-row parity but did not beat same-host STACK
+(query median 2660 → 2673 ms). The speculative production change was not
+retained.
+
+PERF-R-CA-IDTABLE adds an optional in-memory integer adjacency table
+(`id_table`) on indexed FactSources so the CA loop reads parent-id vectors by
+list index instead of invoking `lookup_ids` ~516k times. Registration remains
+cheap: because all arity>=2 in-memory FactSources receive the capability, the
+table is materialized lazily on first CA use rather than for unrelated
+predicates. Dense slots cover fact-derived atom ids (capped at 65536);
+sparse/high ids use hashed overflow. Lazy/cached LMDB remain on-demand (no
+`id_table`). Microbench on this host: 516k cached closure calls ~0.41 s vs
+direct list reads ~0.055 s. Same-host scale-300 3-rep (Cursor cloud agent,
+R 4.3.3; 271-row parity):
+
+| Stage | query_ms | total_ms | samples |
+|-------|----------|----------|---------|
+| STACK baseline | 2729 | 3255 | 3299, 2729, 2661 |
+| After IDTABLE | 2607 | 3186 | 3158, 2607, 2601 |
+
+Query ≈ 1.05×; total also improved (table setup ~0.03 s / ~151 KiB). Post-change
+Rprof: `lookup_ids` absent from the hot list; `hops_ids` ≈ 25% self / 32% total
+(`mem.total` ≈ 683). A subsequent GitHub-hosted run measured IDTABLE at
+3412 / 4076 (samples: 4078, 3412, 3268), 1.08× faster in query time and 1.07×
+faster overall than hosted STACK 3679 / 4344, with the same 271-row reference
+parity. This is about 18.3× faster than the original hosted R query result of
+62595 ms. Residual cost is the iterative DFS body and lowered WAM
+`step`/orchestration.
+
+PERF-R-CA-LOOPBODY line-profiled the post-IDTABLE iterative
+`category_ancestor_hops_ids` body on a Cursor cloud agent (R 4.3.3; no
+per-loop `proc.time`). Call-level phase walls on scale-300 attribute
+~38% of query time to `hops_ids`, ~0% to CA result packing beyond that,
+and ~62% to lowered WAM `step` / effective-distance orchestration outside
+CA. Counters: ~369k node enters, growth-branch hits = 0, max frame sp = 9
+with `cap = max_depth + 2` (max_depth = 10), so the capacity-growth path
+is idle but removing it alone is not a measurable win. Specialized
+single-change trials (no growth branch; skip redundant `as.integer`; skip
+frame-slot clear; O(1) root-on-path count via frame save/restore) all
+preserved 271-row parity and stayed within run-to-run noise or were
+slightly slower (7-rep interleaved medians ≈ 2553 ms base vs 2558 / 2581
+ms). Official same-host 5-rep IDTABLE baseline: query samples
+3106, 2542, 2488, 2528, 2507 (median 2528 / total 3049). No production
+change retained. Hosted IDTABLE reference remains 3412 / 4076 (samples
+4078, 3412, 3268) vs STACK 3679 / 4344. Next end-to-end leverage is
+outside the CA DFS loop.
+
+PERF-R-ED-BOUNDARY attributed that outside-CA remainder on a Cursor cloud
+agent (R 4.3.3). Full-query counts: 385 weight queries, 385 `hops_ids`
+calls, 137817 `WamRuntime$step` calls. Light call-level walls again put
+`hops_ids` near 38% of query; CA packing beyond hops stays ~2%. Rprof
+by.self after that is dominated by the lowered WAM interpreter on the
+power-sum / effective-distance path (`step` ~13%, `get_reg` ~8%, `deref`
+~6%, `append_build_arg` ~5%, `builtin_is_lax` ~4%, `put_reg` ~4%). Harness
+enumeration/sort/format and per-query `exists`/`get` dispatch are
+negligible. Separately trialled hypotheses — resolve the lowered function
+once, pre-cache category/root `Atom` values, reuse a `reset_state` pool,
+and replace `intern`'s `match` with a hash map — all preserved 271-row
+six-decimal parity but stayed within noise on two independent 7-rep
+interleaved sequences (best ~1.02×; gate was ≥5%). No production change
+retained. Hosted IDTABLE reference remains 3412 / 4076. Next
+evidence-based leverage is the WAM step/register/arithmetic path (or a
+deeper native lowering of power-sum aggregation), not further CA-loop or
+query-boundary micro-opts.
+
+PERF-R-WAM-STEP profiled that interpreter/power-sum path. Full-query
+instruction counts show ~23k `PutStructure`, ~24k `BuiltinCall`, and
+~11k `EndAggregate` steps alongside the CA kernel; `is_lax/2` alone is
+invoked 22729 times (11172 `+/2`, 11172 `**/2`, 385 unary `-/1`). The
+prior int+int fast path covered only `+`; `**` and unary `-` fell through
+to recursive `eval_arith`. Extending `builtin_is_lax` with memoized
+functor ids for `**/^/+/−`, an `arith_to_term` power short-circuit, and
+unary minus — while preserving the existing IntTerm path for
+`+,-,*,//,mod` — is a reusable runtime change (not harness-specific).
+A separate `begin_build`/`append_build_arg` pre-size trial was neutral or
+slower and was not retained. Same-host interleaved 7-rep × 2 sequences
+(R 4.3.3, 271-row six-decimal parity):
+
+| Sequence | base median | candidate median | speedup |
+|----------|-------------|------------------|---------|
+| A | 2561 | 2451 | 1.045× |
+| B | 2562 | 2436 | 1.052× |
+
+Official candidate 7-rep samples: 3021, 2454, 2460, 2478, 2438, 2478, 2462
+(median query 2462 / total 2973). Hosted IDTABLE row above remains
+3412 / 4076 until a hosted WAM-STEP remeasure is recorded. Residual cost
+is still dominated by WAM `step`/register traffic around hop streaming
+and structure build; further leverage is deeper power-sum lowering or
+`step`/`get_reg` work, not CA-loop micro-opts.
+
+PERF-R-LOWERED-DIRECTCALL investigated whether Call/Execute→`run`/`step`
+routing still dominates after WAM-STEP and whether a general direct
+invoke of Phase-3 lowered callees would help. Runtime Call/Execute
+already direct-dispatch `program$lowered_dispatch` for kernels and
+fact-table iterators (`lowered_path_ok`); Phase-3 lowered functions are
+intentionally not registered there (wrappers own entry state; internal
+calls stay on the WAM array). Scale-300 counts: 137817 `step`s, 1155
+`Call`s, 0 `Execute`s; every weight query does one `WamRuntime$run`
+into `power_sum_selected/3`, whose Calls are `category_ancestor/4`
+(already direct), `dimension_n/1` (already direct), and
+`power_sum_bound/3` (BeginAggregate — not lowered). A trial that
+rewired the ED-selected stub to call the existing lowered
+`power_sum_selected` function (skipping that predicate's WAM shell)
+cut steps by 3.54% with 271-row parity but was wall-time neutral
+(interleaved 7-rep medians ≈ 1.003× / 1.001×). No production change
+retained. Hosted IDTABLE reference remained 3412 / 4076 until
+AGGREGATE-LOWER.
+
+PERF-R-AGGREGATE-LOWER targets the `BeginAggregate`/`EndAggregate`
+region that still dominated after LOWERED-DIRECTCALL. Profile:
+`BeginAggregate`×385, `EndAggregate`×11172, 137817 `step`s; streaming
+numeric accumulate alone was wall-neutral, and bulk-collect + per-hop
+`step` of `is_lax` was slower. Retained path: kernels may register a
+`bulk_collect` capability; `BeginAggregate` for `sum|count|min|max`
+with a single Call/Execute plus straight-line `is`/`is_lax` arithmetic
+compiles the template and reduces without EndAggregate/backtrack.
+`category_ancestor/4` publishes hop bulk_collect; unsupported shapes
+keep the classic frame. Steps 137817→14540, EndAggregate 11172→0.
+Same-host interleaved 7-rep × 2 (R 4.3.3, 271-row six-decimal multiset
+parity):
+
+| Sequence | base median | candidate median | query speedup | total speedup |
+|----------|-------------|------------------|---------------|---------------|
+| A | 3005 | 2101 | 1.430× | 1.348× |
+| B | 3011 | 2088 | 1.442× | 1.358× |
+
+Hosted 3-rep after retain: query samples 2118, 1422, 1564 (median 1564 /
+total 2077). Primary matrix row updated accordingly.
+
+PERF-R-AGG-BATCH profiles the post-AGGREGATE-LOWER path: hop collection
+still dominates attributed exclusive time (~62%), but per-solution
+`new.env` / base-copy / arithmetic-template interpretation is ~38%
+(`lapply` record materialization only ~0.5%). No prior typed-batch /
+vector bulk-reduce machinery existed on R (Rust `ParAggregate` is a
+parallel region model and was not reused). Retained path: `bulk_collect`
+may return `list(type="numeric_batch", reg, val=<numeric vector>)`;
+legacy list-of-record callbacks coerce when every value is a length-1
+numeric on the single declared output register; the closed `is_lax`
+template is evaluated once on vectors before `sum|count|min|max`
+reduction. Eligibility, dynamic shadowing, and classic-frame fallback
+are unchanged; steps remain 14540 / EndAggregate 0. Same-host
+interleaved 7-rep × 2 (R 4.3.3, 271-row six-decimal multiset parity):
+
+| Sequence | base median | candidate median | query speedup | total speedup |
+|----------|-------------|------------------|---------------|---------------|
+| A | 2105 | 1786 | 1.179× | 1.137× |
+| B | 2115 | 1796 | 1.178× | 1.140× |
+
+Warm-query Rprofmem: 66.48 MB → 64.02 MB (−3.7% bytes; −29% alloc events).
+Hosted 3-rep after retain: query samples 1813, 1111, 1108 (median 1111 /
+total 1621). Primary matrix row updated accordingly.
+
+PERF-R-CA-BULK-HOPS profiled the post-AGG-BATCH remainder. On a Cursor
+cloud agent (R 4.3.3), a warm scale-300 query attributes **84% of query
+wall** to `category_ancestor_hops_ids` (98% of bulk_collect time); typed-batch
+setup and int→numeric transfer are ≤1% combined. Counters: 385 bulk calls,
+368854 node enters, avg path length 8.63 / max 10, max frame sp 9, 11172
+emits, 351 hop-buffer grows, all parent lookups via IDTABLE dense slots.
+Rprof by.self: `hops_ids` ~68%, `any` ~7% (path membership), then
+`integer`/`length`. This does not contradict PATHMARK / LOOPBODY: short
+path scans remain cheaper than O(1) mark tables, and prior single-change
+loop micro-opts stayed in noise. New trials (reusable hop buffer, inline
+while membership, dense `integer(0)` fill, `cmpfun`, CSR parent frames)
+were parity-safe where applicable but neutral or slower. The best trial —
+`match()` instead of `any(visited[seq_len(v)]==id)` for path membership —
+was ~1.03× on hops-only micros and failed the fresh-process interleaved
+gate (7-rep × 2):
+
+| Sequence | base median | candidate median | query speedup | total speedup |
+|----------|-------------|------------------|---------------|---------------|
+| A | 1805 | 1776 | 1.016× | 1.015× |
+| B | 1801 | 1777 | 1.014× | 1.010× |
+
+No production change retained. Hosted AGG-BATCH row remained 1111 / 1621
+until NATIVE-HOPS-0.
+
+PERF-R-NATIVE-HOPS-0 proves an optional native hop-kernel boundary after
+CA-BULK-HOPS. Audit: no prior R `.Call`/Rcpp path; prefer base R C API +
+`R CMD SHLIB`. Disposable prototype matched R `hops_ids` order/multiplicity
+on 385 ED samples plus synthetic empty/singleton/branch/cycle/depth cases;
+hops-only ≈144× with ~1.1µs empty `.Call`. Production wires
+`src/uw_ca_hops.c` (generate-time soft-fail SHLIB) through
+`configure_native_ca_hops` + CSR over dense `id_table` (overflow → pure-R).
+Same-host interleaved 7-rep × 2 (R 4.3.3, 271-row six-decimal multiset
+parity; total_ms includes generate-time `.so` already present, not rebuild):
+
+| Sequence | base median | candidate median | query speedup | total speedup |
+|----------|-------------|------------------|---------------|---------------|
+| A | 1810 | 923 | 1.961× | 1.622× |
+| B | 1819 | 933 | 1.950× | 1.610× |
+
+Warm query: steps 14540, native hop calls 385, EndAggregate 0.
+Hosted 3-rep after retain: samples 932, 258, 270 (median 270 / total 776).
+Primary matrix row updated accordingly. Platforms: Linux with `r-base-dev`
+(or equivalent headers/toolchain); elsewhere generated programs keep
+pure-R hops.
+
+PERF-R-POST-NATIVE-0 attributed the post-NATIVE-HOPS residual on a Cursor
+cloud host (R 4.3.3, scale-300, kernels_on/functions, 271-row six-decimal
+parity). Native hops are no longer the dominant bucket (~3–5% of warm
+query; 385/385 native calls). Separate Rprof/wrapper measurements show
+`WamRuntime$run`/`$step` ~84–90% of query wall, with
+`try_scalar_aggregate_fastpath` ~32% total, `put_reg` ~23%,
+`call_builtin` ~16%, and `fact_table_iter_subset` ~10%. These buckets are
+nested/inclusive and are not additive. The attribution harness observed
+18005 step dispatches (BeginAggregate×385, EndAggregate×0; one aggregate
+site); no runtime code was retained, so this is not a before/after step delta.
+Trials that cached BeginAggregate plans and specialized typed-batch
+`(Batch ⊕ scalar) ** Exp` vector reduce preserved parity but were
+wall-time neutral (~1.00–1.03× interleaved smoke; gate ≥1.05× failed).
+No production change retained. Hosted NATIVE-HOPS-0 row remains 270 / 776.
+Next leverage is deeper `power_sum_bound` lowering that skips the WAM
+shell around bulk collect + closed reduce, or `put_reg`/`step`
+infrastructure — not further hop-kernel or aggregate-arith micro-opts.
+
+PERF-R-BULK-REDUCE-REGION-0 tested shape-gated fused bulk-collect+aggregate
+lowering (instruction/capability shape only; no ED names). Audit: no
+existing whole-region step-bypass; AGGREGATE-LOWER still enters via
+`BeginAggregate` step. Uncommitted direct-region prototype (reuse
+`bulk_collect` + typed batch + closed `is_lax` + bag ctor; native hops
+385/385) projected ≈2.04× same-host warm query with 271-row parity
+(steps 18005→8724, BeginAggregate 385→0). A thin step-driver that only
+avoided nesting `run` while still `step`-ing the prologue was wall-time
+neutral/negative (≈0.97×). A full direct-fusion production trial cleared
+≈1.20× fresh-process smoke but needed ≈320 net production LOC, past the
+180 soft-stop. The official two independent 7-repetition gate sequences
+were therefore not run. All runtime/emitter changes reverted. Hosted row
+remains 270 / 776. Follow-up needs generate-time plan packing or a higher
+LOC budget to retain the direct-fusion path under discipline.
+
+PERF-R-BULK-REDUCE-PLAN-1 retains shape-gated fusion via compact
+generate-time plans (WAM-token packer → `br_plan` → one
+`exec_bulk_reduce_plan` entry; shared `finalize_bulk_scalar_reduce` with
+AGG-BATCH). Net production LOC **180** after fail-closed review hardening
+(≤180 hard stop). Official two
+independent interleaved fresh-process sequences × 7 reps: seq1 query
+median 929→751 (**1.237×**), total 1446→1277; seq2 query 933→747
+(**1.249×**), total 1453→1262; exact 271-row six-decimal parity every
+run. Single fused `power_sum_bound` call: steps 25→0, BeginAggregate
+1→0, bulk_collect 1→1. Hosted 3-rep harness after retain: samples
+772, 160, 159 (median **160** / total **687**). Decision: **retain**.
+
+#### Reproduction
+
+```bash
+cd /path/to/UnifyWeaver
+mkdir -p /tmp/wam-bench/r-ed-300
+swipl -q -s examples/benchmark/generate_wam_r_effective_distance_benchmark.pl -- \
+    data/benchmark/300/facts.pl /tmp/wam-bench/r-ed-300 kernels_on functions
+( cd /tmp/wam-bench/r-ed-300/R && \
+  Rscript run_effective_distance.R /path/to/UnifyWeaver/data/benchmark/300 3 )
+# Or: ./examples/benchmark/run_wam_cross_target_benchmark.sh 300 3
 ```
 
 ## Analysis: When Does UnifyWeaver Beat Hand-Written Code?

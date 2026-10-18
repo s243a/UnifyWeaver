@@ -1,0 +1,98 @@
+{
+  "schema_version": 1,
+  "run_date": "2026-07-11",
+  "protocol": "structured conditional residual covariance evidence gate; strict node-disjoint; train-only fitting",
+  "target_scope": "GPT-5.5 operating-judge fidelity; not independent ground truth",
+  "full_output": {
+    "filename": "structured_residual_covariance_10seeds_provenance.json",
+    "size_bytes": 532137,
+    "sha256": "c1962b81fa8db981802c05bd9023c21c36e3fde0b852b9e55bce9a7dfa5beea4",
+    "note": "The full JSON contains wall-clock diagnostics, so an otherwise identical rerun need not have the same whole-file hash."
+  },
+  "inputs": {
+    "campaign_scored.tsv": {
+      "sha256": "c2acf399aadd35c3797171d5b42d64e45b07055802092cc28becf308d460ef09"
+    },
+    "campaign_scored_luna.tsv": {
+      "sha256": "a8d951b4fd05f0ca111fbe9d9c23881bb47b790ccb335731113bfd4ae77ffe6e"
+    },
+    "model_prod_namecond.pt": {
+      "sha256": "c1cfc3a3827e42a1993f4286b6a881aee7ff10eb56a76367735b9ec8fdf11f7d"
+    },
+    "campaign_100k_e5.pt": {
+      "size_bytes": 28284878,
+      "sha256": "037396a1d6552892d3d6aa04b3cc12bc6d5e6a532d3697e28da1f28e04810700"
+    },
+    "sigma_hop_behavior_slice_e5.pt": {
+      "size_bytes": 239602704,
+      "sha256": "ab51eb5d07cdd3bed34112a1d92005fcd3f8c46245cf068a7ab0a225afc6cd6b"
+    },
+    "data/benchmark/100k_cats/category_parent.tsv": {
+      "size_bytes": 10126922,
+      "sha256": "4881beedfd876e3abb9f1783cbc3fb8a7350e108e3f531cc4de28ef9956dc8ec"
+    },
+    "data/benchmark/enwiki_cats_correct/lmdb_scoped/data.mdb": {
+      "size_bytes": 1319403520,
+      "sha256": "3bcfe59a3f85870f377fad1ea77547f7c3566370f6172e27748f4f7ceba5d690"
+    }
+  },
+  "configuration": {
+    "seeds": 10,
+    "held_node_fraction": 0.4,
+    "split_candidates": 64,
+    "shrinkage": 0.05,
+    "ridge_grid": [0.001, 0.01, 0.1, 1.0, 10.0],
+    "fit_steps": 150,
+    "learning_rate": 0.03,
+    "max_pairs": 4096,
+    "bridge_epochs": 300,
+    "quad_order": 5,
+    "maximum_relative_loading": 0.001,
+    "cpu_threads": 1
+  },
+  "engineering_gate": {
+    "by_corpus": {
+      "exploratory": {
+        "block_nll_mean_sd": [-0.8756625013119601, 0.04918711805420144],
+        "dense_gain_mean_sd": [-0.00046912077253226104, 0.003044221534856325],
+        "dense_positive_seeds": 4,
+        "maximum_relative_diagonal_loading": 0.0,
+        "regional_mean_gain_vs_global_block_mean_sd": [0.18178562669192305, 0.042310776817244454],
+        "regional_mean_positive_seeds": 10,
+        "separable_decision_aurc_gain_mean": -0.00039432326869700933,
+        "separable_decision_log_loss_gain_mean": -0.009035549625988449,
+        "separable_gain_mean_sd": [-0.0005749954258351009, 0.0030753449825658887],
+        "separable_positive_seeds": 3,
+        "separable_posterior_nll_gain_mean": -0.07312029215932134,
+        "separable_posterior_nll_positive_seeds": 1,
+        "split_seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      },
+      "fresh": {
+        "block_nll_mean_sd": [-0.7594847356743704, 0.042587496928159774],
+        "dense_gain_mean_sd": [-0.0029234812458911463, 0.004101461857255718],
+        "dense_positive_seeds": 2,
+        "maximum_relative_diagonal_loading": 0.0,
+        "regional_mean_gain_vs_global_block_mean_sd": [0.15099569650412423, 0.03103409136582324],
+        "regional_mean_positive_seeds": 10,
+        "separable_decision_aurc_gain_mean": -0.01164978315489992,
+        "separable_decision_log_loss_gain_mean": -0.04142822279739848,
+        "separable_gain_mean_sd": [-0.002777475248013528, 0.0038899331760688313],
+        "separable_positive_seeds": 2,
+        "separable_posterior_nll_gain_mean": -0.1458614669515629,
+        "separable_posterior_nll_positive_seeds": 0,
+        "split_seeds": [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]
+      }
+    },
+    "dense_lmc_passes_direction_and_stability": false,
+    "gate_evaluable": true,
+    "loading_budget_guardrail_passes": true,
+    "macro_split_separable_fraction_of_dense_gain": null,
+    "note": "10-seed direction, stability, posterior, decision, and loading guardrails evaluated",
+    "passes_80_percent_recovery": false,
+    "separable_decision_guardrail_passes": false,
+    "separable_passes_direction_and_stability": false,
+    "separable_posterior_nll_guardrail_passes": false,
+    "structured_covariance_gate_passes": false,
+    "recommendation": "retain block covariance; do not optimize structured inverse-root/CUDA from this evidence"
+  }
+}

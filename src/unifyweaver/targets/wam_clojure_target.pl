@@ -16,6 +16,7 @@
 :- module(wam_clojure_target, [
     compile_wam_predicate_to_clojure/4,  % +Pred/Arity, +WamCode, +Options, -ClojureCode
     write_wam_clojure_project/3,         % +Predicates, +Options, +ProjectDir
+    write_wam_clojurescript_files/3,     % +Predicates, +Options, +OutDir (runtime.cljs + core.cljs)
     clojure_foreign_predicate/3,         % +Pred, +Arity, +Options
     prepare_wam_clojure_lmdb_runtime_support/2, % +ProjectDir, +Options
     clojure_lmdb_reader_open_expr/3,     % +PathLiteral, +Options, -Expr
@@ -25,7 +26,11 @@
 :- use_module(library(lists)).
 :- use_module(library(option)).
 :- use_module(library(filesex), [make_directory_path/1, directory_file_path/3]).
-:- use_module(library(process), [process_create/3, process_wait/2]).
+% library(process) is absent in swipl-wasm; only the LMDB runtime path uses it.
+% Load best-effort so this module still loads in the browser (Scittle/SciREPL);
+% process_create/3 throws existence_error at call time there, which is fine since
+% the browser transpile path never invokes it.
+:- catch(use_module(library(process), [process_create/3, process_wait/2]), _, true).
 :- use_module('../core/template_system', [render_template/3]).
 :- use_module('../targets/wam_target', [compile_predicate_to_wam/3]).
 :- use_module('../targets/wam_clojure_lowered_emitter', [
@@ -33,6 +38,72 @@
     lower_predicate_to_clojure/4,
     clojure_lowered_func_name/2
 ]).
+:- use_module('../targets/clojurescript_target', [clojurescript_interop_rewrite/2]).
+
+%% read_whole_file(+Path, -String)
+%  Read a file into a string using only core builtins (open/read_string) — avoids
+%  library(readutil), which is absent in swipl-wasm.
+read_whole_file(Path, String) :-
+    setup_call_cleanup(open(Path, read, S),
+                       read_string(S, _, String),
+                       close(S)).
+
+%% write_wam_clojurescript_files(+Predicates, +Options, +OutDir)
+%  Transpile predicates to ClojureScript that runs under Scittle/SCI (browser) or
+%  nbb. Generates the JVM WAM-Clojure project, then rewrites the JVM host interop
+%  (Integer/parseInt, Math/rint, (long ...), catch Exception, ...) into JS interop
+%  via the ClojureScript target's rewriter, writing OutDir/runtime.cljs and
+%  OutDir/core.cljs. The runtime's format/Character/Pattern usage is already
+%  portable in the template. core's CLI -main (edn-based) is dropped — the browser
+%  drives predicates directly via invoke-predicate. The two namespaces cross-
+%  require (SCI resolves a require of a namespace defined by a prior eval).
+write_wam_clojurescript_files(Predicates, Options, OutDir) :-
+    option(namespace(BaseNamespace), Options, 'generated.wam'),
+    make_directory_path(OutDir),
+    directory_file_path(OutDir, '.wamclj_tmp', TmpDir),
+    write_wam_clojure_project(Predicates, Options, TmpDir),
+    atomic_list_concat(NsParts, '.', BaseNamespace),
+    atomic_list_concat(NsParts, '/', NsPath),
+    format(atom(RuntimeClj), "~w/src/~w/runtime.clj", [TmpDir, NsPath]),
+    format(atom(CoreClj),    "~w/src/~w/core.clj",    [TmpDir, NsPath]),
+    % runtime.cljs
+    read_whole_file(RuntimeClj, RuntimeSrc),
+    clojurescript_interop_rewrite(RuntimeSrc, RuntimeCljs0),
+    % nbb cannot resolve System/getenv; the template keeps it for the JVM
+    % project and we swap in process.env on the ClojureScript rewrite.
+    wamcljs_replace(RuntimeCljs0,
+                    '(System/getenv k)',
+                    '(aget (.-env js/process) k)',
+                    RuntimeCljs1),
+    % nbb's *err* is clojure.core/*err* (unbound). JVM keeps *err*;
+    % ClojureScript writes the warn to process.stderr via console.error.
+    wamcljs_replace(RuntimeCljs1,
+                    '(binding [*out* *err*]\n      (println (str "[wam_clojure] " kind " of unresolved goal " pred " failed")))',
+                    '(js/console.error (str "[wam_clojure] " kind " of unresolved goal " pred " failed"))',
+                    RuntimeCljs),
+    format(atom(RuntimeOut), "~w/runtime.cljs", [OutDir]),
+    write_text_file(RuntimeOut, RuntimeCljs),
+    % core.cljs (drop CLI -main + its edn require — JVM/CLI only)
+    read_whole_file(CoreClj, CoreSrc0),
+    wamcljs_strip_main(CoreSrc0, CoreSrc1),
+    wamcljs_replace(CoreSrc1, "[clojure.edn :as edn]", "", CoreSrc2),
+    clojurescript_interop_rewrite(CoreSrc2, CoreCljs),
+    format(atom(CoreOut), "~w/core.cljs", [OutDir]),
+    write_text_file(CoreOut, CoreCljs).
+
+wamcljs_strip_main(In, Out) :-
+    ( sub_string(In, B, _, _, "(defn -main")
+    ->  sub_string(In, 0, B, _, Out)
+    ;   Out = In ).
+
+wamcljs_replace(In, From, To, Out) :-
+    ( sub_string(In, _, _, _, From)
+    ->  atomic_list_concat(Parts, From, In),
+        atomic_list_concat(Parts, To, Out)
+    ;   Out = In ).
+
+write_text_file(Path, Text) :-
+    setup_call_cleanup(open(Path, write, S), write(S, Text), close(S)).
 
 %% write_wam_clojure_project(+Predicates, +Options, +ProjectDir)
 %  Generate a minimal hybrid/WAM Clojure project with:
@@ -40,6 +111,7 @@
 %  - runtime namespace containing instruction resolution helpers
 %  - core namespace containing shared code/labels and predicate wrappers
 write_wam_clojure_project(Predicates, Options, ProjectDir) :-
+    clojure_wam_compile_options(Options, CompileOptions),
     option(namespace(BaseNamespace), Options, 'generated.wam'),
     option(module_name(ModuleName), Options, 'wam-clojure-generated'),
     atom_concat(BaseNamespace, '.runtime', RuntimeNamespace),
@@ -51,9 +123,14 @@ write_wam_clojure_project(Predicates, Options, ProjectDir) :-
     write_project_clj(ModuleName, CoreNamespace, ProjectDir),
     write_runtime_namespace(RuntimeNamespace, Date, ProjectDir),
     maybe_prepare_wam_clojure_lmdb_runtime_support(ProjectDir, Options),
-    compile_predicates_for_project(Predicates, Options, CoreNamespace, RuntimeNamespace, CoreCode),
+    compile_predicates_for_project(Predicates, CompileOptions, CoreNamespace, RuntimeNamespace, CoreCode),
     write_namespace_file(ProjectDir, CoreNamespace, CoreCode),
     format(user_error, '[WAM-Clojure] Generated project at: ~w~n', [ProjectDir]).
+
+clojure_wam_compile_options(Options, Options) :-
+    option(inline_bagof_setof(_), Options),
+    !.
+clojure_wam_compile_options(Options, [inline_bagof_setof(true)|Options]).
 
 write_deps_edn(ModuleName, CoreNamespace, ProjectDir) :-
     read_template_file('templates/targets/clojure_wam/deps.edn.mustache', Template),
@@ -439,6 +516,14 @@ compile_wam_predicate_to_clojure(PredIndicator, WamCode, _Options, ClojureCode) 
 ~w
 ', [AtomSeedsCode, FunctorSeedsCode, RawBody, LabelBody, WrapperCode]).
 
+%% compile_wam_predicate_to_clojure_shared(+Pred/Arity, +StartPC, -Code)
+%  Two wrappers per predicate:
+%    <name>-state : the SUCCEEDING WAM state, or nil. A caller that passed an
+%                   unbound variable in an argument register reads its answer
+%                   out of this state's :bindings -- the state is immutable, so
+%                   a boolean answer throws the binding away and a predicate
+%                   with OUTPUT arguments becomes unusable.
+%    <name>       : the boolean, unchanged in meaning.
 compile_wam_predicate_to_clojure_shared(Pred/Arity, StartPC, Code) :-
     predicate_clojure_name(Pred, CljName),
     build_clojure_wam_arg_list(Arity, ArgList),
@@ -446,9 +531,16 @@ compile_wam_predicate_to_clojure_shared(Pred/Arity, StartPC, Code) :-
     format(atom(Code),
 '(def ~w-start-pc ~w)
 
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+(defn ~w-state [~w]
+  (runtime/run-wam-state
+    (runtime/new-state shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers atom-intern-context)))
+
 (defn ~w [~w]
-  (runtime/run-wam-predicate shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers atom-intern-context))
-', [CljName, StartPC, CljName, ArgList, CljName, RegMap]).
+  (some? (~w-state ~w)))
+', [CljName, StartPC,
+    CljName, ArgList, CljName, RegMap,
+    CljName, ArgList, CljName, ArgList]).
 
 compile_wam_predicate_to_clojure_lowered(Pred/Arity, StartPC, Code) :-
     predicate_clojure_name(Pred, CljName),
@@ -458,11 +550,19 @@ compile_wam_predicate_to_clojure_lowered(Pred/Arity, StartPC, Code) :-
     format(atom(Code),
 '(def ~w-start-pc ~w)
 
-(defn ~w [~w]
-  (runtime/run-wam
+;; The succeeding WAM state, or nil. Read output arguments from (:bindings s).
+;; The lowered prefix runs first; run-wam-state interprets from wherever it
+;; leaves off.
+(defn ~w-state [~w]
+  (runtime/run-wam-state
     (~w
       (runtime/new-state shared-wam-code shared-wam-labels ~w-start-pc ~w foreign-handlers atom-intern-context))))
-', [CljName, StartPC, CljName, ArgList, LoweredName, CljName, RegMap]).
+
+(defn ~w [~w]
+  (some? (~w-state ~w)))
+', [CljName, StartPC,
+    CljName, ArgList, LoweredName, CljName, RegMap,
+    CljName, ArgList, CljName, ArgList]).
 
 wam_code_to_clojure_data(WamCode, BasePC, Entries, LabelPairs, NextPC) :-
     atom_string(WamCode, WamStr),
@@ -484,9 +584,8 @@ wam_lines_intern_seeds([Line|Rest], AtomSeeds, FunctorSeeds) :-
     ;   split_string(Trimmed, " ", "", [Op|ArgParts]),
         atomic_list_concat(ArgParts, ' ', ArgText0),
         normalize_space(string(ArgText), ArgText0),
-        (   Op == "switch_on_constant"
-        ->  switch_case_atom_values(ArgText, LocalAtomSeeds),
-            LocalFunctorSeeds = []
+        (   switch_index_op(Op)
+        ->  switch_index_intern_seeds(Op, ArgText, LocalAtomSeeds, LocalFunctorSeeds)
         ;   wam_args(ArgText, Args),
             wam_op_intern_seeds(Op, Args, LocalAtomSeeds, LocalFunctorSeeds)
         ),
@@ -504,6 +603,94 @@ switch_case_atom_values(CasesText, AtomSeeds) :-
               wam_atom_token_text(Const, AtomText)
             ),
             AtomSeeds).
+
+% =====================================================================
+% First-argument (and second-argument) indexing
+%
+% wam_target.pl emits the whole standard-WAM switch family as space-separated
+% `Key:Label` entries.  The entry text is NOT comma-separated, so these ops
+% keep their argument text whole instead of going through wam_args/2.
+%
+%   switch_on_constant                E...        dispatch A1 on a constant
+%   switch_on_constant_fallthrough    E...        ... falling through on a miss
+%   switch_on_constant_a2[_fallthrough]           the same, on A2
+%   switch_on_structure[_a2]          F/N:L ...   dispatch on the functor
+%   switch_on_term[_a2]  CLen C... SLen S... List type-based dispatch
+%
+% and, for a dispatch group holding more than one clause, a dedicated
+% `try / retry / trust` chain (distinct from the linear chain's
+% try_me_else / retry_me_else / trust_me).
+% =====================================================================
+
+switch_index_op(Op) :- switch_constant_op(Op, _, _), !.
+switch_index_op(Op) :- switch_structure_op(Op, _), !.
+switch_index_op(Op) :- switch_term_op(Op, _).
+
+switch_constant_op("switch_on_constant",                "A1", "false").
+switch_constant_op("switch_on_constant_fallthrough",    "A1", "true").
+switch_constant_op("switch_on_constant_a2",             "A2", "false").
+switch_constant_op("switch_on_constant_a2_fallthrough", "A2", "true").
+
+switch_structure_op("switch_on_structure",    "A1").
+switch_structure_op("switch_on_structure_a2", "A2").
+
+switch_term_op("switch_on_term",    "A1").
+switch_term_op("switch_on_term_a2", "A2").
+
+%% switch_index_intern_seeds(+Op, +ArgText, -AtomSeeds, -FunctorSeeds)
+%  Dispatch keys must be interned in the SAME table the executing code uses,
+%  or the runtime compares an atom id against a freshly minted one and never
+%  matches. Structure keys are seeded as functors too (that is what carries
+%  their arity).
+switch_index_intern_seeds(Op, ArgText, AtomSeeds, []) :-
+    switch_constant_op(Op, _, _),
+    !,
+    switch_case_atom_values(ArgText, AtomSeeds).
+switch_index_intern_seeds(Op, ArgText, [], FunctorSeeds) :-
+    switch_structure_op(Op, _),
+    !,
+    switch_case_entries(ArgText, Entries),
+    findall(Key, member(Key-_, Entries), FunctorSeeds).
+switch_index_intern_seeds(Op, ArgText, AtomSeeds, FunctorSeeds) :-
+    switch_term_op(Op, _),
+    parse_switch_on_term_text(ArgText, ConstEntries, StructEntries, _ListLabel),
+    !,
+    findall(AtomText,
+            ( member(Const-_, ConstEntries),
+              wam_atom_token_text(Const, AtomText) ),
+            AtomSeeds),
+    findall(Key, member(Key-_, StructEntries), FunctorSeeds).
+switch_index_intern_seeds(_, _, [], []).
+
+%% switch_case_entries(+Text, -Entries) — split `K1:L1 K2:L2 ...`.
+switch_case_entries(Text, Entries) :-
+    split_string(Text, " ", " ", RawCases),
+    exclude(==(""), RawCases, Cases),
+    maplist(switch_case_entry, Cases, Entries).
+
+switch_case_entry(RawCase, Key-Label) :-
+    normalize_space(string(Case), RawCase),
+    (   split_string(Case, ":", "", [Key, Label])
+    ->  true
+    ;   Key = Case, Label = "default"
+    ).
+
+%% parse_switch_on_term_text(+Text, -ConstEntries, -StructEntries, -ListLabel)
+%  `CLen <CLen entries> SLen <SLen entries> ListLabel`. The counts are what
+%  makes this unambiguous: with zero structure entries the two count fields
+%  sit next to each other and a positional split would misread them.
+parse_switch_on_term_text(Text, ConstEntries, StructEntries, ListLabel) :-
+    split_string(Text, " ", " ", Raw0),
+    exclude(==(""), Raw0, Tokens),
+    Tokens = [CLenS|Rest0],
+    number_string(CLen, CLenS),
+    length(ConstToks, CLen),
+    append(ConstToks, [SLenS|Rest1], Rest0),
+    number_string(SLen, SLenS),
+    length(StructToks, SLen),
+    append(StructToks, [ListLabel], Rest1),
+    maplist(switch_case_entry, ConstToks, ConstEntries),
+    maplist(switch_case_entry, StructToks, StructEntries).
 
 wam_atom_token_text("''", "") :- !.
 wam_atom_token_text(Token, AtomText) :-
@@ -555,7 +742,7 @@ wam_line_to_clojure_literal(Line, Literal) :-
     split_string(Line, " ", "", [Op|ArgParts]),
     atomic_list_concat(ArgParts, ' ', ArgText0),
     normalize_space(string(ArgText), ArgText0),
-    (   Op == "switch_on_constant"
+    (   switch_index_op(Op)
     ->  Args = [ArgText]
     ;   wam_args(ArgText, Args)
     ),
@@ -569,13 +756,38 @@ wam_args(ArgText, Args) :-
 normalize_space_string(In, Out) :-
     normalize_space(string(Out), In).
 
+% P3 uw-resolve helpers. Without this rewrite, `call maplist/N` /
+% `call predsort/3` stay as :call and the runtime's unmatched-call
+% arm silently backtracks (A3). functor/3, arg/3, =../2, string_codes/2
+% already emit as builtin_call.
+clojure_wam_direct_builtin("maplist/2").
+clojure_wam_direct_builtin("maplist/3").
+clojure_wam_direct_builtin("maplist/4").
+clojure_wam_direct_builtin('maplist/2').
+clojure_wam_direct_builtin('maplist/3').
+clojure_wam_direct_builtin('maplist/4').
+clojure_wam_direct_builtin("predsort/3").
+clojure_wam_direct_builtin('predsort/3').
+clojure_wam_direct_builtin("functor/3").
+clojure_wam_direct_builtin('functor/3').
+clojure_wam_direct_builtin("arg/3").
+clojure_wam_direct_builtin('arg/3').
+clojure_wam_direct_builtin("=../2").
+clojure_wam_direct_builtin('=../2').
+clojure_wam_direct_builtin("string_codes/2").
+clojure_wam_direct_builtin('string_codes/2').
+
+wam_op_to_clojure_literal("call", [Pred, ArityStr], _, Literal) :-
+    clojure_wam_direct_builtin(Pred),
+    !,
+    wam_op_to_clojure_literal("builtin_call", [Pred, ArityStr], _, Literal).
 wam_op_to_clojure_literal("call", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
-    number_string(Arity, ArityStr),
+    wam_int_token(ArityStr, Arity),
     format(atom(Literal), '{:op :call :pred ~w :arity ~w}', [PredLit, Arity]).
 wam_op_to_clojure_literal("call_foreign", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
-    number_string(Arity, ArityStr),
+    wam_int_token(ArityStr, Arity),
     format(atom(Literal), '{:op :call-foreign :pred ~w :arity ~w}', [PredLit, Arity]).
 wam_op_to_clojure_literal("execute", [Pred], _, Literal) :-
     clj_string_literal(Pred, PredLit),
@@ -650,14 +862,68 @@ wam_op_to_clojure_literal("unify_value", [Var], _, Literal) :-
 wam_op_to_clojure_literal("unify_constant", [Const], _, Literal) :-
     wam_atom_token_literal(Const, ConstLit),
     format(atom(Literal), '{:op :unify-constant :constant ~w}', [ConstLit]).
-wam_op_to_clojure_literal("switch_on_constant", [CasesText], _, Literal) :-
+wam_op_to_clojure_literal(Op, [CasesText], _, Literal) :-
+    switch_constant_op(Op, Reg, Fallthrough),
     parse_switch_cases(CasesText, CaseEntries),
     atomic_list_concat(CaseEntries, ' ', CasesBody),
-    format(atom(Literal), '{:op :switch-on-constant :cases [~w]}', [CasesBody]).
+    clj_string_literal(Reg, RegLit),
+    format(atom(Literal),
+           '{:op :switch-on-constant :cases [~w] :reg ~w :fallthrough? ~w}',
+           [CasesBody, RegLit, Fallthrough]).
+wam_op_to_clojure_literal(Op, [CasesText], _, Literal) :-
+    switch_structure_op(Op, Reg),
+    switch_case_entries(CasesText, Entries),
+    maplist(switch_structure_entry_literal, Entries, EntryLits),
+    atomic_list_concat(EntryLits, ' ', CasesBody),
+    clj_string_literal(Reg, RegLit),
+    format(atom(Literal),
+           '{:op :switch-on-structure :cases [~w] :reg ~w}',
+           [CasesBody, RegLit]).
+wam_op_to_clojure_literal(Op, [ArgText], _, Literal) :-
+    switch_term_op(Op, Reg),
+    parse_switch_on_term_text(ArgText, ConstEntries, StructEntries, ListLabel),
+    maplist(switch_constant_entry_literal, ConstEntries, ConstLits),
+    maplist(switch_structure_entry_literal, StructEntries, StructLits),
+    atomic_list_concat(ConstLits, ' ', ConstBody),
+    atomic_list_concat(StructLits, ' ', StructBody),
+    clj_string_literal(ListLabel, ListLit),
+    clj_string_literal(Reg, RegLit),
+    format(atom(Literal),
+           '{:op :switch-on-term :consts [~w] :structs [~w] :list-label ~w :reg ~w}',
+           [ConstBody, StructBody, ListLit, RegLit]).
+% Dedicated dispatch chains (try / retry / trust) — the group form of the
+% linear chain's try_me_else / retry_me_else / trust_me. `backtrack` in this
+% runtime POPS the choice point it resumes, so retry (like retry_me_else)
+% pushes the next alternative rather than rewriting the top one.
+wam_op_to_clojure_literal("try", [Label], _, Literal) :-
+    clj_string_literal(Label, LabelLit),
+    format(atom(Literal), '{:op :try :label ~w}', [LabelLit]).
+wam_op_to_clojure_literal("retry", [Label], _, Literal) :-
+    clj_string_literal(Label, LabelLit),
+    format(atom(Literal), '{:op :retry :label ~w}', [LabelLit]).
+wam_op_to_clojure_literal("trust", [Label], _, Literal) :-
+    clj_string_literal(Label, LabelLit),
+    format(atom(Literal), '{:op :trust :label ~w}', [LabelLit]).
 wam_op_to_clojure_literal("builtin_call", [Pred, ArityStr], _, Literal) :-
     clj_string_literal(Pred, PredLit),
-    number_string(Arity, ArityStr),
+    wam_int_token(ArityStr, Arity),
     format(atom(Literal), '{:op :builtin-call :pred ~w :arity ~w}', [PredLit, Arity]).
+wam_op_to_clojure_literal("begin_aggregate", [Kind, TemplateReg, BagReg], _, Literal) :-
+    clj_string_literal(Kind, KindLit),
+    clj_string_literal(TemplateReg, TemplateLit),
+    clj_string_literal(BagReg, BagLit),
+    format(atom(Literal), '{:op :begin-aggregate :kind ~w :template ~w :bag ~w :witnesses []}',
+           [KindLit, TemplateLit, BagLit]).
+wam_op_to_clojure_literal("begin_aggregate", [Kind, TemplateReg, BagReg, WitnessText], _, Literal) :-
+    clj_string_literal(Kind, KindLit),
+    clj_string_literal(TemplateReg, TemplateLit),
+    clj_string_literal(BagReg, BagLit),
+    aggregate_witness_vector_literal(WitnessText, WitnessLit),
+    format(atom(Literal), '{:op :begin-aggregate :kind ~w :template ~w :bag ~w :witnesses ~w}',
+           [KindLit, TemplateLit, BagLit, WitnessLit]).
+wam_op_to_clojure_literal("end_aggregate", [TemplateReg], _, Literal) :-
+    clj_string_literal(TemplateReg, TemplateLit),
+    format(atom(Literal), '{:op :end-aggregate :template ~w}', [TemplateLit]).
 wam_op_to_clojure_literal("cut_ite", [], _, '{:op :cut-ite}').
 wam_op_to_clojure_literal(_Op, _Args, Line, Literal) :-
     clj_string_literal(Line, LineLit),
@@ -666,6 +932,16 @@ wam_op_to_clojure_literal(_Op, _Args, Line, Literal) :-
 parse_switch_cases(CasesText, CaseEntries) :-
     split_string(CasesText, " ", " ", RawCases),
     maplist(parse_switch_case, RawCases, CaseEntries).
+
+switch_constant_entry_literal(Const-Label, Entry) :-
+    wam_atom_token_literal(Const, ConstLit),
+    clj_string_literal(Label, LabelLit),
+    format(atom(Entry), '{:value ~w :label ~w}', [ConstLit, LabelLit]).
+
+switch_structure_entry_literal(Functor-Label, Entry) :-
+    clj_string_literal(Functor, FunctorLit),
+    clj_string_literal(Label, LabelLit),
+    format(atom(Entry), '{:functor ~w :label ~w}', [FunctorLit, LabelLit]).
 
 parse_switch_case(RawCase, Entry) :-
     normalize_space(string(Case), RawCase),
@@ -678,9 +954,46 @@ parse_switch_case(RawCase, Entry) :-
         format(atom(Entry), '{:value ~w :label ~w}', [ConstLit, LabelLit])
     ).
 
+aggregate_witness_vector_literal(WitnessText, WitnessLit) :-
+    clj_unquote_wam_atom_token(WitnessText, Unquoted),
+    (   Unquoted == ""
+    ->  Witnesses = []
+    ;   split_string(Unquoted, ";", "", Witnesses)
+    ),
+    emit_clojure_string_vector(Witnesses, WitnessLit).
+
+%% wam_int_token(+Text, -N)
+%  WAM arity/count tokens arrive as strings (`split_string`), atoms
+%  (`format(atom, ...)`), or integers. `number_string/2` rejects atoms
+%  on SWI 9 (`type_error(list, '3')`); last-goal `execute predsort/3`
+%  hits that path.
+wam_int_token(Text, N) :-
+    number(Text),
+    !,
+    N = Text.
+wam_int_token(Text, N) :-
+    (   string(Text)
+    ->  S = Text
+    ;   atom(Text)
+    ->  atom_string(Text, S)
+    ),
+    number_string(N, S).
+
+%% functor_arity_string(+Functor, -Arity)
+%  Arity is the trailing /<digits> segment so names that contain `/`
+%  (`///2`, `//2`, `=../2`) parse. A first-slash split turns `///2`
+%  into four empty tokens and put_structure falls through to :raw,
+%  which backtracks — that is what made index_catalog (build_tree's
+%  `NL is (N-1)//2`) fail on every catalog past index_threshold.
 functor_arity_string(Functor, Arity) :-
-    split_string(Functor, "/", "", [_Name, ArityStr]),
-    number_string(Arity, ArityStr).
+    (   string(Functor)
+    ->  S = Functor
+    ;   atom_string(Functor, S)
+    ),
+    split_string(S, "/", "", Parts),
+    Parts = [_,_|_],
+    last(Parts, ArityStr),
+    wam_int_token(ArityStr, Arity).
 
 predicate_indicator_parts(Module:Pred/Arity, Module, Pred, Arity) :- !.
 predicate_indicator_parts(Pred/Arity, user, Pred, Arity).
@@ -728,10 +1041,17 @@ namespace_relative_path(Namespace, RelativePath) :-
     ).
 
 read_template_file(Path, Content) :-
-    (   exists_file(Path)
-    ->  read_file_to_string(Path, Content, [])
+    (   template_abs_path(Path, Abs)
+    ->  read_whole_file(Abs, Content)
     ;   format(atom(Content), '; Template not found: ~w', [Path])
     ).
+
+%% template_abs_path(+RelPath, -AbsPath)
+%  Resolve a 'templates/...' path. In tests/CLI the cwd is the UnifyWeaver root,
+%  so the path resolves as-is. In swipl-wasm (SciREPL) the cwd is a notebook dir
+%  but the package is mounted at /user/, so fall back to /user/<path>.
+template_abs_path(Path, Path) :- exists_file(Path), !.
+template_abs_path(Path, Abs) :- atom_concat('/user/', Path, Abs), exists_file(Abs), !.
 
 write_file(Path, Content) :-
     open(Path, write, Stream),

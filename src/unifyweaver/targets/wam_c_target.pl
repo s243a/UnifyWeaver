@@ -26,6 +26,8 @@
     plan_wam_c_lowered_helpers/4,     % +Predicates, +Options, +DetectedKeys, -Plans
     wam_c_fact_table_classify/3,      % +PredIndicator, +Options, -fact_info(Arity,Rows)
     wam_c_fact_table_helper_for_predicate/5, % +PI, +Rows, -Key, -Code, -SetupLine
+    wam_c_fact_eligible/3,            % +PredIndicator, +WamLines, +Arity
+    wam_c_fact_eligible/4,            % +PredIndicator, +WamLines, +Arity, +Options
     write_wam_c_project/3             % +Predicates, +Options, +ProjectDir
 ]).
 
@@ -505,18 +507,22 @@ wam_c_kernel_registration_line(Key-recursive_kernel(transitive_parent_distance4,
     format(atom(Line),
            '    wam_register_transitive_parent_distance_kernel(state, "~w");',
            [Key]).
-wam_c_kernel_registration_line(Key-recursive_kernel(transitive_step_parent_distance5, _Pred, _ConfigOps), Line) :-
+wam_c_kernel_registration_line(Key-recursive_kernel(transitive_step_parent_distance5, _Pred, ConfigOps), Line) :-
+    member(edge_pred(EdgePred/2), ConfigOps),
     format(atom(Line),
-           '    wam_register_transitive_step_parent_distance_kernel(state, "~w");',
-           [Key]).
-wam_c_kernel_registration_line(Key-recursive_kernel(weighted_shortest_path3, _Pred, _ConfigOps), Line) :-
+           '    wam_register_transitive_step_parent_distance_kernel(state, "~w", "~w");',
+           [Key, EdgePred]).
+wam_c_kernel_registration_line(Key-recursive_kernel(weighted_shortest_path3, _Pred, ConfigOps), Line) :-
+    member(edge_pred(EdgePred/3), ConfigOps),
     format(atom(Line),
-           '    wam_register_weighted_shortest_path_kernel(state, "~w");',
-           [Key]).
-wam_c_kernel_registration_line(Key-recursive_kernel(astar_shortest_path4, _Pred, _ConfigOps), Line) :-
+           '    wam_register_weighted_shortest_path_kernel(state, "~w", "~w");',
+           [Key, EdgePred]).
+wam_c_kernel_registration_line(Key-recursive_kernel(astar_shortest_path4, _Pred, ConfigOps), Line) :-
+    member(edge_pred(EdgePred/3), ConfigOps),
+    member(direct_dist_pred(DistPred/_), ConfigOps),
     format(atom(Line),
-           '    wam_register_astar_shortest_path_kernel(state, "~w");',
-           [Key]).
+           '    wam_register_astar_shortest_path_kernel(state, "~w", "~w", "~w");',
+           [Key, EdgePred, DistPred]).
 
 wam_c_kernel_max_depth(ConfigOps, MaxDepth) :-
     (   member(max_depth(MaxDepth0), ConfigOps),
@@ -559,8 +565,13 @@ plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, Options, PredIndicator, P
     ;   \+ option(fact_table_inline(false), Options),
         wam_c_fact_table_classify(PredIndicator, Options, fact_info(_, Rows))
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_table(Rows))
+    ;   lowered_fact_helper_rows(PredIndicator, CapRows),
+        ( Arity > 32 ; wam_c_t9_max_rows(Options, Cap), length(CapRows, N), N > Cap )
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, interpreted, fact_table_limit)
     ;   lowered_fact_helper_rows(PredIndicator, Rows)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, fact_only(Rows))
+    ;   wam_c_t9_dependency(PredIndicator, Options)
+    ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, interpreted, fact_table_dependency)
     ;   lowered_body_call_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity)
     ->  Plan = wam_c_lowered_helper_plan(Key, PredIndicator, lowered, body_call(CalleeKey, CalleeArity))
     ;   lowered_body_call_projected_helper(PredIndicator, AvailableKeys, CalleeKey, CalleeArity, CalleeArgs)
@@ -576,6 +587,22 @@ plan_wam_c_lowered_helper(DetectedKeys, AvailableKeys, Options, PredIndicator, P
     ;   lowered_fact_helper_rejection_reason(PredIndicator, Reason),
         Plan = wam_c_lowered_helper_plan(Key, PredIndicator, rejected, Reason)
     ).
+
+% Existing projected/filtered helpers assume deterministic callees. In particular,
+% their result-copy continuation is bypassed by a fact-table retry. Compile these
+% callers normally, also avoiding references to helpers declined by the cap.
+wam_c_t9_dependency(PredIndicator, Options) :-
+    predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    user:clause(Head, Body), Body \== true,
+    sub_term(Goal, Body), nonvar(Goal), callable(Goal),
+    functor(Goal, Callee, N), N > 0,
+    lowered_fact_helper_rows(user:Callee/N, Rows),
+    (   \+ option(fact_table_inline(false), Options),
+        wam_c_fact_table_classify(user:Callee/N, Options, _)
+    ;   wam_c_t9_max_rows(Options, Max), length(Rows, Count), Count > Max
+    ;   N > 32
+    ), !.
 
 plan_wam_c_lowered_helper_disabled(PredIndicator, Plan) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
@@ -802,8 +829,8 @@ lowered_fact_helper_rows_(PredIndicator, Rows) :-
 
 % --- T9 fact-table inline: thresholds, classifier, oversized warning ---------
 
-wam_c_t9_min_rows(Options, N) :- ( option(t9_min_rows(N), Options) -> true ; N = 64 ).
-wam_c_t9_max_rows(Options, N) :- ( option(t9_max_rows(N), Options) -> true ; N = 256 ).
+wam_c_t9_min_rows(Options, N) :- option(t9_min_rows(N), Options, 64), must_be(nonneg, N).
+wam_c_t9_max_rows(Options, N) :- option(t9_max_rows(N), Options, 256), must_be(nonneg, N).
 
 %% wam_c_fact_table_classify(+PredIndicator, +Options, -fact_info(Arity, Rows))
 %  An all-ground-facts predicate (arity >= 1) whose row count is in the inline
@@ -812,8 +839,12 @@ wam_c_t9_max_rows(Options, N) :- ( option(t9_max_rows(N), Options) -> true ; N =
 %  fact_table_inline(false) is not set.
 wam_c_fact_table_classify(PredIndicator, Options, fact_info(Arity, Rows)) :-
     predicate_indicator_parts(PredIndicator, _Module, _Pred, Arity),
-    Arity >= 1,
+    between(1, 32, Arity),
     lowered_fact_helper_rows(PredIndicator, Rows),
+    predicate_indicator_parts(PredIndicator, _M, Pred, Arity),
+    functor(Head, Pred, Arity),
+    findall(1, user:clause(Head, true), Facts),
+    same_length(Facts, Rows),
     wam_c_t9_min_rows(Options, Min),
     wam_c_t9_max_rows(Options, Max),
     length(Rows, NR),
@@ -934,7 +965,7 @@ wam_c_fact_table_helper_for_predicate(PredIndicator, Rows, Key, Code, SetupLine)
            [Key, Arity, Symbol]).
 
 wam_c_fact_table_helper_code(Symbol, Arity, Rows, Code) :-
-    Arity > 0,
+    between(1, 32, Arity),
     length(Rows, RowCount),
     format(atom(RowTableSymbol), '~w_rows', [Symbol]),
     wam_c_lowered_static_row_table(RowTableSymbol, Arity, Rows, RowTableCode),
@@ -1769,6 +1800,12 @@ wam_instruction_to_c_literal(try_me_else(_Label), _) :-
     throw(error(context_error(missing_label_map, "try_me_else/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 wam_instruction_to_c_literal(retry_me_else(_Label), _) :-
     throw(error(context_error(missing_label_map, "retry_me_else/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
+wam_instruction_to_c_literal(try(_Label), _) :-
+    throw(error(context_error(missing_label_map, "try/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
+wam_instruction_to_c_literal(retry(_Label), _) :-
+    throw(error(context_error(missing_label_map, "retry/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
+wam_instruction_to_c_literal(trust(_Label), _) :-
+    throw(error(context_error(missing_label_map, "trust/1 requires LabelMap for target_pc resolution. Use wam_instruction_to_c_literal/3 instead."), _)).
 
 
 wam_instruction_to_c_literal(trust_me, '{ .tag = INSTR_TRUST_ME }').
@@ -1780,13 +1817,23 @@ wam_instruction_to_c_literal(Instr, _) :-
 
 wam_instruction_to_c_literal(try_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
-    format(atom(Code), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w } }', [TargetPC]).
+    ( sub_atom(Label, 0, _, _, 'L_ite_else_') -> IsIte = 1 ; IsIte = 0 ),
+    format(atom(Code), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .is_ite = ~w } }', [TargetPC, IsIte]).
 wam_instruction_to_c_literal(retry_me_else(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
     format(atom(Code), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w } }', [TargetPC]).
 wam_instruction_to_c_literal(jump(Label), LabelMap, Code) :-
     ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
     format(atom(Code), '{ .tag = INSTR_JUMP, .as.jump = { .target_pc = ~w } }', [TargetPC]).
+wam_instruction_to_c_literal(try(Label), LabelMap, Code) :-
+    ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
+    format(atom(Code), '{ .tag = INSTR_TRY, .as.choice = { .target_pc = ~w } }', [TargetPC]).
+wam_instruction_to_c_literal(retry(Label), LabelMap, Code) :-
+    ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
+    format(atom(Code), '{ .tag = INSTR_RETRY, .as.choice = { .target_pc = ~w } }', [TargetPC]).
+wam_instruction_to_c_literal(trust(Label), LabelMap, Code) :-
+    ( member(Label-TargetPC, LabelMap) -> true ; TargetPC = -1 ),
+    format(atom(Code), '{ .tag = INSTR_TRUST, .as.choice = { .target_pc = ~w } }', [TargetPC]).
 wam_instruction_to_c_literal(Instr, _, Code) :- wam_instruction_to_c_literal(Instr, Code).
 
 
@@ -1950,11 +1997,24 @@ wam_line_to_c_instr(["jump", L], LabelMap, _Arity, OffsetVar, Instr) :-
 wam_line_to_c_instr(["try_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
-    format(atom(Instr), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
+    ( sub_string(CL, 0, _, _, "L_ite_else_") -> IsIte = 1 ; IsIte = 0 ),
+    format(atom(Instr), '{ .tag = INSTR_TRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w, .is_ite = ~w } }', [TargetPC, Arity, IsIte]).
 wam_line_to_c_instr(["retry_me_else", L], LabelMap, Arity, OffsetVar, Instr) :-
     clean_comma(L, CL),
     ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
     format(atom(Instr), '{ .tag = INSTR_RETRY_ME_ELSE, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
+wam_line_to_c_instr(["try", L], LabelMap, Arity, OffsetVar, Instr) :-
+    clean_comma(L, CL),
+    ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
+    format(atom(Instr), '{ .tag = INSTR_TRY, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
+wam_line_to_c_instr(["retry", L], LabelMap, Arity, OffsetVar, Instr) :-
+    clean_comma(L, CL),
+    ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
+    format(atom(Instr), '{ .tag = INSTR_RETRY, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
+wam_line_to_c_instr(["trust", L], LabelMap, Arity, OffsetVar, Instr) :-
+    clean_comma(L, CL),
+    ( member(CL-TargetPC0, LabelMap) -> c_pc_expr(OffsetVar, TargetPC0, TargetPC) ; TargetPC = -1 ),
+    format(atom(Instr), '{ .tag = INSTR_TRUST, .as.choice = { .target_pc = ~w, .arity = ~w } }', [TargetPC, Arity]).
 wam_line_to_c_instr(["trust_me"], _, '{ .tag = INSTR_TRUST_ME }').
 wam_line_to_c_instr(["cut_ite"], _, '{ .tag = INSTR_CUT_ITE }').
 wam_line_to_c_instr(["proceed"], _, '{ .tag = INSTR_PROCEED }').
@@ -2029,25 +2089,38 @@ wam_lines_to_c_pass1([Line|Rest], PC, LabelMap) :-
         )
     ).
 
-wam_lines_to_c_pass2([], PC, _, _, _, PC, []).
-wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs) :-
+wam_lines_to_c_pass2(Lines, PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs) :-
+    wam_lines_to_c_pass2(Lines, PC, LabelMap, Arity, OffsetVar, '', false, CodeSize, Instrs).
+
+wam_lines_to_c_pass2(Lines, PC, LabelMap, Arity, OffsetVar, IsEligible, CodeSize, Instrs) :-
+    wam_lines_to_c_pass2(Lines, PC, LabelMap, Arity, OffsetVar, '', IsEligible, CodeSize, Instrs).
+
+wam_lines_to_c_pass2([], PC, _, _, _, _, _, PC, []).
+wam_lines_to_c_pass2([Line|Rest], PC, LabelMap, Arity, OffsetVar, ExpectedLabel, IsEligible, CodeSize, Instrs) :-
     split_string(Line, " \t", " \t", Parts),
     delete(Parts, "", CleanParts),
-    (   CleanParts == [] -> wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs)
+    (   CleanParts == [] -> wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, ExpectedLabel, IsEligible, CodeSize, Instrs)
     ;   CleanParts = [First|_],
         (   sub_string(First, _, 1, 0, ":")
         ->  sub_string(First, 0, _, 1, LabelName),
             (   sub_string(LabelName, 0, 2, _, "L_")
-            ->  wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, Instrs)
+            ->  wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, ExpectedLabel, IsEligible, CodeSize, Instrs)
             ;   c_pc_expr(OffsetVar, PC, PCExpr),
                 format(atom(PredReg), '    wam_register_predicate_hash(state, "~w", ~w);', [LabelName, PCExpr]),
-                Instrs = [PredReg|RestInstrs],
-                wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, CodeSize, RestInstrs)
+                (   IsEligible == true,
+                    ExpectedLabel \== '',
+                    atom_string(ExpectedLabel, LabelName)
+                ->  format(atom(EligibleReg), '    wam_set_predicate_fact_eligible(state, "~w", true);', [LabelName]),
+                    RegInstrs = [PredReg, EligibleReg]
+                ;   RegInstrs = [PredReg]
+                ),
+                append(RegInstrs, RestInstrs, Instrs),
+                wam_lines_to_c_pass2(Rest, PC, LabelMap, Arity, OffsetVar, ExpectedLabel, IsEligible, CodeSize, RestInstrs)
             )
         ;   wam_generate_c_instruction(PC, CleanParts, LabelMap, Arity, OffsetVar, CodeLines),
             NPC is PC + 1,
             append(CodeLines, RestInstrs, Instrs),
-            wam_lines_to_c_pass2(Rest, NPC, LabelMap, Arity, OffsetVar, CodeSize, RestInstrs)
+            wam_lines_to_c_pass2(Rest, NPC, LabelMap, Arity, OffsetVar, ExpectedLabel, IsEligible, CodeSize, RestInstrs)
         )
     ).
 
@@ -2147,16 +2220,238 @@ c_pc_expr(OffsetVar, PC, Expr) :-
     ;   format(atom(Expr), '~w + ~w', [OffsetVar, PC])
     ).
 
-compile_wam_predicate_to_c(PredIndicator, WamCode, _Options, CCode) :-
+%% wam_c_fact_eligible(+PredIndicator, +WamLines, +Arity)
+wam_c_fact_eligible(PredIndicator, WamLines, Arity) :-
+    wam_c_fact_eligible(PredIndicator, WamLines, Arity, []).
+
+%% wam_c_fact_eligible(+PredIndicator, +WamLines, +Arity, +Options)
+%  Conservative proof that PredIndicator is one bodyless unary fact.
+%  Enforces:
+%  1. Source-level proof: arity 1, defined, non-foreign, non-builtin, non-kernel,
+%     not a lowered wrapper, exactly one clause, and clause body is 'true'.
+%  2. Canonical WAM proof: supplied WAM token stream matches exactly the canonical
+%     shared-compiler WAM for this proven source fact.
+%  3. Stream validation: entry label matches <Pred>/1, exactly one proceed at end,
+%     valid register ranges (1 <= Xn < 256, A1 only, no Y registers), register
+%     initialization tracked before get_value/unify_value access, and strict
+%     unification-context validity (get_* only at top level, unify_* only inside terms).
+wam_c_fact_eligible(PredIndicator, WamInput, Arity, Options) :-
+    Arity =:= 1,
+    predicate_indicator_parts(PredIndicator, Module, Pred, 1),
+    format(atom(ExpectedLabel), '~w/1', [Pred]),
+    (   is_list(WamInput)
+    ->  WamLines = WamInput
+    ;   atom_string(WamInput, WamStr),
+        split_string(WamStr, "\n", "", WamLines)
+    ),
+    wam_c_fact_source_proven(PredIndicator),
+    wam_c_fact_canonical_proven(Module:Pred/1, Options, WamLines),
+    wam_c_fact_stream_proven(WamLines, ExpectedLabel).
+
+%% wam_c_fact_source_proven(+PredIndicator)
+%  Verified at the Prolog source level: arity 1, defined, non-foreign,
+%  non-builtin, non-kernel, non-wrapper, exactly one clause, and body is 'true'.
+wam_c_fact_source_proven(PredIndicator) :-
+    predicate_indicator_parts(PredIndicator, Module, Pred, 1),
+    wam_c_current_predicate_in_module(Module, Pred, 1),
+    \+ wam_c_fact_source_is_kernel(Pred, 1),
+    \+ wam_c_fact_source_is_wrapper(PredIndicator),
+    functor(Head, Pred, 1),
+    catch(findall(Body, wam_c_clause_in_module(Module, Head, Body), Bodies), _, fail),
+    Bodies = [true].
+
+wam_c_current_predicate_in_module(Module, Pred, Arity) :-
+    functor(Head, Pred, Arity),
+    (   Module == user
+    ->  current_predicate(user:Pred/Arity),
+        \+ predicate_property(user:Head, foreign),
+        \+ predicate_property(user:Head, built_in)
+    ;   current_predicate(Module:Pred/Arity),
+        \+ predicate_property(Module:Head, foreign),
+        \+ predicate_property(Module:Head, built_in)
+    ).
+
+wam_c_clause_in_module(Module, Head, Body) :-
+    (   Module == user
+    ->  user:clause(Head, Body)
+    ;   clause(Module:Head, Body)
+    ).
+
+wam_c_fact_source_is_kernel(Pred, Arity) :-
+    functor(Head, Pred, Arity),
+    catch(findall(Head-Body, user:clause(Head, Body), Clauses), _, fail),
+    Clauses \= [],
+    detect_recursive_kernel(Pred, Arity, Clauses, Kernel),
+    wam_c_supported_kernel(Kernel).
+
+wam_c_fact_source_is_wrapper(PredIndicator) :-
     predicate_indicator_parts(PredIndicator, _Module, Pred, Arity),
+    functor(Head, Pred, Arity),
+    (   predicate_property(Head, foreign)
+    ;   predicate_property(Head, built_in)
+    ;   plan_wam_c_lowered_helper([], [], [], PredIndicator, Plan),
+        Plan = wam_c_lowered_helper_plan(_, _, lowered, Detail),
+        Detail \= fact_only(_),
+        Detail \= fact_table(_)
+    ).
+
+%% wam_c_fact_canonical_proven(+PI, +Options, +WamLines)
+%  Supplied WAM must match the canonical shared-compiler output token-for-token.
+wam_c_fact_canonical_proven(PI, Options, WamLines) :-
+    catch(wam_target:compile_predicate_to_wam(PI, Options, CanonicalWam), _, fail),
+    atom_string(CanonicalWam, CanonicalWamStr),
+    split_string(CanonicalWamStr, "\n", "", CanonicalLines),
+    wam_c_filter_lines(CanonicalLines, CanonicalTokens),
+    wam_c_filter_lines(WamLines, SuppliedTokens),
+    CanonicalTokens == SuppliedTokens.
+
+%% wam_c_fact_stream_proven(+WamLines, +ExpectedLabel)
+%  Verified at the emitted instruction stream level:
+%  - First non-empty line must be ExpectedLabel:
+%  - No other label anywhere in the stream
+%  - Valid register ranges, initialization, and unification contexts
+wam_c_fact_stream_proven(WamLines, ExpectedLabel) :-
+    wam_c_filter_lines(WamLines, Filtered),
+    Filtered \= [],
+    Filtered = [[FirstTok | _] | InstrLines],
+    sub_string(FirstTok, _, 1, 0, ":"),
+    sub_string(FirstTok, 0, _, 1, LabelName),
+    atom_string(ExpectedLabel, LabelName),
+    \+ ( member(Line, InstrLines), member(Tok, Line), sub_string(Tok, _, 1, 0, ":") ),
+    wam_c_validate_fact_stream(InstrLines, top, [], top, _FinalInitVars).
+
+wam_c_filter_lines([], []).
+wam_c_filter_lines([Line|Rest], Filtered) :-
+    split_string(Line, " \t", " \t", Parts),
+    delete(Parts, "", CleanParts),
+    (   CleanParts == []
+    ->  wam_c_filter_lines(Rest, Filtered)
+    ;   Filtered = [CleanParts|RestFiltered],
+        wam_c_filter_lines(Rest, RestFiltered)
+    ).
+
+%% wam_c_validate_fact_stream(+InstrLines, +Context, +InitVars, -FinalContext, -FinalInitVars)
+wam_c_validate_fact_stream([["proceed"]], top, InitVars, top, InitVars).
+wam_c_validate_fact_stream([Instr | Rest], Ctx0, InitVars0, CtxF, InitVarsF) :-
+    Instr \= ["proceed"],
+    wam_c_fact_step_valid(Instr, Ctx0, InitVars0, Ctx1, InitVars1),
+    wam_c_validate_fact_stream(Rest, Ctx1, InitVars1, CtxF, InitVarsF).
+
+%% wam_c_fact_step_valid(+Instr, +CtxIn, +InitVarsIn, -CtxOut, -InitVarsOut)
+% Top-level head unification
+wam_c_fact_step_valid(["get_constant", _C, RegRaw], top, InitVars, top, InitVars) :-
+    wam_c_clean_arg(RegRaw, "A1").
+wam_c_fact_step_valid(["get_variable", XRegRaw, RegRaw], top, InitVars, top, [N | InitVars]) :-
+    wam_c_clean_arg(RegRaw, "A1"),
+    wam_c_clean_arg(XRegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N).
+wam_c_fact_step_valid(["get_value", XRegRaw, RegRaw], top, InitVars, top, InitVars) :-
+    wam_c_clean_arg(RegRaw, "A1"),
+    wam_c_clean_arg(XRegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N),
+    member(N, InitVars).
+wam_c_fact_step_valid(["get_structure", FunctorRaw, RegRaw], top, InitVars, in_term(Arity, []), InitVars) :-
+    wam_c_clean_arg(RegRaw, "A1"),
+    wam_c_clean_arg(FunctorRaw, Functor),
+    wam_c_parse_functor_arity(Functor, Arity),
+    Arity > 0.
+wam_c_fact_step_valid(["get_list", RegRaw], top, InitVars, in_term(2, []), InitVars) :-
+    wam_c_clean_arg(RegRaw, "A1").
+
+% Nested term entry inside existing term context
+wam_c_fact_step_valid(["get_structure", FunctorRaw, RegRaw], in_term(Remaining, Stack), InitVars, in_term(Arity, [Remaining | Stack]), InitVars) :-
+    wam_c_clean_arg(RegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N),
+    member(N, InitVars),
+    wam_c_clean_arg(FunctorRaw, Functor),
+    wam_c_parse_functor_arity(Functor, Arity),
+    Arity > 0.
+wam_c_fact_step_valid(["get_list", RegRaw], in_term(Remaining, Stack), InitVars, in_term(2, [Remaining | Stack]), InitVars) :-
+    wam_c_clean_arg(RegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N),
+    member(N, InitVars).
+
+% Subterm argument unifications (only inside in_term context)
+wam_c_fact_step_valid(["unify_variable", XRegRaw], in_term(Rem, Stack), InitVars, NextCtx, [N | InitVars]) :-
+    wam_c_clean_arg(XRegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N),
+    wam_c_term_consume_arg(Rem, Stack, NextCtx).
+wam_c_fact_step_valid(["unify_value", XRegRaw], in_term(Rem, Stack), InitVars, NextCtx, InitVars) :-
+    wam_c_clean_arg(XRegRaw, XReg),
+    wam_c_valid_x_reg(XReg, N),
+    member(N, InitVars),
+    wam_c_term_consume_arg(Rem, Stack, NextCtx).
+wam_c_fact_step_valid(["unify_constant", _C], in_term(Rem, Stack), InitVars, NextCtx, InitVars) :-
+    wam_c_term_consume_arg(Rem, Stack, NextCtx).
+wam_c_fact_step_valid(["unify_nil"], in_term(Rem, Stack), InitVars, NextCtx, InitVars) :-
+    wam_c_term_consume_arg(Rem, Stack, NextCtx).
+wam_c_fact_step_valid(["unify_void"], in_term(Rem, Stack), InitVars, NextCtx, InitVars) :-
+    wam_c_term_consume_arg(Rem, Stack, NextCtx).
+wam_c_fact_step_valid(["unify_void", NumStr], in_term(Rem, Stack), InitVars, NextCtx, InitVars) :-
+    catch(number_string(Count, NumStr), _, fail),
+    integer(Count),
+    Count > 0,
+    Count =< Rem,
+    NextRem is Rem - Count,
+    (   NextRem =:= 0
+    ->  (   Stack == []
+        ->  NextCtx = top
+        ;   Stack = [ParentRem | RestStack],
+            NextCtx = in_term(ParentRem, RestStack)
+        )
+    ;   NextCtx = in_term(NextRem, Stack)
+    ).
+wam_c_fact_step_valid(["noop"], Ctx, InitVars, Ctx, InitVars).
+
+wam_c_term_consume_arg(Rem, Stack, NextCtx) :-
+    Rem > 0,
+    NextRem is Rem - 1,
+    (   NextRem =:= 0
+    ->  (   Stack == []
+        ->  NextCtx = top
+        ;   Stack = [ParentRem | RestStack],
+            NextCtx = in_term(ParentRem, RestStack)
+        )
+    ;   NextCtx = in_term(NextRem, Stack)
+    ).
+
+wam_c_valid_x_reg(Tok, Num) :-
+    sub_string(Tok, 0, 1, _, Prefix),
+    (Prefix == "x" ; Prefix == "X"),
+    sub_string(Tok, 1, _, 0, NumStr),
+    catch(number_string(Num, NumStr), _, fail),
+    integer(Num),
+    Num > 0,
+    Num < 256.
+
+wam_c_parse_functor_arity(FunctorStr, Arity) :-
+    sub_string(FunctorStr, SlashIdx, 1, AfterSlash, "/"),
+    SlashIdx > 0,
+    AfterSlash > 0,
+    sub_string(FunctorStr, _, AfterSlash, 0, ArityStr),
+    \+ sub_string(ArityStr, _, _, _, "/"),
+    catch(number_string(Arity, ArityStr), _, fail),
+    integer(Arity),
+    Arity > 0.
+
+wam_c_clean_arg(ArgWithComma, CleanArg) :-
+    (   sub_string(ArgWithComma, _, 1, 0, ",")
+    ->  sub_string(ArgWithComma, 0, _, 1, CleanArg)
+    ;   CleanArg = ArgWithComma
+    ).
+
+compile_wam_predicate_to_c(PredIndicator, WamCode, Options, CCode) :-
+    predicate_indicator_parts(PredIndicator, Module, Pred, Arity),
     atom_string(Pred, PredStr),
     atom_string(WamCode, WamStr),
-    % Note: WamCode is a string generated by wam_target:compile_predicate_to_wam/3
-    % (e.g. "get_constant a, A1\ncall foo/2, 2\n"), NOT a list of terms.
-    % We parse it line-by-line into structural C literals.
+    format(atom(ExpectedLabel), '~w/~w', [Pred, Arity]),
     split_string(WamStr, "\n", "", Lines),
+    (   wam_c_fact_eligible(Module:Pred/Arity, Lines, Arity, Options)
+    ->  IsEligible = true
+    ;   IsEligible = false
+    ),
     wam_lines_to_c_pass1(Lines, 0, LabelMap),
-    wam_lines_to_c_pass2(Lines, 0, LabelMap, Arity, base_pc, CodeSize, InstrParts),
+    wam_lines_to_c_pass2(Lines, 0, LabelMap, Arity, base_pc, ExpectedLabel, IsEligible, CodeSize, InstrParts),
     atomic_list_concat(InstrParts, '\n', InstrLiterals),
     
     format(atom(CCode), 
@@ -2175,7 +2470,81 @@ void setup_~w_~w(WamState* state) {
 
 compile_step_wam_to_c(_Options, CCode) :-
     CCode =
-'    bool step_wam(WamState* state, Instruction* instr) {
+'    /* Read-mode argument contexts. See WamArgCtx in wam_runtime.h for
+       why a single S register is not enough: nested terms are emitted
+       interleaved with the enclosing term''s arguments, so S has to be
+       saved and restored around them. */
+    static void wam_push_arg_ctx(WamState* state, int nargs) {
+        if (state->arg_ctx_top >= WAM_ARG_CTX_MAX) {
+            /* Deeper nesting than the fixed stack allows. Dropping the
+               context degrades to the old single-S behaviour for this
+               term rather than corrupting the stack. */
+            return;
+        }
+        state->arg_ctx[state->arg_ctx_top].resume_s = state->S;
+        state->arg_ctx[state->arg_ctx_top].dest = 0;
+        state->arg_ctx[state->arg_ctx_top].remaining = nargs;
+        state->arg_ctx[state->arg_ctx_top].is_write = 0;
+        state->arg_ctx_top++;
+    }
+
+    /* Write-mode counterpart: `dest` is the heap address of the next
+       argument cell of the term being built. The cells are reserved by
+       the get_* instruction, so a nested term allocated afterwards
+       cannot land on top of them. */
+    static void wam_push_write_ctx(WamState* state, int dest, int nargs) {
+        if (state->arg_ctx_top >= WAM_ARG_CTX_MAX) return;
+        state->arg_ctx[state->arg_ctx_top].resume_s = state->S;
+        state->arg_ctx[state->arg_ctx_top].dest = dest;
+        state->arg_ctx[state->arg_ctx_top].remaining = nargs;
+        state->arg_ctx[state->arg_ctx_top].is_write = 1;
+        state->arg_ctx_top++;
+    }
+
+    /* Address of the cell the next write-mode unify_* should fill, or -1
+       when no write context is active (fall back to appending at H). */
+    static int wam_write_dest(WamState* state) {
+        if (state->arg_ctx_top <= 0) return -1;
+        WamArgCtx *ctx = &state->arg_ctx[state->arg_ctx_top - 1];
+        if (!ctx->is_write || ctx->remaining <= 0) return -1;
+        return ctx->dest;
+    }
+
+    /* Ensure the heap can hold `addr`. Reserving in the get_* instruction
+       keeps argument cells contiguous; this is the safety net. */
+    static void wam_reserve_heap(WamState* state, int addr) {
+        if (addr < state->H_cap) return;
+        if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
+        while (addr >= state->H_cap) state->H_cap *= 2;
+        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+    }
+
+    /* Called after each read-mode unify_* consumes one argument cell.
+       When the innermost term''s arguments are exhausted, S goes back to
+       the enclosing term so its remaining arguments are read from the
+       right place. */
+    static void wam_consume_arg_ctx(WamState* state) {
+        if (state->arg_ctx_top <= 0) return;
+        WamArgCtx *ctx = &state->arg_ctx[state->arg_ctx_top - 1];
+        if (ctx->is_write) ctx->dest++;
+        if (ctx->remaining > 0) ctx->remaining--;
+        if (ctx->remaining > 0) return;
+        /* This term is complete: restore the enclosing one.
+           resume_s always holds the enclosing term''s next-argument
+           pointer as of this frame''s push, whichever mode either is in,
+           so restoring it unconditionally is correct (and harmless when
+           the enclosing context turns out to be a write context).
+           The enclosing write context''s dest needs no fixup -- it was
+           only advanced by its own consumed arguments. */
+        state->S = ctx->resume_s;
+        state->arg_ctx_top--;
+        if (state->arg_ctx_top > 0) {
+            WamArgCtx *outer = &state->arg_ctx[state->arg_ctx_top - 1];
+            state->mode = outer->is_write ? MODE_WRITE : MODE_READ;
+        }
+    }
+
+    bool step_wam(WamState* state, Instruction* instr) {
         switch (instr->tag) {
             case INSTR_GET_CONSTANT: {
                 WamValue *cell = wam_deref_ptr(state, resolve_reg(state, instr->as.constant.reg, instr->as.constant.is_y_reg));
@@ -2191,11 +2560,20 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return false;
             }
             case INSTR_GET_VARIABLE: {
-                // Per WAM spec: copy A[Ai] to X[Xn] without trailing.
-                // Trailing is only for mutations of already-bound cells.
                 WamValue *cell_xn = resolve_reg(state, instr->as.reg_pair.reg_xn, instr->as.reg_pair.is_y_xn);
                 WamValue *cell_ai = resolve_reg(state, instr->as.reg_pair.reg_ai, instr->as.reg_pair.is_y_ai);
-                *cell_xn = *cell_ai;
+                /* A raw UNBOUND register has no shareable identity when copied
+                   by value. Materialize one heap reference and install it in
+                   both locations so a callee''s later output binding reaches
+                   the caller. Existing REF and bound values already carry
+                   identity/value and remain a plain WAM copy. */
+                if (val_is_unbound(*cell_ai)) {
+                    WamValue ref = wam_make_ref(state);
+                    *cell_ai = ref;
+                    *cell_xn = ref;
+                } else {
+                    *cell_xn = *cell_ai;
+                }
                 state->P++;
                 return true;
             }
@@ -2270,11 +2648,11 @@ compile_step_wam_to_c(_Options, CCode) :-
                     return wam_continue_if_then_else(state);
                 }
                 if (continuation != WAM_HALT && state->call_base_top > 0) {
-                    int barrier_index = --state->call_base_top;
-                    int target_b = state->call_bases[barrier_index];
-                    if (!state->call_base_preserve_choice[barrier_index]) {
-                        wam_prune_choice_points(state, target_b);
-                    }
+                    /* Returning removes the active cut barrier, but the
+                       callee''s choicepoints remain valid alternatives for a
+                       later failure in the caller. Each choicepoint snapshots
+                       call_base_top, so retry restores the callee barrier. */
+                    state->call_base_top--;
                 }
                 state->P = continuation;
                 return true;
@@ -2310,6 +2688,17 @@ compile_step_wam_to_c(_Options, CCode) :-
                         strcmp(instr->as.pred.pred, "bagof/3") == 0 ? "bagof" : "setof";
                     return wam_dispatch_aggregate_meta(state, kind, state->CP);
                 }
+                /* A tail call replaces the current predicate while retaining
+                   its continuation. Its cut barrier is nevertheless the
+                   choicepoint depth at entry to the callee, just as for CALL;
+                   reusing the caller''s older B0 lets a cut in the callee prune
+                   alternatives belonging to the caller. */
+                if (state->call_base_top > 0) {
+                    int frame = state->call_base_top - 1;
+                    state->call_bases[frame] = state->B;
+                    state->call_base_preserve_choice[frame] =
+                        state->aggregate_top > 0;
+                }
                 int target = resolve_predicate_hash(state, instr->as.pred.pred);
                 if (target >= 0) { state->P = target; return true; }
                 return false;
@@ -2337,7 +2726,8 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_TRY_ME_ELSE: {
                 int target = instr->as.choice.target_pc;
                 int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
-                push_choice_point(state, target, arity);
+                if (!push_choice_point(state, target, arity)) return false;
+                state->B_array[state->B - 1].is_ite = instr->as.choice.is_ite != 0;
                 state->P++;
                 return true;
             }
@@ -2353,6 +2743,43 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_TRUST_ME: {
                 pop_choice_point(state);
                 state->P++;
+                return true;
+            }
+            case INSTR_TRY: {
+                /* Indexed-dispatch try (format_dispatch_chain): push a CP
+                   whose next_pc is P+1 (the next chain instruction), then
+                   JUMP to the body. TRY_ME_ELSE instead stores the alt
+                   label in the CP and falls through. */
+                int target = instr->as.choice.target_pc;
+                if (target < 0) return false;
+                int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
+                if (!push_choice_point(state, state->P + 1, arity)) return false;
+                state->P = target;
+                return true;
+            }
+            case INSTR_RETRY: {
+                /* Update the chain CP so backtrack resumes at P+1, then
+                   jump to this alternative body. */
+                int target = instr->as.choice.target_pc;
+                if (target < 0) return false;
+                int next_chain = state->P + 1;
+                if (state->B > 0) {
+                    ChoicePoint *cp = &state->B_array[state->B - 1];
+                    cp->next_pc = next_chain;
+                } else {
+                    int arity = instr->as.choice.arity ? instr->as.choice.arity : 32;
+                    if (!push_choice_point(state, next_chain, arity)) return false;
+                }
+                state->P = target;
+                return true;
+            }
+            case INSTR_TRUST: {
+                /* Last chain entry: pop the chain CP and jump to the body.
+                   TRUST_ME pops and falls through. */
+                int target = instr->as.choice.target_pc;
+                if (target < 0) return false;
+                pop_choice_point(state);
+                state->P = target;
                 return true;
             }
             case INSTR_GET_LEVEL: {
@@ -2371,8 +2798,12 @@ compile_step_wam_to_c(_Options, CCode) :-
                 return true;
             }
             case INSTR_CUT_ITE: {
-                if (state->B <= 0) return false;
-                pop_choice_point(state);
+                int ite_b = state->B - 1;
+                while (ite_b >= 0 && !state->B_array[ite_b].is_ite) ite_b--;
+                if (ite_b < 0) return false;
+                /* Commit the condition: discard its marked else choicepoint
+                   and every alternative created while evaluating it. */
+                wam_prune_choice_points(state, ite_b);
                 state->P++;
                 return true;
             }
@@ -2492,11 +2923,26 @@ compile_step_wam_to_c(_Options, CCode) :-
                         state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
                     }
                     state->H_array[state->H] = val_atom(instr->as.functor.pred);
-                    state->H++;
+                    /* Claim the argument cells now and record where they
+                       are. A nested term is allocated at H afterwards, so
+                       without this the enclosing term''s later unify_*
+                       would append past the nested term instead of
+                       filling its own reserved slots. */
+                    {
+                        int args_at = state->H + 1;
+                        for (int ai = 0; ai < arity; ai++) {
+                            state->H_array[args_at + ai] = val_unbound("heap_var");
+                        }
+                        state->H = args_at + arity;
+                        wam_push_write_ctx(state, args_at, arity);
+                    }
                     state->mode = MODE_WRITE;
                 } else if (cell->tag == VAL_STR) {
                     WamValue *f = &state->H_array[cell->data.ref_addr];
                     if (f->tag == VAL_ATOM && strcmp(f->data.atom, instr->as.functor.pred) == 0) {
+                        const char *rslash = strchr(instr->as.functor.pred, ''/'');
+                        int rarity = rslash ? (int) strtol(rslash + 1, NULL, 10) : 0;
+                        wam_push_arg_ctx(state, rarity);
                         state->S = cell->data.ref_addr + 1;
                         state->mode = MODE_READ;
                     } else { return false; }
@@ -2567,8 +3013,18 @@ compile_step_wam_to_c(_Options, CCode) :-
                         while (required >= state->H_cap) state->H_cap *= 2;
                         state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
                     }
+                    /* Claim head and tail cells up front -- see the
+                       matching comment in get_structure. */
+                    {
+                        int cells_at = state->H;
+                        state->H_array[cells_at] = val_unbound("heap_var");
+                        state->H_array[cells_at + 1] = val_unbound("heap_var");
+                        state->H = cells_at + 2;
+                        wam_push_write_ctx(state, cells_at, 2);
+                    }
                     state->mode = MODE_WRITE;
                 } else if (cell->tag == VAL_LIST) {
+                    wam_push_arg_ctx(state, 2);
                     state->S = cell->data.ref_addr;
                     state->mode = MODE_READ;
                 } else if (cell->tag == VAL_STR) {
@@ -2581,6 +3037,7 @@ compile_step_wam_to_c(_Options, CCode) :-
                     if (f->tag == VAL_ATOM &&
                         (strcmp(f->data.atom, "[|]/2") == 0 ||
                          strcmp(f->data.atom, "./2") == 0)) {
+                        wam_push_arg_ctx(state, 2);
                         state->S = cell->data.ref_addr + 1;
                         state->mode = MODE_READ;
                     } else { return false; }
@@ -2636,13 +3093,41 @@ compile_step_wam_to_c(_Options, CCode) :-
             case INSTR_UNIFY_VARIABLE: {
                 WamValue *cell = resolve_reg(state, instr->as.reg.reg, instr->as.reg.is_y_reg);
                 if (state->mode == MODE_READ) {
-                    *cell = state->H_array[state->S];
+                    if (state->H_array[state->S].tag == VAL_UNBOUND) {
+                        /* Keep the register tied to the heap cell. Copying an
+                           unbound cell by value gives the register its OWN
+                           variable, so a later binding through the register
+                           never reaches the caller''s term -- which is what a
+                           repeated head variable does: `csame(p(X, X), X)`
+                           matched against `p(_, _)` aliased X with the second
+                           slot only, leaving the first slot unbound. Bound
+                           cells stay a plain copy (REF/ATOM/STR/LIST all
+                           already carry their own identity). */
+                        WamValue ref;
+                        ref.tag = VAL_REF;
+                        ref.data.ref_addr = state->S;
+                        *cell = ref;
+                    } else {
+                        *cell = state->H_array[state->S];
+                    }
                     state->S++;
+                    wam_consume_arg_ctx(state);
                 } else {
-                    // Note: wam_make_ref allocates an unbound cell in H_array and increments H,
-                    // satisfying the 1-slot heap pre-reservation invariant.
-                    WamValue ref = wam_make_ref(state);
-                    *cell = ref;
+                    int dest = wam_write_dest(state);
+                    if (dest >= 0) {
+                        /* Fill this term''s reserved argument cell and
+                           point the register at it. */
+                        wam_reserve_heap(state, dest);
+                        state->H_array[dest] = val_unbound("heap_var");
+                        WamValue ref; ref.tag = VAL_REF; ref.data.ref_addr = dest;
+                        *cell = ref;
+                        wam_consume_arg_ctx(state);
+                    } else {
+                        // Note: wam_make_ref allocates an unbound cell in H_array and increments H,
+                        // satisfying the 1-slot heap pre-reservation invariant.
+                        WamValue ref = wam_make_ref(state);
+                        *cell = ref;
+                    }
                 }
                 state->P++;
                 return true;
@@ -2652,13 +3137,21 @@ compile_step_wam_to_c(_Options, CCode) :-
                 if (state->mode == MODE_READ) {
                     if (!wam_unify(state, cell, &state->H_array[state->S])) return false;
                     state->S++;
+                    wam_consume_arg_ctx(state);
                 } else {
-                    if (state->H >= state->H_cap) {
-                        state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
-                        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                    int dest = wam_write_dest(state);
+                    if (dest >= 0) {
+                        wam_reserve_heap(state, dest);
+                        state->H_array[dest] = *cell;
+                        wam_consume_arg_ctx(state);
+                    } else {
+                        if (state->H >= state->H_cap) {
+                            state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+                            state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                        }
+                        state->H_array[state->H] = *cell;
+                        state->H++;
                     }
-                    state->H_array[state->H] = *cell;
-                    state->H++;
                 }
                 state->P++;
                 return true;
@@ -2673,13 +3166,21 @@ compile_step_wam_to_c(_Options, CCode) :-
                         return false;
                     }
                     state->S++;
+                    wam_consume_arg_ctx(state);
                 } else {
-                    if (state->H >= state->H_cap) {
-                        state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
-                        state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                    int dest = wam_write_dest(state);
+                    if (dest >= 0) {
+                        wam_reserve_heap(state, dest);
+                        state->H_array[dest] = instr->as.constant.val;
+                        wam_consume_arg_ctx(state);
+                    } else {
+                        if (state->H >= state->H_cap) {
+                            state->H_cap = state->H_cap ? state->H_cap * 2 : WAM_INITIAL_CAP;
+                            state->H_array = realloc(state->H_array, sizeof(WamValue) * state->H_cap);
+                        }
+                        state->H_array[state->H] = instr->as.constant.val;
+                        state->H++;
                     }
-                    state->H_array[state->H] = instr->as.constant.val;
-                    state->H++;
                 }
                 state->P++;
                 return true;
@@ -2693,6 +3194,9 @@ compile_step_wam_to_c(_Options, CCode) :-
         while (state->P >= 0 && state->P < state->code_size) {
             Instruction* instr = &state->code[state->P];
             if (!step_wam(state, instr)) {
+                if (state->error != 0) {
+                    return state->error;
+                }
                 bool recovered = false;
                 while (state->B > 0 && !recovered) {
                     ChoicePoint* cp = &state->B_array[state->B - 1];
@@ -2709,15 +3213,27 @@ compile_step_wam_to_c(_Options, CCode) :-
                         recovered = wam_resume_if_then_else(state);
                     } else if (next_pc == WAM_FACT_TABLE_RETRY) {
                         recovered = wam_resume_fact_table(state);
+                    } else if (next_pc == WAM_FOREIGN_STREAM_NEXT) {
+                        recovered = wam_resume_foreign_stream(state);
+                    } else if (next_pc == WAM_MEMBER_NEXT) {
+                        recovered = wam_resume_member(state);
                     } else {
                         state->P = next_pc; // Explicitly jump to alternative
                         recovered = true;
+                    }
+                    if (state->error != 0) {
+                        return state->error;
                     }
                 }
                 if (!recovered) {
                     return WAM_HALT; // Failure, no choice points left
                 }
+            } else if (state->error != 0) {
+                return state->error;
             }
+        }
+        if (state->error != 0) {
+            return state->error;
         }
         return (state->P == WAM_HALT) ? 0 : WAM_ERR_OOB; // 0 on success (HALT), else OOB error
     }'.
@@ -2730,6 +3246,9 @@ compile_wam_helpers_to_c(_Options, CCode) :-
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <math.h>
+#include <fenv.h>
+#include <locale.h>
 #include <unistd.h>
 
 static void wam_bidirectional_distance_cache_clear(WamState *state);
@@ -2744,23 +3263,35 @@ static bool wam_resume_disjunction(WamState *state);
 static bool wam_continue_if_then_else(WamState *state);
 static bool wam_resume_if_then_else(WamState *state);
 static bool wam_resume_fact_table(WamState *state);
+static bool wam_execute_member(WamState *state, int resume_pc);
+static bool wam_resume_member(WamState *state);
+static bool wam_maplist_is_proper_list(WamState *state, WamValue list);
+static bool wam_execute_maplist(WamState *state);
+static bool wam_execute_reverse(WamState *state);
+static bool wam_execute_append(WamState *state);
+static bool wam_execute_length(WamState *state);
+static bool wam_execute_atom_length(WamState *state);
+static bool wam_execute_atom_codes(WamState *state);
+static bool wam_execute_atom_chars(WamState *state);
+static bool wam_execute_char_code(WamState *state);
 
 static bool wam_ensure_heap_slots(WamState *state, int additional) {
     if (additional <= 0) return true;
     if (state->H > INT_MAX - additional) return false;
     int required = state->H + additional;
     if (required <= state->H_cap) return true;
-    if (state->H_cap == 0) state->H_cap = WAM_INITIAL_CAP;
-    while (required > state->H_cap) {
-        if (state->H_cap > INT_MAX / 2) {
-            state->H_cap = required;
+    int new_cap = state->H_cap ? state->H_cap : WAM_INITIAL_CAP;
+    while (required > new_cap) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = required;
             break;
         }
-        state->H_cap *= 2;
+        new_cap *= 2;
     }
-    WamValue *heap = realloc(state->H_array, sizeof(WamValue) * (size_t)state->H_cap);
+    WamValue *heap = realloc(state->H_array, sizeof(WamValue) * (size_t)new_cap);
     if (!heap) return false;
     state->H_array = heap;
+    state->H_cap = new_cap;
     return true;
 }
 
@@ -3008,7 +3539,7 @@ static bool wam_dispatch_if_then_else(WamState *state,
     frame->else_goal = else_goal;
     frame->return_pc = return_pc;
     frame->base_b = base_b;
-    push_choice_point(state, WAM_META_ITE_ELSE, 32);
+    if (!push_choice_point(state, WAM_META_ITE_ELSE, 32)) return false;
     return wam_invoke_goal_as_call(state, if_goal, WAM_META_ITE_THEN);
 }
 
@@ -3139,7 +3670,7 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
         WamDisjFrame *frame = &state->disj_frames[state->disj_top++];
         frame->right_goal = state->H_array[base + 2];
         frame->return_pc = return_pc;
-        push_choice_point(state, WAM_META_DISJ_RIGHT, 32);
+        if (!push_choice_point(state, WAM_META_DISJ_RIGHT, 32)) return false;
         return wam_invoke_goal_as_call(state, state->H_array[base + 1],
                                        return_pc);
     }
@@ -3171,6 +3702,12 @@ static bool wam_invoke_goal_as_call(WamState *state, WamValue goal,
         state->CP = return_pc;
         state->P = target;
         return true;
+    }
+    if (strcmp(functor, "member/2") == 0 && arity == 2) {
+        if (wam_execute_member(state, return_pc)) {
+            return wam_complete_goal_success(state, return_pc);
+        }
+        return false;
     }
     if (wam_execute_builtin(state, functor, arity)) {
         return wam_complete_goal_success(state, return_pc);
@@ -3748,7 +4285,7 @@ static bool wam_bind_next_aggregate_group(WamState *state) {
     bool has_more = iter->next_group < iter->group_count;
     int return_pc = iter->return_pc;
     if (has_more) {
-        push_choice_point(state, WAM_AGGREGATE_NEXT_GROUP, 32);
+        if (!push_choice_point(state, WAM_AGGREGATE_NEXT_GROUP, 32)) return false;
     }
 
     bool ok = wam_bind_aggregate_group(state, iter, group_index);
@@ -4036,7 +4573,7 @@ static bool wam_dispatch_aggregate_meta(WamState *state, const char *kind,
         }
     }
 
-    push_choice_point(state, WAM_AGGREGATE_META_DONE, 32);
+    if (!push_choice_point(state, WAM_AGGREGATE_META_DONE, 32)) return false;
     return wam_invoke_goal_as_call(state, state->A[1],
                                    WAM_AGGREGATE_META_COLLECT);
 }
@@ -4073,7 +4610,7 @@ static bool wam_begin_aggregate(WamState *state, Instruction *instr) {
         frame->witness_regs[i] = instr->as.aggregate.witness_regs[i];
         frame->witness_is_y[i] = instr->as.aggregate.witness_is_y[i];
     }
-    push_choice_point(state, state->P, 32);
+    if (!push_choice_point(state, state->P, 32)) return false;
     state->P++;
     return true;
 }
@@ -4109,6 +4646,12 @@ void wam_state_init(WamState *state) {
 
 void wam_free_state(WamState *state) {
     wam_aggregate_clear_all(state);
+    for (int i = 0; i < state->B; i++) {
+        free(state->B_array[i].foreign_results);
+        state->B_array[i].foreign_results = NULL;
+        free(state->B_array[i].env_frames);
+        state->B_array[i].env_frames = NULL;
+    }
     for (int i = 0; i < state->atom_table_size; i++) {
         AtomEntry *e = state->atom_table[i];
         while (e) {
@@ -4140,28 +4683,56 @@ void wam_free_state(WamState *state) {
     free(state->category_id_by_value);
     free(state->weighted_edges);
     free(state->direct_distance_edges);
+    free(state->weighted_relation_edges);
+    free(state->relation_edges);
+    free(state->kernel_edge_bindings);
     memset(state, 0, sizeof(WamState));
 }
 
 int wam_run_predicate(WamState *state, const char *pred,
                       WamValue *args, int arity) {
+    wam_clear_error(state);
     int entry = resolve_predicate_hash(state, pred);
     if (entry < 0) return WAM_ERR_OOB;
     int base_b = state->B;
     int base_call_base_top = state->call_base_top;
+    int base_aggregate_top = state->aggregate_top;
+    int base_e = state->E;
+    int base_h = state->H;
+    int base_tr = state->TR;
+    int base_arg_ctx_top = state->arg_ctx_top;
     if (state->call_base_top >= WAM_CALL_STACK_SIZE) return WAM_ERR_OOB;
     state->call_bases[state->call_base_top] = base_b;
     state->call_base_preserve_choice[state->call_base_top] = false;
     state->call_base_top++;
+    WamValue query_args[WAM_MAX_REGS];
     for (int i = 0; i < arity; i++) {
         state->A[i] = val_is_unbound(args[i]) ? wam_make_ref(state) : args[i];
+        query_args[i] = state->A[i];
     }
     state->CP = WAM_HALT;
     state->P = entry;
     int rc = wam_run(state);
     wam_prune_choice_points(state, base_b);
+    if (state->error != 0) {
+        /* Errors skip normal aggregate completion and deallocation. Roll back
+           only this query while retaining the first diagnostic for its caller. */
+        while (state->aggregate_top > base_aggregate_top) {
+            state->aggregate_top--;
+            wam_aggregate_frame_free(&state->aggregate_frames[state->aggregate_top]);
+        }
+        unwind_trail(state, base_tr);
+        state->H = base_h;
+        state->E = base_e;
+        state->arg_ctx_top = base_arg_ctx_top;
+        state->call_base_top = base_call_base_top;
+        return rc;
+    }
     for (int i = 0; i < arity; i++) {
-        WamValue *cell = wam_deref_ptr(state, &state->A[i]);
+        /* Calls freely reuse A registers. Recover results through the stable
+           entry argument roots instead of whichever values the last callee
+           left in A. Heap references remain valid across heap reallocations. */
+        WamValue *cell = wam_deref_ptr(state, &query_args[i]);
         state->A[i] = *cell;
     }
     state->call_base_top = base_call_base_top;
@@ -4316,6 +4887,871 @@ static bool wam_unify_atom_from_cstr(WamState *state, WamValue *target, const ch
     return wam_unify(state, target, &atom);
 }
 
+/* atom_length/2: count Unicode code points in the atomic text of A1,
+   matching WAM-Rust value_atomic_text (atoms, numbers, booleans, []).
+   Compounds, non-empty lists, and unbound A1 fail closed. A2 may be
+   unbound (bind length) or prebound (must match). Unify failure rolls
+   back trail/heap bindings made by this builtin. */
+static int wam_f64_bits_equal(double a, double b) {
+    uint64_t ua, ub;
+    memcpy(&ua, &a, sizeof ua);
+    memcpy(&ub, &b, sizeof ub);
+    return ua == ub;
+}
+
+static int wam_parse_printf_decimal(const char *s, int *neg,
+                                   char *digits, int *nd, int *sci_exp) {
+    int int_digits = 0;
+    int lead = 0;
+    int exp_adj = 0;
+    *neg = 0;
+    *nd = 0;
+    if (*s == ''-'') { *neg = 1; s++; }
+    else if (*s == ''+'') s++;
+    while (*s >= ''0'' && *s <= ''9'') {
+        if (*nd < 24) digits[(*nd)++] = *s;
+        int_digits++;
+        s++;
+    }
+    if (*s == ''.'' || *s == '','') {
+        s++;
+        while (*s >= ''0'' && *s <= ''9'') {
+            if (*nd < 24) digits[(*nd)++] = *s;
+            s++;
+        }
+    }
+    if (*s == ''e'' || *s == ''E'') {
+        int esign = 1;
+        int ev = 0;
+        s++;
+        if (*s == ''-'') { esign = -1; s++; }
+        else if (*s == ''+'') s++;
+        if (*s < ''0'' || *s > ''9'') return 0;
+        while (*s >= ''0'' && *s <= ''9'') {
+            ev = ev * 10 + (*s - ''0'');
+            s++;
+        }
+        exp_adj = esign * ev;
+    }
+    if (*s != 0 || *nd <= 0 || int_digits <= 0)
+        return 0;
+    while (lead < *nd - 1 && digits[lead] == ''0'')
+        lead++;
+    if (lead) {
+        memmove(digits, digits + lead, (size_t)(*nd - lead));
+        *nd -= lead;
+    }
+    while (*nd > 1 && digits[*nd - 1] == ''0'')
+        (*nd)--;
+    *sci_exp = int_digits - 1 - lead + exp_adj;
+    return 1;
+}
+
+static int wam_rust_display_fixed_len(int neg, int nd, int sci_exp) {
+    int n = neg ? 1 : 0;
+    int first = sci_exp;
+    int last = sci_exp - nd + 1;
+    if (nd <= 0)
+        return -1;
+    if (last >= 0)
+        return n + nd + last;
+    if (first < 0)
+        return n + 2 + (-first - 1) + nd;
+    return n + nd + 1;
+}
+
+static int wam_digits_add(char *d, int *nd, int *sci_exp, int delta) {
+    int i;
+    if (delta == 0 || *nd <= 0)
+        return 1;
+    if (delta > 0) {
+        int carry = delta;
+        for (i = *nd - 1; i >= 0 && carry; i--) {
+            int v = (d[i] - 48) + carry;
+            d[i] = (char)(48 + (v % 10));
+            carry = v / 10;
+        }
+        if (carry) {
+            if (*nd + 1 >= 24)
+                return 0;
+            memmove(d + 1, d, (size_t)*nd);
+            d[0] = (char)(48 + carry);
+            (*nd)++;
+            (*sci_exp)++;
+        }
+        return 1;
+    }
+    {
+        int sub = -delta;
+        for (i = *nd - 1; i >= 0 && sub; i--) {
+            int v = (d[i] - 48) - sub;
+            if (v >= 0) {
+                d[i] = (char)(48 + v);
+                sub = 0;
+            } else {
+                d[i] = (char)(48 + v + 10);
+                sub = 1;
+            }
+        }
+        if (sub)
+            return 0;
+        {
+            int lead = 0;
+            while (lead < *nd - 1 && d[lead] == 48)
+                lead++;
+            if (lead) {
+                memmove(d, d + lead, (size_t)(*nd - lead));
+                *nd -= lead;
+                *sci_exp -= lead;
+            }
+        }
+        return 1;
+    }
+}
+
+static int wam_sci_cstr_roundtrip(int neg, const char *digits, int nd,
+                                 int sci_exp, double orig) {
+    char buf[64];
+    char *end = NULL;
+    double parsed;
+    int n = 0;
+    if (nd <= 0 || nd > 20)
+        return 0;
+    if (neg)
+        buf[n++] = 45;
+    buf[n++] = digits[0];
+    if (nd > 1) {
+        buf[n++] = 46;
+        memcpy(buf + n, digits + 1, (size_t)(nd - 1));
+        n += nd - 1;
+    }
+    if (snprintf(buf + n, sizeof(buf) - (size_t)n, "e%+d", sci_exp) < 0)
+        return 0;
+    errno = 0;
+    parsed = strtod(buf, &end);
+    if (end == buf || (end && *end != 0))
+        return 0;
+    return wam_f64_bits_equal(parsed, orig);
+}
+
+static int wam_consider_float_len(int neg, const char *digits, int nd,
+                                 int sci_exp, double orig,
+                                 int *best_digits, int *best_len) {
+    char d[24];
+    int n = nd;
+    int len;
+    if (nd <= 0 || nd > 23)
+        return 0;
+    memcpy(d, digits, (size_t)nd);
+    while (n > 1 && d[n - 1] == 48)
+        n--;
+    if (!wam_sci_cstr_roundtrip(neg, d, n, sci_exp, orig))
+        return 0;
+    len = wam_rust_display_fixed_len(neg, n, sci_exp);
+    if (len > 0 && n < *best_digits) {
+        *best_digits = n;
+        *best_len = len;
+    }
+    return 1;
+}
+
+static void wam_consider_prefixes(int neg, const char *digits, int nd,
+                                 int sci_exp, double orig,
+                                 int *best_digits, int *best_len) {
+    int L;
+    for (L = 1; L <= nd; L++) {
+        char p[24];
+        int pn = L;
+        int pe = sci_exp;
+        memcpy(p, digits, (size_t)L);
+        wam_consider_float_len(neg, p, pn, pe, orig, best_digits, best_len);
+        if (wam_digits_add(p, &pn, &pe, 1))
+            wam_consider_float_len(neg, p, pn, pe, orig, best_digits, best_len);
+    }
+}
+
+static int wam_rust_display_float_len_c(double f) {
+    char buf[64];
+    char digits[24];
+    int prec, i, neg, nd, sci_exp, di;
+    int best_digits = 10000;
+    int best_len = -1;
+    static const int deltas[] = {0, -1, 1, -2, 2};
+    if (isnan(f))
+        return 3;
+    if (isinf(f))
+        return signbit(f) ? 4 : 3;
+    if (f == 0.0)
+        return signbit(f) ? 2 : 1;
+    for (prec = 1; prec <= 17; prec++) {
+        if (snprintf(buf, sizeof(buf), "%.*g", prec, f) < 0)
+            return -1;
+        for (i = 0; buf[i]; i++) {
+            if (buf[i] == 44)
+                buf[i] = 46;
+        }
+        if (!wam_parse_printf_decimal(buf, &neg, digits, &nd, &sci_exp))
+            continue;
+        for (di = 0; di < 5; di++) {
+            char d[24];
+            int n = nd;
+            int e = sci_exp;
+            memcpy(d, digits, (size_t)nd);
+            if (!wam_digits_add(d, &n, &e, deltas[di]))
+                continue;
+            wam_consider_prefixes(neg, d, n, e, f, &best_digits, &best_len);
+        }
+    }
+    return best_len;
+}
+
+static int wam_rust_display_float_len(double f) {
+    locale_t c_locale = newlocale(LC_NUMERIC_MASK, "C", (locale_t)0);
+    locale_t prior_locale;
+    fenv_t prior_env;
+    int result;
+    if (!c_locale)
+        return -1;
+    prior_locale = uselocale(c_locale);
+    if (!prior_locale) {
+        freelocale(c_locale);
+        return -1;
+    }
+    if (feholdexcept(&prior_env) != 0) {
+        uselocale(prior_locale);
+        freelocale(c_locale);
+        return -1;
+    }
+    if (fesetround(FE_TONEAREST) != 0) {
+        fesetenv(&prior_env);
+        uselocale(prior_locale);
+        freelocale(c_locale);
+        return -1;
+    }
+    result = wam_rust_display_float_len_c(f);
+    fesetenv(&prior_env);
+    uselocale(prior_locale);
+    freelocale(c_locale);
+    return result;
+}
+
+static size_t wam_utf8_codepoint_count(const char *text) {
+    size_t count = 0;
+    if (!text) return 0;
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        if ((*p & 0xC0) != 0x80)
+            count++;
+    }
+    return count;
+}
+
+static bool wam_value_atomic_length(WamValue *cell, size_t *length) {
+    if (cell->tag == VAL_ATOM && cell->data.atom) {
+        *length = wam_utf8_codepoint_count(cell->data.atom);
+        return true;
+    }
+    if (cell->tag == VAL_INT) {
+        char buf[32];
+        int n = snprintf(buf, sizeof(buf), "%d", cell->data.integer);
+        if (n < 0) return false;
+        *length = (size_t)n;
+        return true;
+    }
+    if (cell->tag == VAL_FLOAT) {
+        int n = wam_rust_display_float_len(cell->data.floating);
+        if (n < 0) return false;
+        *length = (size_t)n;
+        return true;
+    }
+    return false;
+}
+
+static bool wam_execute_atom_length(WamState *state) {
+    WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
+    if (val_is_unbound(*a1))
+        return false;
+
+    size_t char_count;
+    if (!wam_value_atomic_length(a1, &char_count))
+        return false;
+    if (char_count > (size_t)INT_MAX)
+        return false;
+
+    WamValue len_val = val_int((int)char_count);
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+    if (!wam_unify(state, &state->A[1], &len_val)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
+static bool wam_decode_utf8_codes(const char *text, int **codes_out, int *count_out) {
+    if (!text) {
+        *codes_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    size_t count = wam_utf8_codepoint_count(text);
+    if (count > (size_t)INT_MAX / 2) return false;
+    if (count == 0) {
+        if (*text != 0) return false;
+        *codes_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    int *codes = (int *)malloc(sizeof(int) * count);
+    if (!codes) return false;
+
+    const unsigned char *p = (const unsigned char *)text;
+    size_t idx = 0;
+    while (*p) {
+        unsigned char c0 = *p++;
+        int cp;
+        if (c0 < 0x80) {
+            cp = c0;
+        } else if (c0 >= 0xC2 && (c0 & 0xE0) == 0xC0) {
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            cp = ((c0 & 0x1F) << 6) | (*p++ & 0x3F);
+        } else if ((c0 & 0xF0) == 0xE0) {
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            unsigned char c1 = *p++;
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            unsigned char c2 = *p++;
+            cp = ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
+            if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) { free(codes); return false; }
+        } else if ((c0 & 0xF8) == 0xF0) {
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            unsigned char c1 = *p++;
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            unsigned char c2 = *p++;
+            if ((*p & 0xC0) != 0x80) { free(codes); return false; }
+            unsigned char c3 = *p++;
+            cp = ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
+            if (cp < 0x10000 || cp > 0x10FFFF) { free(codes); return false; }
+        } else {
+            free(codes);
+            return false;
+        }
+        if (idx >= count) {
+            free(codes);
+            return false;
+        }
+        codes[idx++] = cp;
+    }
+    *codes_out = codes;
+    *count_out = (int)idx;
+    return true;
+}
+
+static bool wam_build_code_list(WamState *state, const int *codes, int count, WamValue *out) {
+    if (count == 0) {
+        *out = val_atom("[]");
+        return true;
+    }
+    if (!wam_ensure_heap_slots(state, 2 * count))
+        return false;
+    WamValue tail = val_atom("[]");
+    for (int i = count - 1; i >= 0; i--) {
+        int base = state->H;
+        state->H_array[state->H++] = val_int(codes[i]);
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+/* A fully bound matching output needs no temporary heap list. Leave lists with
+   variables or unusual representations to wam_unify so bindings stay identical. */
+static bool wam_ground_code_list_matches(WamState *state, WamValue *output,
+                                         const int *codes, int count) {
+    WamValue *cell = wam_deref_ptr(state, output);
+    for (int i = 0; i < count; i++) {
+        if (cell->tag != VAL_LIST) return false;
+        int base = cell->data.ref_addr;
+        if (base < 0 || base >= state->H - 1) return false;
+        WamValue *head = wam_deref_ptr(state, &state->H_array[base]);
+        if (head->tag != VAL_INT || head->data.integer != codes[i]) return false;
+        cell = wam_deref_ptr(state, &state->H_array[base + 1]);
+    }
+    return cell->tag == VAL_ATOM && cell->data.atom && strcmp(cell->data.atom, "[]") == 0;
+}
+
+/* The reverse mode accepts only a finite, fully bound proper code list. A
+   bounded walk also rejects cyclic lists without mutating the query. */
+static bool wam_decode_single_utf8_char(const char *text, int *cp_out);
+static bool wam_encode_single_utf8_char(int cp, char buf[5]);
+
+static bool wam_atom_codes_to_text(WamState *state, WamValue *codes,
+                                   char **text_out) {
+    WamValue *cell = wam_deref_ptr(state, codes);
+    size_t bytes = 0;
+    int count = 0;
+    for (;;) {
+        if ((cell->tag == VAL_LIST || cell->tag == VAL_STR) &&
+            (cell->data.ref_addr < 0 || cell->data.ref_addr >= state->H))
+            return false;
+        int base = wam_cons_head_addr(state, cell);
+        if (base < 0) break;
+        if (++count > 262144 || base >= state->H - 1)
+            return false;
+        WamValue *head = wam_deref_ptr(state, &state->H_array[base]);
+        char encoded[5];
+        if (head->tag != VAL_INT ||
+            !wam_encode_single_utf8_char(head->data.integer, encoded))
+            return false;
+        bytes += strlen(encoded);
+        cell = wam_deref_ptr(state, &state->H_array[base + 1]);
+    }
+    if (cell->tag != VAL_ATOM || !cell->data.atom ||
+        strcmp(cell->data.atom, "[]") != 0)
+        return false;
+
+    char *text = (char *)malloc(bytes + 1);
+    if (!text) return false;
+    size_t at = 0;
+    cell = wam_deref_ptr(state, codes);
+    for (;;) {
+        int base = wam_cons_head_addr(state, cell);
+        if (base < 0) break;
+        WamValue *head = wam_deref_ptr(state, &state->H_array[base]);
+        char encoded[5];
+        if (head->tag != VAL_INT ||
+            !wam_encode_single_utf8_char(head->data.integer, encoded)) {
+            free(text);
+            return false;
+        }
+        size_t len = strlen(encoded);
+        memcpy(text + at, encoded, len);
+        at += len;
+        cell = wam_deref_ptr(state, &state->H_array[base + 1]);
+    }
+    text[at] = 0;
+    *text_out = text;
+    return true;
+}
+
+/* atom_codes/2: atom-to-codes and fully ground codes-to-atom modes.
+   Unsupported shapes diagnose WAM_ERR_UNSUPPORTED; unification failures
+   roll back trail and heap bindings made by this builtin. */
+static bool wam_execute_atom_codes(WamState *state) {
+    WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
+    if (val_is_unbound(*a1)) {
+        char *text = NULL;
+        if (!wam_atom_codes_to_text(state, &state->A[1], &text)) {
+            wam_set_unsupported_builtin(state, "atom_codes/2", 2);
+            return false;
+        }
+        const char *interned = wam_intern_atom(state, text);
+        if (interned == text) {
+            free(text);
+            return false;
+        }
+        free(text);
+        int trail_mark = state->TR;
+        int heap_mark = state->H;
+        WamValue atom_val = val_atom(interned);
+        if (!wam_unify(state, &state->A[0], &atom_val)) {
+            unwind_trail(state, trail_mark);
+            state->H = heap_mark;
+            return false;
+        }
+        return true;
+    }
+    if (a1->tag != VAL_ATOM || !a1->data.atom) {
+        wam_set_unsupported_builtin(state, "atom_codes/2", 2);
+        return false;
+    }
+
+    int *codes = NULL;
+    int count = 0;
+    if (!wam_decode_utf8_codes(a1->data.atom, &codes, &count)) {
+        wam_set_unsupported_builtin(state, "atom_codes/2", 2);
+        return false;
+    }
+
+    if (wam_ground_code_list_matches(state, &state->A[1], codes, count)) {
+        free(codes);
+        return true;
+    }
+
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+
+    WamValue codes_list;
+    if (!wam_build_code_list(state, codes, count, &codes_list)) {
+        free(codes);
+        state->H = heap_mark;
+        return false;
+    }
+    free(codes);
+
+    if (!wam_unify(state, &state->A[1], &codes_list)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+
+    return true;
+}
+
+static bool wam_decode_utf8_chars(WamState *state, const char *text,
+                                  const char ***chars_out, int *count_out) {
+    if (!text) {
+        *chars_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    int *codes = NULL;
+    int count = 0;
+    if (!wam_decode_utf8_codes(text, &codes, &count)) {
+        return false;
+    }
+    if (count == 0) {
+        *chars_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    const char **chars = (const char **)malloc(sizeof(const char *) * (size_t)count);
+    if (!chars) {
+        free(codes);
+        return false;
+    }
+    for (int i = 0; i < count; i++) {
+        char buf[5];
+        int cp = codes[i];
+        if (cp < 0x80) {
+            buf[0] = (char)cp;
+            buf[1] = 0;
+        } else if (cp < 0x800) {
+            buf[0] = (char)(0xC0 | (cp >> 6));
+            buf[1] = (char)(0x80 | (cp & 0x3F));
+            buf[2] = 0;
+        } else if (cp < 0x10000) {
+            buf[0] = (char)(0xE0 | (cp >> 12));
+            buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            buf[2] = (char)(0x80 | (cp & 0x3F));
+            buf[3] = 0;
+        } else {
+            buf[0] = (char)(0xF0 | (cp >> 18));
+            buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+            buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+            buf[3] = (char)(0x80 | (cp & 0x3F));
+            buf[4] = 0;
+        }
+        const char *interned = wam_intern_atom(state, buf);
+        if (interned == buf) {
+            free(chars);
+            free(codes);
+            return false;
+        }
+        chars[i] = interned;
+    }
+    free(codes);
+    *chars_out = chars;
+    *count_out = count;
+    return true;
+}
+
+static bool wam_build_char_list(WamState *state, const char * const *chars, int count, WamValue *out) {
+    if (count == 0) {
+        *out = val_atom("[]");
+        return true;
+    }
+    if (!wam_ensure_heap_slots(state, 2 * count))
+        return false;
+    WamValue tail = val_atom("[]");
+    for (int i = count - 1; i >= 0; i--) {
+        int base = state->H;
+        state->H_array[state->H++] = val_atom(chars[i]);
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+/* A fully bound matching output needs no temporary heap list. Leave lists with
+   variables or unusual representations to wam_unify so bindings stay identical. */
+static bool wam_ground_char_list_matches(WamState *state, WamValue *output,
+                                         const char * const *chars, int count) {
+    WamValue *cell = wam_deref_ptr(state, output);
+    for (int i = 0; i < count; i++) {
+        if (cell->tag != VAL_LIST) return false;
+        int base = cell->data.ref_addr;
+        if (base < 0 || base >= state->H - 1) return false;
+        WamValue *head = wam_deref_ptr(state, &state->H_array[base]);
+        if (head->tag != VAL_ATOM || !head->data.atom || strcmp(head->data.atom, chars[i]) != 0)
+            return false;
+        cell = wam_deref_ptr(state, &state->H_array[base + 1]);
+    }
+    return cell->tag == VAL_ATOM && cell->data.atom && strcmp(cell->data.atom, "[]") == 0;
+}
+
+/* The reverse mode accepts only a finite, fully bound proper character list.
+   Each element must be an atom representing exactly one Unicode scalar value.
+   Both VAL_LIST and compiled "[|]/2" cons cells are supported.
+   Cyclic, open, improper, multi-character, invalid UTF-8, and U+0000 inputs
+   are rejected. */
+static bool wam_atom_chars_to_text(WamState *state, WamValue *chars,
+                                   char **text_out) {
+    WamValue *cell = wam_deref_ptr(state, chars);
+    size_t bytes = 0;
+    int count = 0;
+    for (;;) {
+        if ((cell->tag == VAL_LIST || cell->tag == VAL_STR) &&
+            (cell->data.ref_addr < 0 || cell->data.ref_addr >= state->H))
+            return false;
+        int base = wam_cons_head_addr(state, cell);
+        if (base < 0) break;
+        if (++count > 262144 || base >= state->H - 1)
+            return false;
+        WamValue *head = wam_deref_ptr(state, &state->H_array[base]);
+        int cp = 0;
+        char encoded[5];
+        if (head->tag != VAL_ATOM || !head->data.atom ||
+            !wam_decode_single_utf8_char(head->data.atom, &cp) ||
+            !wam_encode_single_utf8_char(cp, encoded))
+            return false;
+        bytes += strlen(encoded);
+        cell = wam_deref_ptr(state, &state->H_array[base + 1]);
+    }
+    if (cell->tag != VAL_ATOM || !cell->data.atom ||
+        strcmp(cell->data.atom, "[]") != 0)
+        return false;
+
+    char *text = (char *)malloc(bytes + 1);
+    if (!text) return false;
+    size_t at = 0;
+    cell = wam_deref_ptr(state, chars);
+    for (;;) {
+        int base = wam_cons_head_addr(state, cell);
+        if (base < 0) break;
+        WamValue *head = wam_deref_ptr(state, &state->H_array[base]);
+        int cp = 0;
+        char encoded[5];
+        if (head->tag != VAL_ATOM || !head->data.atom ||
+            !wam_decode_single_utf8_char(head->data.atom, &cp) ||
+            !wam_encode_single_utf8_char(cp, encoded)) {
+            free(text);
+            return false;
+        }
+        size_t len = strlen(encoded);
+        memcpy(text + at, encoded, len);
+        at += len;
+        cell = wam_deref_ptr(state, &state->H_array[base + 1]);
+    }
+    text[at] = 0;
+    *text_out = text;
+    return true;
+}
+
+/* atom_chars/2: atom-to-chars and fully ground chars-to-atom modes.
+   Unsupported shapes diagnose WAM_ERR_UNSUPPORTED; unification failures
+   roll back trail and heap bindings made by this builtin. */
+static bool wam_execute_atom_chars(WamState *state) {
+    WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
+    if (val_is_unbound(*a1)) {
+        char *text = NULL;
+        if (!wam_atom_chars_to_text(state, &state->A[1], &text)) {
+            wam_set_unsupported_builtin(state, "atom_chars/2", 2);
+            return false;
+        }
+        const char *interned = wam_intern_atom(state, text);
+        if (interned == text) {
+            free(text);
+            return false;
+        }
+        free(text);
+        int trail_mark = state->TR;
+        int heap_mark = state->H;
+        WamValue atom_val = val_atom(interned);
+        if (!wam_unify(state, &state->A[0], &atom_val)) {
+            unwind_trail(state, trail_mark);
+            state->H = heap_mark;
+            return false;
+        }
+        return true;
+    }
+    if (a1->tag != VAL_ATOM || !a1->data.atom) {
+        wam_set_unsupported_builtin(state, "atom_chars/2", 2);
+        return false;
+    }
+
+    const char **chars = NULL;
+    int count = 0;
+    if (!wam_decode_utf8_chars(state, a1->data.atom, &chars, &count)) {
+        wam_set_unsupported_builtin(state, "atom_chars/2", 2);
+        return false;
+    }
+
+    if (wam_ground_char_list_matches(state, &state->A[1], chars, count)) {
+        free(chars);
+        return true;
+    }
+
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+
+    WamValue chars_list;
+    if (!wam_build_char_list(state, chars, count, &chars_list)) {
+        free(chars);
+        state->H = heap_mark;
+        return false;
+    }
+    free(chars);
+
+    if (!wam_unify(state, &state->A[1], &chars_list)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+
+    return true;
+}
+
+static bool wam_decode_single_utf8_char(const char *text, int *cp_out) {
+    if (!text || *text == 0) return false;
+    const unsigned char *p = (const unsigned char *)text;
+    unsigned char c0 = *p++;
+    int cp;
+    if (c0 < 0x80) {
+        cp = c0;
+    } else if (c0 >= 0xC2 && (c0 & 0xE0) == 0xC0) {
+        if ((*p & 0xC0) != 0x80) return false;
+        cp = ((c0 & 0x1F) << 6) | (*p++ & 0x3F);
+    } else if ((c0 & 0xF0) == 0xE0) {
+        if ((*p & 0xC0) != 0x80) return false;
+        unsigned char c1 = *p++;
+        if ((*p & 0xC0) != 0x80) return false;
+        unsigned char c2 = *p++;
+        cp = ((c0 & 0x0F) << 12) | ((c1 & 0x3F) << 6) | (c2 & 0x3F);
+        if (cp < 0x800 || (cp >= 0xD800 && cp <= 0xDFFF)) return false;
+    } else if ((c0 & 0xF8) == 0xF0) {
+        if ((*p & 0xC0) != 0x80) return false;
+        unsigned char c1 = *p++;
+        if ((*p & 0xC0) != 0x80) return false;
+        unsigned char c2 = *p++;
+        if ((*p & 0xC0) != 0x80) return false;
+        unsigned char c3 = *p++;
+        cp = ((c0 & 0x07) << 18) | ((c1 & 0x3F) << 12) | ((c2 & 0x3F) << 6) | (c3 & 0x3F);
+        if (cp < 0x10000 || cp > 0x10FFFF) return false;
+    } else {
+        return false;
+    }
+    if (*p != 0) return false;
+    *cp_out = cp;
+    return true;
+}
+
+static bool wam_encode_single_utf8_char(int cp, char buf[5]) {
+    /* Atoms use NUL-terminated C strings, so U+0000 is not representable. */
+    if (cp <= 0 || cp > 0x10FFFF || (cp >= 0xD800 && cp <= 0xDFFF))
+        return false;
+    if (cp < 0x80) {
+        buf[0] = (char)cp;
+        buf[1] = 0;
+    } else if (cp < 0x800) {
+        buf[0] = (char)(0xC0 | (cp >> 6));
+        buf[1] = (char)(0x80 | (cp & 0x3F));
+        buf[2] = 0;
+    } else if (cp < 0x10000) {
+        buf[0] = (char)(0xE0 | (cp >> 12));
+        buf[1] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[2] = (char)(0x80 | (cp & 0x3F));
+        buf[3] = 0;
+    } else {
+        buf[0] = (char)(0xF0 | (cp >> 18));
+        buf[1] = (char)(0x80 | ((cp >> 12) & 0x3F));
+        buf[2] = (char)(0x80 | ((cp >> 6) & 0x3F));
+        buf[3] = (char)(0x80 | (cp & 0x3F));
+        buf[4] = 0;
+    }
+    return true;
+}
+
+/* char_code/2: char-atom <-> integer Unicode code point.
+   Supports both useful modes:
+   - A bound atom containing exactly one Unicode scalar to its integer code.
+   - An unbound first argument with a valid bound integer code to an interned one-character atom.
+   Both-bound compatible values succeed and mismatches fail without retained bindings.
+   Invalid UTF-8, empty/multi-character atoms, negative/surrogate/out-of-range codes,
+   non-integer code input, and both-variables mode are rejected explicitly with WAM_ERR_UNSUPPORTED.
+   Preserves trail and heap state on mismatch and caller continuation. */
+static bool wam_execute_char_code(WamState *state) {
+    WamValue *a1 = wam_deref_ptr(state, &state->A[0]);
+    WamValue *a2 = wam_deref_ptr(state, &state->A[1]);
+    bool a1_unbound = val_is_unbound(*a1);
+    bool a2_unbound = val_is_unbound(*a2);
+
+    if (a1_unbound && a2_unbound) {
+        wam_set_unsupported_builtin(state, "char_code/2", 2);
+        return false;
+    }
+
+    if (!a2_unbound && (a2->tag != VAL_INT || a2->data.integer < 0 ||
+                        a2->data.integer > 0x10FFFF ||
+                        (a2->data.integer >= 0xD800 && a2->data.integer <= 0xDFFF))) {
+        wam_set_unsupported_builtin(state, "char_code/2", 2);
+        return false;
+    }
+
+    if (!a1_unbound) {
+        if (a1->tag != VAL_ATOM || !a1->data.atom) {
+            wam_set_unsupported_builtin(state, "char_code/2", 2);
+            return false;
+        }
+        int cp = 0;
+        if (!wam_decode_single_utf8_char(a1->data.atom, &cp)) {
+            wam_set_unsupported_builtin(state, "char_code/2", 2);
+            return false;
+        }
+
+        int trail_mark = state->TR;
+        int heap_mark = state->H;
+        WamValue code_val = val_int(cp);
+        if (!wam_unify(state, &state->A[1], &code_val)) {
+            unwind_trail(state, trail_mark);
+            state->H = heap_mark;
+            return false;
+        }
+        return true;
+    }
+
+    /* Reverse mode: a1 is unbound, a2 must be a valid integer code */
+    if (a2->tag != VAL_INT) {
+        wam_set_unsupported_builtin(state, "char_code/2", 2);
+        return false;
+    }
+
+    int cp = a2->data.integer;
+    char buf[5];
+    if (!wam_encode_single_utf8_char(cp, buf)) {
+        wam_set_unsupported_builtin(state, "char_code/2", 2);
+        return false;
+    }
+
+    const char *interned = wam_intern_atom(state, buf);
+    if (interned == buf) {
+        return false;
+    }
+
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+    WamValue atom_val = val_atom(interned);
+    if (!wam_unify(state, &state->A[0], &atom_val)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
 static bool wam_execute_atom_concat(WamState *state) {
     WamValue *left = wam_deref_ptr(state, &state->A[0]);
     WamValue *right = wam_deref_ptr(state, &state->A[1]);
@@ -4362,12 +5798,1069 @@ static bool wam_execute_atom_concat(WamState *state) {
     return false;
 }
 
+/* sort/2: standard-order unique sort on finite proper lists.
+   Does not reuse the aggregate stored-term comparator: that ranks
+   ints before floats, names before arity, lists apart from compounds,
+   and collapses distinct variables. Invalid, open, or cyclic lists
+   set WAM_ERR_UNSUPPORTED; this runtime has no Prolog exceptions.
+   Input cons cells are not rewritten; output cells share the original
+   element values, including variable identity. */
+#define WAM_SORT_MAX_ITEMS 262144
+#define WAM_SORT_COMPARE_MAX_DEPTH 256
+
+typedef struct {
+    WamValue value;
+} WamSortItem;
+
+static _Thread_local WamState *wam_sort_qsort_state = NULL;
+static _Thread_local int wam_sort_compare_truncated = 0;
+
+static bool wam_sort_is_nil(const WamValue *cell) {
+    return cell->tag == VAL_ATOM && cell->data.atom != NULL &&
+           strcmp(cell->data.atom, "[]") == 0;
+}
+
+static bool wam_sort_cons_head(WamState *state, WamValue *cell, int *head_addr) {
+    int addr = wam_cons_head_addr(state, cell);
+    if (addr < 0 || addr + 1 >= state->H) return false;
+    *head_addr = addr;
+    return true;
+}
+
+static WamValue wam_sort_identity_value(WamState *state, WamValue *source) {
+    int addr = -1;
+    if (wam_ref_addr(state, *source, &addr)) {
+        WamValue ref;
+        ref.tag = VAL_REF;
+        ref.data.ref_addr = addr;
+        return ref;
+    }
+    /* Keep the original heap cell: a by-value UNBOUND copy has no identity. */
+    WamValue *cell = wam_deref_ptr(state, source);
+    if (val_is_unbound(*cell)) {
+        long idx = cell - state->H_array;
+        if (idx >= 0 && idx < (long)state->H) {
+            WamValue ref;
+            ref.tag = VAL_REF;
+            ref.data.ref_addr = (int)idx;
+            return ref;
+        }
+        return *source;
+    }
+    return *cell;
+}
+
+static int wam_sort_term_class(WamValue *cell) {
+    if (val_is_unbound(*cell) || cell->tag == VAL_REF) return 0;
+    if (cell->tag == VAL_INT || cell->tag == VAL_FLOAT) return 1;
+    if (cell->tag == VAL_ATOM) return 2;
+    if (cell->tag == VAL_LIST || cell->tag == VAL_STR) return 3;
+    return 4;
+}
+
+static int wam_sort_compare_names(const char *left, size_t left_len,
+                                  const char *right, size_t right_len) {
+    size_t n = left_len < right_len ? left_len : right_len;
+    int cmp = strncmp(left, right, n);
+    if (cmp != 0) return cmp;
+    return (left_len > right_len) - (left_len < right_len);
+}
+
+static bool wam_sort_compound_info(WamState *state, WamValue *cell,
+                                   const char **name, size_t *name_len,
+                                   int *arity, int *arg0) {
+    int cons = -1;
+    if (wam_sort_cons_head(state, cell, &cons)) {
+        *name = ".";
+        *name_len = 1;
+        *arity = 2;
+        *arg0 = cons;
+        return true;
+    }
+    if (cell->tag != VAL_STR) return false;
+    int base = cell->data.ref_addr;
+    if (base < 0 || base >= state->H) return false;
+    WamValue *functor = &state->H_array[base];
+    if (functor->tag != VAL_ATOM || functor->data.atom == NULL) return false;
+    int parsed_arity = 0;
+    if (!wam_parse_functor_arity(functor->data.atom, &parsed_arity)) return false;
+    if (base + parsed_arity >= state->H) return false;
+    const char *slash = strrchr(functor->data.atom, 47);
+    *name = functor->data.atom;
+    *name_len = slash ? (size_t)(slash - functor->data.atom)
+                      : strlen(functor->data.atom);
+    *arity = parsed_arity;
+    *arg0 = base + 1;
+    return true;
+}
+
+static int wam_compare_live_terms(WamState *state, WamValue left, WamValue right,
+                                  int depth) {
+    if (depth > WAM_SORT_COMPARE_MAX_DEPTH) {
+        wam_sort_compare_truncated = 1;
+        return 0;
+    }
+    WamValue *d1 = wam_deref_ptr(state, &left);
+    WamValue *d2 = wam_deref_ptr(state, &right);
+    if (d1 == d2) return 0;
+
+    int class1 = wam_sort_term_class(d1);
+    int class2 = wam_sort_term_class(d2);
+    if (class1 != class2) return wam_compare_ints(class1, class2);
+
+    if (class1 == 0) {
+        return (d1 > d2) - (d1 < d2);
+    }
+    if (class1 == 1) {
+        double left_n = (d1->tag == VAL_FLOAT) ? d1->data.floating
+                                               : (double)d1->data.integer;
+        double right_n = (d2->tag == VAL_FLOAT) ? d2->data.floating
+                                                : (double)d2->data.integer;
+        /* Match standard term order, including SWI floating extensions:
+           NaN precedes all other numbers; -0.0 precedes +0.0. */
+        if (isnan(left_n) || isnan(right_n))
+            return wam_compare_ints(!isnan(left_n), !isnan(right_n));
+        if (left_n < right_n) return -1;
+        if (left_n > right_n) return 1;
+        if (d1->tag == VAL_FLOAT && d2->tag == VAL_FLOAT && left_n == 0.0)
+            return wam_compare_ints(!!signbit(right_n), !!signbit(left_n));
+        int left_int = (d1->tag == VAL_INT);
+        int right_int = (d2->tag == VAL_INT);
+        return wam_compare_ints(left_int, right_int);
+    }
+    if (class1 == 2) {
+        const char *left_atom = d1->data.atom ? d1->data.atom : "";
+        const char *right_atom = d2->data.atom ? d2->data.atom : "";
+        return strcmp(left_atom, right_atom);
+    }
+    if (class1 == 3) {
+        const char *left_name = "";
+        const char *right_name = "";
+        size_t left_len = 0;
+        size_t right_len = 0;
+        int left_arity = 0;
+        int right_arity = 0;
+        int left_arg0 = 0;
+        int right_arg0 = 0;
+        if (!wam_sort_compound_info(state, d1, &left_name, &left_len,
+                                    &left_arity, &left_arg0) ||
+            !wam_sort_compound_info(state, d2, &right_name, &right_len,
+                                    &right_arity, &right_arg0)) {
+            return wam_compare_ints((int)d1->tag, (int)d2->tag);
+        }
+        int arity_cmp = wam_compare_ints(left_arity, right_arity);
+        if (arity_cmp != 0) return arity_cmp;
+        int name_cmp = wam_sort_compare_names(left_name, left_len,
+                                              right_name, right_len);
+        if (name_cmp != 0) return name_cmp;
+        for (int i = 0; i < left_arity; i++) {
+            int arg_cmp = wam_compare_live_terms(state,
+                                                 state->H_array[left_arg0 + i],
+                                                 state->H_array[right_arg0 + i],
+                                                 depth + 1);
+            if (arg_cmp != 0) return arg_cmp;
+        }
+        return 0;
+    }
+    return wam_compare_ints((int)d1->tag, (int)d2->tag);
+}
+
+static int wam_sort_qsort_cmp(const void *left, const void *right) {
+    const WamSortItem *left_item = (const WamSortItem *)left;
+    const WamSortItem *right_item = (const WamSortItem *)right;
+    return wam_compare_live_terms(wam_sort_qsort_state,
+                                  left_item->value, right_item->value, 0);
+}
+
+static bool wam_collect_sort_list(WamState *state, WamValue list,
+                                  WamSortItem **items_out, int *count_out) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) {
+        *items_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    if (val_is_unbound(*cell) || wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "sort/2", 2);
+        return false;
+    }
+
+    int cap = 16;
+    WamSortItem *items = malloc(sizeof(WamSortItem) * (size_t)cap);
+    if (!items) return false;
+    int count = 0;
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) break;
+            free(items);
+            wam_set_unsupported_builtin(state, "sort/2", 2);
+            return false;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            free(items);
+            wam_set_unsupported_builtin(state, "sort/2", 2);
+            return false;
+        }
+        if (count >= cap) {
+            if (cap > WAM_SORT_MAX_ITEMS / 2) {
+                free(items);
+                wam_set_unsupported_builtin(state, "sort/2", 2);
+                return false;
+            }
+            int new_cap = cap * 2;
+            WamSortItem *grown = realloc(items, sizeof(WamSortItem) * (size_t)new_cap);
+            if (!grown) {
+                free(items);
+                return false;
+            }
+            items = grown;
+            cap = new_cap;
+        }
+        items[count++].value =
+            wam_sort_identity_value(state, &state->H_array[head_addr]);
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                free(items);
+                wam_set_unsupported_builtin(state, "sort/2", 2);
+                return false;
+            }
+        }
+    }
+
+    *items_out = items;
+    *count_out = count;
+    return true;
+}
+
+static bool wam_build_list_from_sort_items(WamState *state,
+                                           WamSortItem *items,
+                                           int count,
+                                           WamValue *out) {
+    WamValue tail = val_atom("[]");
+    for (int i = count - 1; i >= 0; i--) {
+        if (!wam_ensure_heap_slots(state, 2)) return false;
+        int base = state->H;
+        state->H_array[state->H++] = items[i].value;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static bool wam_execute_sort(WamState *state) {
+    int initial_h = state->H;
+    int initial_tr = state->TR;
+    WamSortItem *items = NULL;
+    int count = 0;
+    if (!wam_collect_sort_list(state, state->A[0], &items, &count)) {
+        return false;
+    }
+    if (count >= 2) {
+        wam_sort_compare_truncated = 0;
+        wam_sort_qsort_state = state;
+        qsort(items, (size_t)count, sizeof(WamSortItem), wam_sort_qsort_cmp);
+        wam_sort_qsort_state = NULL;
+        if (wam_sort_compare_truncated) {
+            free(items);
+            wam_set_unsupported_builtin(state, "sort/2", 2);
+            return false;
+        }
+        int unique = 0;
+        for (int i = 0; i < count; i++) {
+            if (unique > 0 &&
+                wam_term_strict_equal(state, &items[unique - 1].value,
+                                      &items[i].value)) {
+                continue;
+            }
+            items[unique++] = items[i];
+        }
+        count = unique;
+    }
+    WamValue result;
+    if (!wam_build_list_from_sort_items(state, items, count, &result)) {
+        free(items);
+        state->H = initial_h;
+        return false;
+    }
+    free(items);
+    if (!wam_unify(state, &state->A[1], &result)) {
+        unwind_trail(state, initial_tr);
+        state->H = initial_h;
+        return false;
+    }
+    return true;
+}
+
+/* member/2: finite proper lists only. Open, cyclic, improper, non-list,
+   and unbound tails are WAM_ERR_UNSUPPORTED (bounded; no infinite
+   generation). Solutions are ordered and duplicate-preserving. Heads
+   stay heap-shared via wam_sort_identity_value. */
+static bool wam_member_is_proper_list(WamState *state, WamValue list) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) return true;
+    if (val_is_unbound(*cell) || wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "member/2", 2);
+        return false;
+    }
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+    int count = 0;
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) return true;
+            wam_set_unsupported_builtin(state, "member/2", 2);
+            return false;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            wam_set_unsupported_builtin(state, "member/2", 2);
+            return false;
+        }
+        count++;
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                wam_set_unsupported_builtin(state, "member/2", 2);
+                return false;
+            }
+        }
+    }
+}
+
+static bool wam_member_finish_success(WamState *state, int resume_pc) {
+    if (resume_pc == WAM_AGGREGATE_META_COLLECT) {
+        return wam_collect_meta_aggregate_success(state);
+    }
+    if (resume_pc == WAM_META_CONJ_RETURN) {
+        return wam_continue_conjunction(state);
+    }
+    if (resume_pc == WAM_META_ITE_THEN) {
+        return wam_continue_if_then_else(state);
+    }
+    state->P = resume_pc;
+    return true;
+}
+
+static bool wam_member_bind_from(WamState *state, WamValue list, int resume_pc,
+                                 bool have_cp) {
+    for (;;) {
+        WamValue *cell = wam_deref_ptr(state, &list);
+        if (wam_sort_is_nil(cell)) {
+            if (have_cp) pop_choice_point(state);
+            return false;
+        }
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            wam_set_unsupported_builtin(state, "member/2", 2);
+            if (have_cp) pop_choice_point(state);
+            return false;
+        }
+        WamValue ident = wam_sort_identity_value(state, &state->H_array[head_addr]);
+        WamValue rest = state->H_array[head_addr + 1];
+        int trail_mark = state->TR;
+        if (wam_unify(state, &state->A[0], &ident)) {
+            WamValue *rest_d = wam_deref_ptr(state, &rest);
+            if (wam_sort_is_nil(rest_d)) {
+                if (have_cp) pop_choice_point(state);
+                return true;
+            }
+            if (wam_cons_head_addr(state, rest_d) < 0) {
+                unwind_trail(state, trail_mark);
+                wam_set_unsupported_builtin(state, "member/2", 2);
+                if (have_cp) pop_choice_point(state);
+                return false;
+            }
+            unwind_trail(state, trail_mark);
+            if (have_cp) {
+                ChoicePoint *cp = &state->B_array[state->B - 1];
+                cp->member_rest = rest;
+                cp->foreign_resume_pc = resume_pc;
+            } else {
+                /* Save the full A window, not member/2''s arity. Caller
+                   A2+ and later put_value from Y survive a downstream
+                   builtin that overwrites A0/A1 (sort/2, =/2). */
+                if (!push_choice_point(state, WAM_MEMBER_NEXT, 32)) return false;
+                ChoicePoint *cp = &state->B_array[state->B - 1];
+                cp->member_rest = rest;
+                cp->foreign_resume_pc = resume_pc;
+            }
+            if (!wam_unify(state, &state->A[0], &ident)) {
+                pop_choice_point(state);
+                return false;
+            }
+            return true;
+        }
+        unwind_trail(state, trail_mark);
+        list = rest;
+    }
+}
+
+static bool wam_execute_member(WamState *state, int resume_pc) {
+    if (!wam_member_is_proper_list(state, state->A[1])) return false;
+    return wam_member_bind_from(state, state->A[1], resume_pc, false);
+}
+
+static bool wam_resume_member(WamState *state) {
+    if (state->B <= 0) return false;
+    ChoicePoint *cp = &state->B_array[state->B - 1];
+    if (cp->next_pc != WAM_MEMBER_NEXT) return false;
+    int resume_pc = cp->foreign_resume_pc;
+    WamValue rest = cp->member_rest;
+    if (!wam_member_bind_from(state, rest, resume_pc, true)) return false;
+    return wam_member_finish_success(state, resume_pc);
+}
+
+static bool wam_maplist_is_proper_list(WamState *state, WamValue list) {
+    if (!wam_member_is_proper_list(state, list)) {
+        if (state->error == WAM_ERR_UNSUPPORTED && state->error_op &&
+            strcmp(state->error_op, "member/2") == 0 && state->error_arity == 2) {
+            state->error_op = "maplist/2";
+            state->error_arity = 2;
+        }
+        return false;
+    }
+    return true;
+}
+
+static inline bool wam_is_fact_opcode(WamInstrTag tag) {
+    switch (tag) {
+        case INSTR_GET_CONSTANT:
+        case INSTR_GET_VARIABLE:
+        case INSTR_GET_VALUE:
+        case INSTR_GET_STRUCTURE:
+        case INSTR_GET_LIST:
+        case INSTR_UNIFY_VARIABLE:
+        case INSTR_UNIFY_VALUE:
+        case INSTR_UNIFY_CONSTANT:
+        case INSTR_NOOP:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static bool wam_execute_maplist(WamState *state) {
+    if (!wam_maplist_is_proper_list(state, state->A[1])) {
+        return false;
+    }
+
+    WamValue *list_cell = wam_deref_ptr(state, &state->A[1]);
+    if (wam_sort_is_nil(list_cell)) {
+        return true;
+    }
+
+    WamValue *goal_cell = wam_deref_ptr(state, &state->A[0]);
+    if (goal_cell->tag != VAL_ATOM || !goal_cell->data.atom) {
+        wam_set_unsupported_builtin(state, "maplist/2", 2);
+        return false;
+    }
+    const PredEntry *fact_entry = wam_lookup_fact_eligible_entry(state, goal_cell->data.atom);
+    if (!fact_entry) {
+        wam_set_unsupported_builtin(state, "maplist/2", 2);
+        return false;
+    }
+    int fact_pc = fact_entry->pc;
+    if (fact_pc < 0 || fact_pc >= state->code_size) {
+        wam_set_unsupported_builtin(state, "maplist/2", 2);
+        return false;
+    }
+
+    WamValue saved_A[WAM_MAX_REGS];
+    WamValue saved_X[WAM_MAX_REGS];
+    memcpy(saved_A, state->A, sizeof(state->A));
+    memcpy(saved_X, state->X, sizeof(state->X));
+    int saved_P = state->P;
+    int saved_CP = state->CP;
+    int saved_S = state->S;
+    WamMode saved_mode = state->mode;
+    int saved_arg_ctx_top = state->arg_ctx_top;
+    WamArgCtx saved_arg_ctx[WAM_ARG_CTX_MAX];
+    memcpy(saved_arg_ctx, state->arg_ctx, sizeof(state->arg_ctx));
+    int saved_call_base_top = state->call_base_top;
+    int initial_tr = state->TR;
+    bool success = false;
+
+    WamValue curr = state->A[1];
+    while (true) {
+        WamValue *cell = wam_deref_ptr(state, &curr);
+        if (wam_sort_is_nil(cell)) {
+            break;
+        }
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            wam_set_unsupported_builtin(state, "maplist/2", 2);
+            success = false;
+            goto cleanup;
+        }
+
+        int tail_addr = head_addr + 1;
+
+        WamValue elem_ref;
+        elem_ref.tag = VAL_REF;
+        elem_ref.data.ref_addr = head_addr;
+        state->A[0] = elem_ref;
+
+        memcpy(state->X, saved_X, sizeof(state->X));
+        state->P = fact_pc;
+        state->S = 0;
+        state->mode = MODE_READ;
+        state->arg_ctx_top = 0;
+
+        bool saw_proceed = false;
+        while (state->P >= 0 && state->P < state->code_size) {
+            Instruction *instr = &state->code[state->P];
+            if (instr->tag == INSTR_PROCEED) {
+                saw_proceed = true;
+                break;
+            }
+            if (!wam_is_fact_opcode(instr->tag)) {
+                wam_set_unsupported_builtin(state, "maplist/2", 2);
+                success = false;
+                goto cleanup;
+            }
+            if (!step_wam(state, instr) || state->error != 0) {
+                success = false;
+                goto cleanup;
+            }
+        }
+
+        if (!saw_proceed) {
+            if (state->error == 0) {
+                wam_set_unsupported_builtin(state, "maplist/2", 2);
+            }
+            success = false;
+            goto cleanup;
+        }
+
+        curr = state->H_array[tail_addr];
+    }
+
+    success = true;
+
+cleanup:
+    if (!success) {
+        unwind_trail(state, initial_tr);
+    }
+    memcpy(state->A, saved_A, sizeof(state->A));
+    memcpy(state->X, saved_X, sizeof(state->X));
+    state->P = saved_P;
+    state->CP = saved_CP;
+    state->S = saved_S;
+    state->mode = saved_mode;
+    memcpy(state->arg_ctx, saved_arg_ctx, sizeof(state->arg_ctx));
+    state->arg_ctx_top = saved_arg_ctx_top;
+    state->call_base_top = saved_call_base_top;
+    return success;
+}
+
+/* reverse/2: finite proper first-argument lists only. Open, cyclic,
+   improper, non-list, and unbound terms are WAM_ERR_UNSUPPORTED.
+   A new list spine is allocated while retaining original element
+   identities and heap references via wam_sort_identity_value (no deep copy). */
+typedef struct {
+    WamValue value;
+} WamReverseItem;
+
+static bool wam_collect_reverse_list(WamState *state, WamValue list,
+                                     WamReverseItem **items_out, int *count_out) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) {
+        *items_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    if (val_is_unbound(*cell) || wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "reverse/2", 2);
+        return false;
+    }
+
+    int cap = 16;
+    WamReverseItem *items = malloc(sizeof(WamReverseItem) * (size_t)cap);
+    if (!items) return false;
+    int count = 0;
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) break;
+            free(items);
+            wam_set_unsupported_builtin(state, "reverse/2", 2);
+            return false;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            free(items);
+            wam_set_unsupported_builtin(state, "reverse/2", 2);
+            return false;
+        }
+        if (count >= cap) {
+            if (cap > WAM_SORT_MAX_ITEMS / 2) {
+                free(items);
+                wam_set_unsupported_builtin(state, "reverse/2", 2);
+                return false;
+            }
+            int new_cap = cap * 2;
+            WamReverseItem *grown = realloc(items, sizeof(WamReverseItem) * (size_t)new_cap);
+            if (!grown) {
+                free(items);
+                return false;
+            }
+            items = grown;
+            cap = new_cap;
+        }
+        items[count++].value =
+            wam_sort_identity_value(state, &state->H_array[head_addr]);
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                free(items);
+                wam_set_unsupported_builtin(state, "reverse/2", 2);
+                return false;
+            }
+        }
+    }
+
+    *items_out = items;
+    *count_out = count;
+    return true;
+}
+
+static bool wam_build_list_from_reverse_items(WamState *state,
+                                              WamReverseItem *items,
+                                              int count,
+                                              WamValue *out) {
+    if (count == 0) {
+        *out = val_atom("[]");
+        return true;
+    }
+    if (!wam_ensure_heap_slots(state, 2 * count)) return false;
+    WamValue tail = val_atom("[]");
+    for (int i = 0; i < count; i++) {
+        int base = state->H;
+        state->H_array[state->H++] = items[i].value;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static bool wam_execute_reverse(WamState *state) {
+    WamReverseItem *items = NULL;
+    int count = 0;
+    if (!wam_collect_reverse_list(state, state->A[0], &items, &count)) {
+        return false;
+    }
+    int heap_mark = state->H;
+    WamValue result;
+    if (!wam_build_list_from_reverse_items(state, items, count, &result)) {
+        free(items);
+        state->H = heap_mark;
+        return false;
+    }
+    free(items);
+    int trail_mark = state->TR;
+    if (!wam_unify(state, &state->A[1], &result)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
+/* append/3: finite proper first-argument lists only. Open, cyclic,
+   improper, non-list, and unbound terms are WAM_ERR_UNSUPPORTED.
+   Copies only the list spine of the first argument while sharing
+   its element terms and variable identities; the second argument is
+   used as the final tail without copying. If output unification fails,
+   trail bindings and temporary heap allocations are rolled back. */
+typedef struct {
+    WamValue value;
+} WamAppendItem;
+
+static bool wam_collect_append_list(WamState *state, WamValue list,
+                                     WamAppendItem **items_out, int *count_out) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) {
+        *items_out = NULL;
+        *count_out = 0;
+        return true;
+    }
+    if (val_is_unbound(*cell) || wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "append/3", 3);
+        return false;
+    }
+
+    int cap = 16;
+    WamAppendItem *items = malloc(sizeof(WamAppendItem) * (size_t)cap);
+    if (!items) return false;
+    int count = 0;
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) break;
+            free(items);
+            wam_set_unsupported_builtin(state, "append/3", 3);
+            return false;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            free(items);
+            wam_set_unsupported_builtin(state, "append/3", 3);
+            return false;
+        }
+        if (count >= cap) {
+            if (cap > WAM_SORT_MAX_ITEMS / 2) {
+                free(items);
+                wam_set_unsupported_builtin(state, "append/3", 3);
+                return false;
+            }
+            int new_cap = cap * 2;
+            WamAppendItem *grown = realloc(items, sizeof(WamAppendItem) * (size_t)new_cap);
+            if (!grown) {
+                free(items);
+                return false;
+            }
+            items = grown;
+            cap = new_cap;
+        }
+        items[count++].value =
+            wam_sort_identity_value(state, &state->H_array[head_addr]);
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                free(items);
+                wam_set_unsupported_builtin(state, "append/3", 3);
+                return false;
+            }
+        }
+    }
+
+    *items_out = items;
+    *count_out = count;
+    return true;
+}
+
+static WamValue wam_append_identity_tail(WamState *state, WamValue *source) {
+    int addr = -1;
+    if (wam_ref_addr(state, *source, &addr)) {
+        WamValue ref;
+        ref.tag = VAL_REF;
+        ref.data.ref_addr = addr;
+        return ref;
+    }
+    WamValue *cell = wam_deref_ptr(state, source);
+    if (val_is_unbound(*cell)) {
+        if (!wam_ensure_heap_slots(state, 1)) return *source;
+        int v_addr = state->H++;
+        state->H_array[v_addr] = val_unbound("tail_var");
+        WamValue ref;
+        ref.tag = VAL_REF;
+        ref.data.ref_addr = v_addr;
+        trail_binding(state, cell);
+        *cell = ref;
+        return ref;
+    }
+    return wam_sort_identity_value(state, source);
+}
+
+static bool wam_build_list_from_append_items(WamState *state,
+                                             WamAppendItem *items,
+                                             int count,
+                                             WamValue tail_val,
+                                             WamValue *out) {
+    if (count == 0) {
+        *out = tail_val;
+        return true;
+    }
+    if (!wam_ensure_heap_slots(state, 2 * count)) return false;
+    WamValue tail = tail_val;
+    for (int i = count - 1; i >= 0; i--) {
+        int base = state->H;
+        state->H_array[state->H++] = items[i].value;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static bool wam_execute_append(WamState *state) {
+    WamAppendItem *items = NULL;
+    int count = 0;
+    if (!wam_collect_append_list(state, state->A[0], &items, &count)) {
+        return false;
+    }
+
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+
+    if (count == 0) {
+        if (!wam_unify(state, &state->A[2], &state->A[1])) {
+            unwind_trail(state, trail_mark);
+            state->H = heap_mark;
+            return false;
+        }
+        return true;
+    }
+
+    WamValue tail_val = wam_append_identity_tail(state, &state->A[1]);
+    WamValue result;
+    if (!wam_build_list_from_append_items(state, items, count, tail_val, &result)) {
+        free(items);
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    free(items);
+
+    if (!wam_unify(state, &state->A[2], &result)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
+/* length/2: two supported modes.
+   Measure: A1 is a finite proper list (including []), unify A2 with
+   the element count. Heads may be variables or compounds; input
+   cons cells are not rewritten.
+   Construct: A1 is unbound and A2 is a nonnegative integer; build a
+   proper list of that many fresh variables (including zero -> []).
+   Mismatched bound lengths fail and roll back trail plus transient
+   heap growth. Negative or non-integer N, improper/open/cyclic/
+   non-list input, and both arguments unbound are WAM_ERR_UNSUPPORTED. */
+enum {
+    WAM_LENGTH_PROPER = 0,
+    WAM_LENGTH_UNBOUND = 1,
+    WAM_LENGTH_INVALID = 2
+};
+
+static int wam_measure_length_list(WamState *state, WamValue list, int *count_out) {
+    WamValue *cell = wam_deref_ptr(state, &list);
+    if (wam_sort_is_nil(cell)) {
+        *count_out = 0;
+        return WAM_LENGTH_PROPER;
+    }
+    if (val_is_unbound(*cell)) return WAM_LENGTH_UNBOUND;
+    if (wam_cons_head_addr(state, cell) < 0) {
+        wam_set_unsupported_builtin(state, "length/2", 2);
+        return WAM_LENGTH_INVALID;
+    }
+
+    int count = 0;
+    WamValue *slow = cell;
+    WamValue *fast = cell;
+
+    for (;;) {
+        int head_addr = -1;
+        if (!wam_sort_cons_head(state, cell, &head_addr)) {
+            if (wam_sort_is_nil(cell)) break;
+            wam_set_unsupported_builtin(state, "length/2", 2);
+            return WAM_LENGTH_INVALID;
+        }
+        if (count >= WAM_SORT_MAX_ITEMS) {
+            wam_set_unsupported_builtin(state, "length/2", 2);
+            return WAM_LENGTH_INVALID;
+        }
+        count++;
+        cell = wam_deref_ptr(state, &state->H_array[head_addr + 1]);
+
+        for (int step = 0; step < 2; step++) {
+            int fast_head = -1;
+            if (!fast || !wam_sort_cons_head(state, fast, &fast_head)) {
+                fast = NULL;
+                break;
+            }
+            fast = wam_deref_ptr(state, &state->H_array[fast_head + 1]);
+        }
+        if (fast) {
+            int slow_head = -1;
+            if (wam_sort_cons_head(state, slow, &slow_head)) {
+                slow = wam_deref_ptr(state, &state->H_array[slow_head + 1]);
+            }
+            if (slow == fast) {
+                wam_set_unsupported_builtin(state, "length/2", 2);
+                return WAM_LENGTH_INVALID;
+            }
+        }
+    }
+
+    *count_out = count;
+    return WAM_LENGTH_PROPER;
+}
+
+static bool wam_build_fresh_var_list(WamState *state, int count, WamValue *out) {
+    if (count == 0) {
+        *out = val_atom("[]");
+        return true;
+    }
+    if (count < 0 || count > WAM_SORT_MAX_ITEMS) {
+        wam_set_unsupported_builtin(state, "length/2", 2);
+        return false;
+    }
+    if (count > INT_MAX / 3) return false;
+    if (!wam_ensure_heap_slots(state, 3 * count)) return false;
+    WamValue tail = val_atom("[]");
+    for (int i = 0; i < count; i++) {
+        int var_addr = state->H++;
+        state->H_array[var_addr] = val_unbound("len_var");
+        WamValue head;
+        head.tag = VAL_REF;
+        head.data.ref_addr = var_addr;
+        int base = state->H;
+        state->H_array[state->H++] = head;
+        state->H_array[state->H++] = tail;
+        tail.tag = VAL_LIST;
+        tail.data.ref_addr = base;
+    }
+    *out = tail;
+    return true;
+}
+
+static bool wam_execute_length(WamState *state) {
+    WamValue *n_cell = wam_deref_ptr(state, &state->A[1]);
+    int n_unbound = val_is_unbound(*n_cell);
+    int n_nonneg = (!n_unbound && n_cell->tag == VAL_INT &&
+                    n_cell->data.integer >= 0);
+    if (!n_unbound && !n_nonneg) {
+        wam_set_unsupported_builtin(state, "length/2", 2);
+        return false;
+    }
+
+    int count = 0;
+    int shape = wam_measure_length_list(state, state->A[0], &count);
+    if (shape == WAM_LENGTH_INVALID) return false;
+
+    if (shape == WAM_LENGTH_PROPER) {
+        WamValue measured = val_int(count);
+        int trail_mark = state->TR;
+        int heap_mark = state->H;
+        if (!wam_unify(state, &state->A[1], &measured)) {
+            unwind_trail(state, trail_mark);
+            state->H = heap_mark;
+            return false;
+        }
+        return true;
+    }
+
+    if (n_unbound) {
+        wam_set_unsupported_builtin(state, "length/2", 2);
+        return false;
+    }
+
+    int trail_mark = state->TR;
+    int heap_mark = state->H;
+    WamValue built;
+    if (!wam_build_fresh_var_list(state, n_cell->data.integer, &built)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    if (!wam_unify(state, &state->A[0], &built)) {
+        unwind_trail(state, trail_mark);
+        state->H = heap_mark;
+        return false;
+    }
+    return true;
+}
+
+/* compare/3: ISO standard-order comparison. Order unifies with <, =, or >.
+   Reuses the live-term comparator already used by sort/2 so indexed
+   tree_lookup/3 (compare(Ord, Key, NodeKey)) and predsort comparators
+   see the same order. */
+static bool wam_execute_compare(WamState *state) {
+    wam_sort_compare_truncated = 0;
+    int c = wam_compare_live_terms(state, state->A[1], state->A[2], 0);
+    if (wam_sort_compare_truncated) {
+        wam_set_unsupported_builtin(state, "compare/3", 3);
+        return false;
+    }
+    WamValue order = val_atom(c < 0 ? "<" : (c > 0 ? ">" : "="));
+    return wam_unify(state, &state->A[0], &order);
+}
+
 bool wam_execute_builtin(WamState *state, const char *op, int arity) {
     if (strcmp(op, "true/0") == 0 && arity == 0) return true;
     if ((strcmp(op, "fail/0") == 0 || strcmp(op, "false/0") == 0) && arity == 0) return false;
     if (strcmp(op, "!/0") == 0 && arity == 0) {
         if (state->call_base_top <= 0) return false;
         int target_b = state->call_bases[state->call_base_top - 1];
+        /* ISO: findall/bagof/setof Goal is opaque to cut. Inlined
+           begin_aggregate pushes a sentinel CP above the clause B0;
+           cutting to B0 would drop that sentinel so end_aggregate
+           cannot restore caller A/Y from it (findall(X,(member(X,L),!),Xs)
+           then leaves A1 as the input list). Never prune below the
+           innermost open aggregate''s sentinel. */
+        if (state->aggregate_top > 0) {
+            int agg_keep =
+                state->aggregate_frames[state->aggregate_top - 1].sentinel_b;
+            if (agg_keep > target_b) target_b = agg_keep;
+        }
         if (target_b < 0 || target_b > state->B) return false;
         wam_prune_choice_points(state, target_b);
         return true;
@@ -4392,6 +6885,8 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         if (strcmp(op, "integer/1") == 0) return a1->tag == VAL_INT;
         if (strcmp(op, "number/1") == 0) return a1->tag == VAL_INT || a1->tag == VAL_FLOAT;
         if (strcmp(op, "float/1") == 0) return a1->tag == VAL_FLOAT;
+        if (strcmp(op, "atomic/1") == 0)
+            return a1->tag == VAL_ATOM || a1->tag == VAL_INT || a1->tag == VAL_FLOAT;
         if (strcmp(op, "var/1") == 0) return val_is_unbound(*a1);
         if (strcmp(op, "nonvar/1") == 0) return !val_is_unbound(*a1);
         if (strcmp(op, "compound/1") == 0) return a1->tag == VAL_STR || a1->tag == VAL_LIST;
@@ -4441,7 +6936,40 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         return wam_execute_atom_concat(state);
     }
 
-    if (arity == 2) {
+    if (strcmp(op, "atom_length/2") == 0 && arity == 2) {
+        return wam_execute_atom_length(state);
+    }
+
+    if (strcmp(op, "atom_codes/2") == 0 && arity == 2) {
+        return wam_execute_atom_codes(state);
+    }
+
+    if (strcmp(op, "atom_chars/2") == 0 && arity == 2) {
+        return wam_execute_atom_chars(state);
+    }
+
+    if (strcmp(op, "char_code/2") == 0 && arity == 2) {
+        return wam_execute_char_code(state);
+    }
+
+    if (strcmp(op, "sort/2") == 0 && arity == 2) {
+        return wam_execute_sort(state);
+    }
+
+    if (strcmp(op, "member/2") == 0 && arity == 2) {
+        return wam_execute_member(state, state->P + 1);
+    }
+
+    /* Classify arithmetic comparisons by operator first. Unknown arity-2
+       ops must not enter evaluation: numeric arguments used to make
+       member/2 look like a false comparison. */
+    if (arity == 2 &&
+        (strcmp(op, ">/2") == 0 ||
+         strcmp(op, "</2") == 0 ||
+         strcmp(op, ">=/2") == 0 ||
+         strcmp(op, "=</2") == 0 ||
+         strcmp(op, "=:=/2") == 0 ||
+         strcmp(op, "=\\\\=/2") == 0)) {
         int lhs = 0;
         int rhs = 0;
         if (!wam_eval_arith(state, state->A[0], &lhs)) return false;
@@ -4455,6 +6983,27 @@ bool wam_execute_builtin(WamState *state, const char *op, int arity) {
         if (strcmp(op, "=\\\\=/2") == 0) return lhs != rhs;
     }
 
+    if (strcmp(op, "maplist/2") == 0 && arity == 2) {
+        return wam_execute_maplist(state);
+    }
+
+    if (strcmp(op, "reverse/2") == 0 && arity == 2) {
+        return wam_execute_reverse(state);
+    }
+
+    if (strcmp(op, "append/3") == 0 && arity == 3) {
+        return wam_execute_append(state);
+    }
+
+    if (strcmp(op, "length/2") == 0 && arity == 2) {
+        return wam_execute_length(state);
+    }
+
+    if (strcmp(op, "compare/3") == 0 && arity == 3) {
+        return wam_execute_compare(state);
+    }
+
+    wam_set_unsupported_builtin(state, op, arity);
     return false;
 }
 
@@ -4498,6 +7047,108 @@ void wam_register_transitive_edge(WamState *state, const char *child, const char
     wam_register_category_parent(state, child, parent);
 }
 
+void wam_register_relation_edge(WamState *state, const char *relation,
+                                const char *from, const char *to) {
+    if (!relation || !from || !to) return;
+    if (state->relation_edge_count >= state->relation_edge_cap) {
+        int new_cap = state->relation_edge_cap ? state->relation_edge_cap * 2 : WAM_INITIAL_CAP;
+        RelationEdge *edges = realloc(state->relation_edges,
+                                      sizeof(RelationEdge) * (size_t)new_cap);
+        if (!edges) return;
+        state->relation_edges = edges;
+        state->relation_edge_cap = new_cap;
+    }
+    state->relation_edges[state->relation_edge_count].relation =
+        wam_intern_atom(state, relation);
+    state->relation_edges[state->relation_edge_count].child =
+        wam_intern_atom(state, from);
+    state->relation_edges[state->relation_edge_count].parent =
+        wam_intern_atom(state, to);
+    state->relation_edge_count++;
+}
+
+void wam_bind_kernel_edge_relation(WamState *state, const char *pred, int arity,
+                                   const char *relation) {
+    if (!pred || !relation || arity < 0) return;
+    for (int i = 0; i < state->kernel_edge_binding_count; i++) {
+        KernelEdgeBinding *binding = &state->kernel_edge_bindings[i];
+        if (binding->arity == arity && strcmp(binding->pred, pred) == 0) {
+            binding->relation = wam_intern_atom(state, relation);
+            return;
+        }
+    }
+    if (state->kernel_edge_binding_count >= state->kernel_edge_binding_cap) {
+        int new_cap = state->kernel_edge_binding_cap
+                          ? state->kernel_edge_binding_cap * 2
+                          : WAM_INITIAL_CAP;
+        KernelEdgeBinding *bindings =
+            realloc(state->kernel_edge_bindings,
+                    sizeof(KernelEdgeBinding) * (size_t)new_cap);
+        if (!bindings) return;
+        state->kernel_edge_bindings = bindings;
+        state->kernel_edge_binding_cap = new_cap;
+    }
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].pred =
+        wam_intern_atom(state, pred);
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].arity = arity;
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].relation =
+        wam_intern_atom(state, relation);
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].heur_relation = NULL;
+    state->kernel_edge_binding_count++;
+}
+
+void wam_bind_kernel_heur_relation(WamState *state, const char *pred, int arity,
+                                   const char *heur_relation) {
+    if (!pred || !heur_relation || arity < 0) return;
+    for (int i = 0; i < state->kernel_edge_binding_count; i++) {
+        KernelEdgeBinding *binding = &state->kernel_edge_bindings[i];
+        if (binding->arity == arity && strcmp(binding->pred, pred) == 0) {
+            binding->heur_relation = wam_intern_atom(state, heur_relation);
+            return;
+        }
+    }
+    if (state->kernel_edge_binding_count >= state->kernel_edge_binding_cap) {
+        int new_cap = state->kernel_edge_binding_cap
+                          ? state->kernel_edge_binding_cap * 2
+                          : WAM_INITIAL_CAP;
+        KernelEdgeBinding *bindings =
+            realloc(state->kernel_edge_bindings,
+                    sizeof(KernelEdgeBinding) * (size_t)new_cap);
+        if (!bindings) return;
+        state->kernel_edge_bindings = bindings;
+        state->kernel_edge_binding_cap = new_cap;
+    }
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].pred =
+        wam_intern_atom(state, pred);
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].arity = arity;
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].relation = NULL;
+    state->kernel_edge_bindings[state->kernel_edge_binding_count].heur_relation =
+        wam_intern_atom(state, heur_relation);
+    state->kernel_edge_binding_count++;
+}
+
+const char *wam_lookup_kernel_edge_relation(WamState *state, const char *pred, int arity) {
+    if (!pred) return NULL;
+    for (int i = 0; i < state->kernel_edge_binding_count; i++) {
+        KernelEdgeBinding *binding = &state->kernel_edge_bindings[i];
+        if (binding->arity == arity && strcmp(binding->pred, pred) == 0) {
+            return binding->relation;
+        }
+    }
+    return NULL;
+}
+
+const char *wam_lookup_kernel_heur_relation(WamState *state, const char *pred, int arity) {
+    if (!pred) return NULL;
+    for (int i = 0; i < state->kernel_edge_binding_count; i++) {
+        KernelEdgeBinding *binding = &state->kernel_edge_bindings[i];
+        if (binding->arity == arity && strcmp(binding->pred, pred) == 0) {
+            return binding->heur_relation;
+        }
+    }
+    return NULL;
+}
+
 void wam_register_weighted_edge(WamState *state, const char *source, const char *target, double weight) {
     if (state->weighted_edge_count >= state->weighted_edge_cap) {
         state->weighted_edge_cap = state->weighted_edge_cap ? state->weighted_edge_cap * 2 : WAM_INITIAL_CAP;
@@ -4507,6 +7158,31 @@ void wam_register_weighted_edge(WamState *state, const char *source, const char 
     state->weighted_edges[state->weighted_edge_count].target = wam_intern_atom(state, target);
     state->weighted_edges[state->weighted_edge_count].weight = weight;
     state->weighted_edge_count++;
+}
+
+void wam_register_relation_weighted_edge(WamState *state, const char *relation,
+                                         const char *from, const char *to,
+                                         double weight) {
+    if (!relation || !from || !to) return;
+    if (state->weighted_relation_edge_count >= state->weighted_relation_edge_cap) {
+        int new_cap = state->weighted_relation_edge_cap
+                          ? state->weighted_relation_edge_cap * 2
+                          : WAM_INITIAL_CAP;
+        WeightedRelationEdge *edges =
+            realloc(state->weighted_relation_edges,
+                    sizeof(WeightedRelationEdge) * (size_t)new_cap);
+        if (!edges) return;
+        state->weighted_relation_edges = edges;
+        state->weighted_relation_edge_cap = new_cap;
+    }
+    state->weighted_relation_edges[state->weighted_relation_edge_count].relation =
+        wam_intern_atom(state, relation);
+    state->weighted_relation_edges[state->weighted_relation_edge_count].source =
+        wam_intern_atom(state, from);
+    state->weighted_relation_edges[state->weighted_relation_edge_count].target =
+        wam_intern_atom(state, to);
+    state->weighted_relation_edges[state->weighted_relation_edge_count].weight = weight;
+    state->weighted_relation_edge_count++;
 }
 
 void wam_register_direct_distance_edge(WamState *state, const char *source, const char *target, double distance) {
@@ -5465,16 +8141,24 @@ void wam_register_transitive_parent_distance_kernel(WamState *state, const char 
     wam_register_foreign_predicate(state, pred, 4, wam_transitive_parent_distance_handler);
 }
 
-void wam_register_transitive_step_parent_distance_kernel(WamState *state, const char *pred) {
+void wam_register_transitive_step_parent_distance_kernel(WamState *state, const char *pred,
+                                                         const char *edge_relation) {
     wam_register_foreign_predicate(state, pred, 5, wam_transitive_step_parent_distance_handler);
+    wam_bind_kernel_edge_relation(state, pred, 5, edge_relation);
 }
 
-void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred) {
+void wam_register_weighted_shortest_path_kernel(WamState *state, const char *pred,
+                                                const char *edge_relation) {
     wam_register_foreign_predicate(state, pred, 3, wam_weighted_shortest_path_handler);
+    wam_bind_kernel_edge_relation(state, pred, 3, edge_relation);
 }
 
-void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred) {
+void wam_register_astar_shortest_path_kernel(WamState *state, const char *pred,
+                                             const char *edge_relation,
+                                             const char *heur_relation) {
     wam_register_foreign_predicate(state, pred, 4, wam_astar_shortest_path_handler);
+    wam_bind_kernel_edge_relation(state, pred, 4, edge_relation);
+    wam_bind_kernel_heur_relation(state, pred, 4, heur_relation);
 }
 
 static bool wam_value_as_atom(WamState *state, WamValue value, const char **out) {
@@ -6236,35 +8920,338 @@ bool wam_bidirectional_ancestor_handler(WamState *state, const char *pred, int a
     return ok;
 }
 
-static bool wam_transitive_closure_dfs(WamState *state,
-                                       const char *start,
-                                       const char *target,
-                                       int depth,
-                                       const char **visited,
-                                       int visited_len,
-                                       const char **result_out) {
-    for (int i = 0; i < state->category_edge_count; i++) {
-        CategoryEdge *edge = &state->category_edges[i];
-        if (strcmp(edge->child, start) != 0) continue;
-        if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
-        if (!target || strcmp(edge->parent, target) == 0) {
-            *result_out = edge->parent;
-            return true;
+static bool wam_collect_transitive_closure(WamState *state,
+                                           const char *start,
+                                           WamValue **results_out,
+                                           int *result_count_out) {
+    int capacity = state->category_edge_count;
+    if (capacity <= 0 || capacity == INT_MAX) return false;
+
+    const char **visited = malloc(sizeof(const char *) * (size_t)capacity);
+    const char **queue = malloc(sizeof(const char *) * (size_t)(capacity + 1));
+    WamValue *results = malloc(sizeof(WamValue) * (size_t)capacity);
+    if (!visited || !queue || !results) {
+        free(visited);
+        free(queue);
+        free(results);
+        return false;
+    }
+
+    int visited_len = 0;
+    int head = 0;
+    int tail = 0;
+    int result_count = 0;
+    queue[tail++] = start;
+
+    while (head < tail) {
+        const char *node = queue[head++];
+        for (int i = 0; i < state->category_edge_count; i++) {
+            CategoryEdge *edge = &state->category_edges[i];
+            if (strcmp(edge->child, node) != 0) continue;
+            if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
+
+            /* Strict R+: nodes enter visited/results only after traversing
+             * an edge. Incremental insertion also suppresses duplicate
+             * facts and multiple paths before they reach the stream. */
+            visited[visited_len++] = edge->parent;
+            queue[tail++] = edge->parent;
+            results[result_count++] = val_atom(edge->parent);
         }
     }
 
-    if (depth >= 64 || visited_len >= 64) return false;
+    free(visited);
+    free(queue);
+    if (result_count == 0) {
+        free(results);
+        return false;
+    }
+    *results_out = results;
+    *result_count_out = result_count;
+    return true;
+}
 
-    for (int i = 0; i < state->category_edge_count; i++) {
-        CategoryEdge *edge = &state->category_edges[i];
-        if (strcmp(edge->child, start) != 0) continue;
-        if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
-        visited[visited_len] = edge->parent;
-        if (wam_transitive_closure_dfs(state, edge->parent, target, depth + 1,
-                                       visited, visited_len + 1, result_out)) {
+static bool wam_bind_foreign_atom_stream(WamState *state,
+                                         int result_reg,
+                                         WamValue *results,
+                                         int result_count,
+                                         int resume_pc) {
+    WamValue first = results[0];
+    if (result_count > 1) {
+        if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, result_reg + 1)) {
+            free(results);
+            return false;
+        }
+        ChoicePoint *cp = &state->B_array[state->B - 1];
+        cp->foreign_results = results;
+        cp->foreign_result_count = result_count;
+        cp->foreign_result_index = 1;
+        cp->foreign_result_reg = result_reg;
+        cp->foreign_resume_pc = resume_pc;
+    } else {
+        free(results);
+    }
+
+    if (wam_unify(state, &state->A[result_reg], &first)) return true;
+    if (result_count > 1) pop_choice_point(state);
+    return false;
+}
+
+static bool wam_try_bind_foreign_triple(WamState *state,
+                                        WamValue target_v,
+                                        WamValue parent_v,
+                                        WamValue dist_v) {
+    /* A tuple is one logical candidate.  In particular, A2/A3/A4 can
+     * alias the same WAM variable, so independently successful column
+     * binds are not enough.  Roll the complete candidate back on the
+     * first conflict before trying another tuple (or reporting failure). */
+    int trail_mark = state->TR;
+    if (wam_unify(state, &state->A[1], &target_v) &&
+        wam_unify(state, &state->A[2], &parent_v) &&
+        wam_unify(state, &state->A[3], &dist_v)) {
+        return true;
+    }
+    unwind_trail(state, trail_mark);
+    return false;
+}
+
+static bool wam_try_bind_foreign_quad(WamState *state,
+                                      WamValue target_v,
+                                      WamValue step_v,
+                                      WamValue parent_v,
+                                      WamValue dist_v) {
+    /* Quad candidate for TSPD5: A[1..4] = Target, Step, Parent, Distance.
+     * Alias-safe: roll back the whole candidate on the first conflict. */
+    int trail_mark = state->TR;
+    if (wam_unify(state, &state->A[1], &target_v) &&
+        wam_unify(state, &state->A[2], &step_v) &&
+        wam_unify(state, &state->A[3], &parent_v) &&
+        wam_unify(state, &state->A[4], &dist_v)) {
+        return true;
+    }
+    unwind_trail(state, trail_mark);
+    return false;
+}
+
+static bool wam_resume_foreign_stream(WamState *state) {
+    if (state->B <= 0) return false;
+    ChoicePoint *cp = &state->B_array[state->B - 1];
+    if (cp->next_pc != WAM_FOREIGN_STREAM_NEXT ||
+        !cp->foreign_results ||
+        cp->foreign_result_index < 0 ||
+        cp->foreign_result_index >= cp->foreign_result_count) {
+        if (cp->next_pc == WAM_FOREIGN_STREAM_NEXT) pop_choice_point(state);
+        return false;
+    }
+
+    int result_reg = cp->foreign_result_reg;
+    int resume_pc = cp->foreign_resume_pc;
+    /* Paired stream (result_reg == 255): interleaved [atom, int, ...]. */
+    if (result_reg == 255) {
+        int index = cp->foreign_result_index;
+        if (index + 1 >= cp->foreign_result_count) {
+            pop_choice_point(state);
+            return false;
+        }
+        WamValue atom_v = cp->foreign_results[index];
+        WamValue dist_v = cp->foreign_results[index + 1];
+        cp->foreign_result_index = index + 2;
+        if (cp->foreign_result_index >= cp->foreign_result_count) {
+            pop_choice_point(state);
+        }
+        if (!wam_unify(state, &state->A[1], &atom_v)) return false;
+        if (!wam_unify(state, &state->A[2], &dist_v)) return false;
+        state->P = resume_pc;
+        return true;
+    }
+    /* Triple stream (result_reg == 254): interleaved [atom, atom, int, ...].
+     * A retry may encounter candidates incompatible only because output
+     * registers alias.  Scan transactionally until one complete tuple
+     * unifies; an incompatible tuple must neither leak bindings nor end the
+     * stream while later compatible tuples remain. */
+    if (result_reg == 254) {
+        while (cp->foreign_result_index + 2 < cp->foreign_result_count) {
+            int index = cp->foreign_result_index;
+            WamValue target_v = cp->foreign_results[index];
+            WamValue parent_v = cp->foreign_results[index + 1];
+            WamValue dist_v = cp->foreign_results[index + 2];
+            cp->foreign_result_index = index + 3;
+            if (!wam_try_bind_foreign_triple(state, target_v, parent_v,
+                                             dist_v)) {
+                continue;
+            }
+            if (cp->foreign_result_index >= cp->foreign_result_count) {
+                pop_choice_point(state);
+            }
+            state->P = resume_pc;
             return true;
         }
+        pop_choice_point(state);
+        return false;
     }
+    /* Quad stream (result_reg == 253): interleaved
+     * [atom, atom, atom, int, ...] = Target, Step, Parent, Distance.
+     * Alias-safe transactional scan, same protocol as the triple stream. */
+    if (result_reg == 253) {
+        while (cp->foreign_result_index + 3 < cp->foreign_result_count) {
+            int index = cp->foreign_result_index;
+            WamValue target_v = cp->foreign_results[index];
+            WamValue step_v = cp->foreign_results[index + 1];
+            WamValue parent_v = cp->foreign_results[index + 2];
+            WamValue dist_v = cp->foreign_results[index + 3];
+            cp->foreign_result_index = index + 4;
+            if (!wam_try_bind_foreign_quad(state, target_v, step_v, parent_v,
+                                           dist_v)) {
+                continue;
+            }
+            if (cp->foreign_result_index >= cp->foreign_result_count) {
+                pop_choice_point(state);
+            }
+            state->P = resume_pc;
+            return true;
+        }
+        pop_choice_point(state);
+        return false;
+    }
+
+    int index = cp->foreign_result_index++;
+    WamValue result = cp->foreign_results[index];
+    if (cp->foreign_result_index >= cp->foreign_result_count) {
+        pop_choice_point(state);
+    }
+    if (!wam_unify(state, &state->A[result_reg], &result)) return false;
+    state->P = resume_pc;
+    return true;
+}
+
+static bool wam_bind_foreign_pair_stream(WamState *state,
+                                         WamValue *results,
+                                         int value_count,
+                                         int resume_pc) {
+    /* results: interleaved [atom, int, ...] with value_count = 2 * pairs. */
+    if (value_count < 2) {
+        free(results);
+        return false;
+    }
+    WamValue first_atom = results[0];
+    WamValue first_dist = results[1];
+    if (value_count > 2) {
+        if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 255)) {
+            free(results);
+            return false;
+        }
+        ChoicePoint *cp = &state->B_array[state->B - 1];
+        cp->foreign_results = results;
+        cp->foreign_result_count = value_count;
+        cp->foreign_result_index = 2;
+        cp->foreign_result_reg = 255;
+        cp->foreign_resume_pc = resume_pc;
+    } else {
+        free(results);
+    }
+    if (!wam_unify(state, &state->A[1], &first_atom)) {
+        if (value_count > 2) pop_choice_point(state);
+        return false;
+    }
+    if (!wam_unify(state, &state->A[2], &first_dist)) {
+        if (value_count > 2) pop_choice_point(state);
+        return false;
+    }
+    return true;
+}
+
+static bool wam_bind_foreign_triple_stream(WamState *state,
+                                           WamValue *results,
+                                           int value_count,
+                                           int resume_pc) {
+    /* results: interleaved [atom, atom, int, ...] with value_count = 3 * triples. */
+    if (value_count < 3) {
+        free(results);
+        return false;
+    }
+    for (int index = 0; index + 2 < value_count; index += 3) {
+        WamValue target_v = results[index];
+        WamValue parent_v = results[index + 1];
+        WamValue dist_v = results[index + 2];
+        int trail_mark = state->TR;
+        if (!wam_try_bind_foreign_triple(state, target_v, parent_v, dist_v)) {
+            continue;
+        }
+
+        if (index + 3 < value_count) {
+            /* The choice-point snapshot must describe the state before this
+             * first successful tuple.  Rewind the trial bind, take the
+            * ordinary foreign-stream snapshot, then commit the same tuple. */
+            unwind_trail(state, trail_mark);
+            if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 4)) {
+                free(results);
+                return false;
+            }
+            ChoicePoint *cp = &state->B_array[state->B - 1];
+            cp->foreign_results = results;
+            cp->foreign_result_count = value_count;
+            cp->foreign_result_index = index + 3;
+            cp->foreign_result_reg = 254;
+            cp->foreign_resume_pc = resume_pc;
+            if (!wam_try_bind_foreign_triple(state, target_v, parent_v,
+                                             dist_v)) {
+                pop_choice_point(state);
+                return false;
+            }
+        } else {
+            free(results);
+        }
+        return true;
+    }
+
+    free(results);
+    return false;
+}
+
+static bool wam_bind_foreign_quad_stream(WamState *state,
+                                         WamValue *results,
+                                         int value_count,
+                                         int resume_pc) {
+    /* results: interleaved [atom, atom, atom, int, ...]
+     * with value_count = 4 * quads. */
+    if (value_count < 4) {
+        free(results);
+        return false;
+    }
+    for (int index = 0; index + 3 < value_count; index += 4) {
+        WamValue target_v = results[index];
+        WamValue step_v = results[index + 1];
+        WamValue parent_v = results[index + 2];
+        WamValue dist_v = results[index + 3];
+        int trail_mark = state->TR;
+        if (!wam_try_bind_foreign_quad(state, target_v, step_v, parent_v,
+                                       dist_v)) {
+            continue;
+        }
+
+        if (index + 4 < value_count) {
+            unwind_trail(state, trail_mark);
+            if (!push_choice_point(state, WAM_FOREIGN_STREAM_NEXT, 5)) {
+                free(results);
+                return false;
+            }
+            ChoicePoint *cp = &state->B_array[state->B - 1];
+            cp->foreign_results = results;
+            cp->foreign_result_count = value_count;
+            cp->foreign_result_index = index + 4;
+            cp->foreign_result_reg = 253;
+            cp->foreign_resume_pc = resume_pc;
+            if (!wam_try_bind_foreign_quad(state, target_v, step_v, parent_v,
+                                           dist_v)) {
+                pop_choice_point(state);
+                return false;
+            }
+        } else {
+            free(results);
+        }
+        return true;
+    }
+
+    free(results);
     return false;
 }
 
@@ -6283,58 +9270,89 @@ bool wam_transitive_closure_handler(WamState *state, const char *pred, int arity
         return false;
     }
 
-    const char *visited[64];
-    int visited_len = 0;
-    visited[visited_len++] = start;
-    const char *result = NULL;
-    if (!wam_transitive_closure_dfs(state, start, target, 0, visited, visited_len, &result)) {
+    WamValue *results = NULL;
+    int result_count = 0;
+    if (!wam_collect_transitive_closure(state, start, &results, &result_count)) {
         return false;
     }
-    if (target) return true;
 
-    WamValue result_value = val_atom(result);
-    return wam_unify(state, &state->A[1], &result_value);
+    if (target) {
+        bool found = false;
+        for (int i = 0; i < result_count; i++) {
+            if (strcmp(results[i].data.atom, target) == 0) {
+                found = true;
+                break;
+            }
+        }
+        free(results);
+        return found;
+    }
+
+    /* The ordinary C choice-point stack owns remaining results. This keeps
+     * tc(+Source,-Target) stream-valued without a parallel retry protocol. */
+    return wam_bind_foreign_atom_stream(state, 1, results, result_count,
+                                        state->P + 1);
 }
 
-static bool wam_transitive_distance_bfs(WamState *state,
-                                        const char *start,
-                                        const char *target,
-                                        int *distance_filter,
-                                        const char **target_out,
-                                        int *distance_out) {
-    const char *queue_nodes[256];
-    int queue_distances[256];
-    const char *visited[256];
+static bool wam_collect_transitive_distance(WamState *state,
+                                            const char *start,
+                                            const char *target_filter,
+                                            int *distance_filter,
+                                            WamValue **results_out,
+                                            int *value_count_out) {
+    /* dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md): BFS;
+     * visited not seeded with start. Results interleaved [atom, int].
+     * Inline kept (matches surrounding wam_*_handler / collect style). */
+    int capacity = state->category_edge_count;
+    if (capacity <= 0 || capacity == INT_MAX) return false;
+
+    const char **visited = malloc(sizeof(const char *) * (size_t)capacity);
+    const char **queue_nodes = malloc(sizeof(const char *) * (size_t)(capacity + 1));
+    int *queue_dists = malloc(sizeof(int) * (size_t)(capacity + 1));
+    WamValue *results = malloc(sizeof(WamValue) * (size_t)capacity * 2);
+    if (!visited || !queue_nodes || !queue_dists || !results) {
+        free(visited);
+        free(queue_nodes);
+        free(queue_dists);
+        free(results);
+        return false;
+    }
+
+    int visited_len = 0;
     int head = 0;
     int tail = 0;
-    int visited_len = 0;
-
+    int value_count = 0;
     queue_nodes[tail] = start;
-    queue_distances[tail++] = 0;
-    visited[visited_len++] = start;
+    queue_dists[tail++] = 0;
 
     while (head < tail) {
         const char *node = queue_nodes[head];
-        int distance = queue_distances[head++];
+        int distance = queue_dists[head++];
         for (int i = 0; i < state->category_edge_count; i++) {
             CategoryEdge *edge = &state->category_edges[i];
             if (strcmp(edge->child, node) != 0) continue;
             if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
             int next_distance = distance + 1;
-            bool target_ok = !target || strcmp(edge->parent, target) == 0;
-            bool distance_ok = !distance_filter || next_distance == *distance_filter;
-            if (target_ok && distance_ok) {
-                *target_out = edge->parent;
-                *distance_out = next_distance;
-                return true;
-            }
-            if (tail >= 256 || visited_len >= 256) return false;
             visited[visited_len++] = edge->parent;
             queue_nodes[tail] = edge->parent;
-            queue_distances[tail++] = next_distance;
+            queue_dists[tail++] = next_distance;
+            if (target_filter && strcmp(edge->parent, target_filter) != 0) continue;
+            if (distance_filter && next_distance != *distance_filter) continue;
+            results[value_count++] = val_atom(edge->parent);
+            results[value_count++] = val_int(next_distance);
         }
     }
-    return false;
+
+    free(visited);
+    free(queue_nodes);
+    free(queue_dists);
+    if (value_count == 0) {
+        free(results);
+        return false;
+    }
+    *results_out = results;
+    *value_count_out = value_count;
+    return true;
 }
 
 bool wam_transitive_distance_handler(WamState *state, const char *pred, int arity) {
@@ -6357,62 +9375,164 @@ bool wam_transitive_distance_handler(WamState *state, const char *pred, int arit
     int *distance_filter = NULL;
     if (distance_cell->tag == VAL_INT) {
         distance_filter_value = distance_cell->data.integer;
+        if (distance_filter_value <= 0) return false;
         distance_filter = &distance_filter_value;
     } else if (!val_is_unbound(*distance_cell)) {
         return false;
     }
 
-    const char *result_target = NULL;
-    int result_distance = 0;
-    if (!wam_transitive_distance_bfs(state, start, target, distance_filter,
-                                     &result_target, &result_distance)) {
+    WamValue *results = NULL;
+    int value_count = 0;
+    if (!wam_collect_transitive_distance(state, start, target, distance_filter,
+                                         &results, &value_count)) {
         return false;
     }
 
-    WamValue target_value = val_atom(result_target);
-    WamValue distance_value = val_int(result_distance);
-    return wam_unify(state, &state->A[1], &target_value) &&
-           wam_unify(state, &state->A[2], &distance_value);
+    /* Bound Target (+ optional Distance): succeed once. Bind Distance
+     * when unbound; both-bound already filtered to an exact match. */
+    if (target) {
+        if (value_count < 2) {
+            free(results);
+            return false;
+        }
+        WamValue dist_v = results[1];
+        free(results);
+        if (distance_filter) return true;
+        return wam_unify(state, &state->A[2], &dist_v);
+    }
+
+    return wam_bind_foreign_pair_stream(state, results, value_count,
+                                        state->P + 1);
 }
 
-static bool wam_transitive_parent_distance_bfs(WamState *state,
-                                               const char *start,
-                                               const char *target,
-                                               const char **target_out,
-                                               const char **parent_out,
-                                               int *distance_out) {
-    const char *queue_nodes[256];
-    int queue_distances[256];
-    const char *visited[256];
+static bool wam_collect_transitive_parent_distance(WamState *state,
+                                                   const char *start,
+                                                   const char *target_filter,
+                                                   const char *parent_filter,
+                                                   int *distance_filter,
+                                                   WamValue **results_out,
+                                                   int *value_count_out) {
+    /* Shortest-positive parents
+     * (docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md): BFS with
+     * parent sets; dist not seeded with start. Results interleaved
+     * [atom, atom, int]. Inline kept (matches surrounding collect style). */
+    int capacity = state->category_edge_count;
+    if (capacity <= 0 || capacity == INT_MAX) return false;
+
+    const char **queue_nodes = malloc(sizeof(const char *) * (size_t)(capacity + 1));
+    int *queue_dists = malloc(sizeof(int) * (size_t)(capacity + 1));
+    const char **dist_nodes = malloc(sizeof(const char *) * (size_t)(capacity + 1));
+    int *dist_vals = malloc(sizeof(int) * (size_t)(capacity + 1));
+    /* Parent pairs: (target_idx_in_dist_nodes, parent_atom) — up to E. */
+    const char **parent_targets = malloc(sizeof(const char *) * (size_t)capacity);
+    const char **parent_preds = malloc(sizeof(const char *) * (size_t)capacity);
+    WamValue *results = malloc(sizeof(WamValue) * (size_t)capacity * 3);
+    if (!queue_nodes || !queue_dists || !dist_nodes || !dist_vals ||
+        !parent_targets || !parent_preds || !results) {
+        free(queue_nodes);
+        free(queue_dists);
+        free(dist_nodes);
+        free(dist_vals);
+        free(parent_targets);
+        free(parent_preds);
+        free(results);
+        return false;
+    }
+
+    int dist_len = 0;
+    int parent_len = 0;
     int head = 0;
     int tail = 0;
-    int visited_len = 0;
-
+    int value_count = 0;
     queue_nodes[tail] = start;
-    queue_distances[tail++] = 0;
-    visited[visited_len++] = start;
+    queue_dists[tail++] = 0;
 
     while (head < tail) {
         const char *node = queue_nodes[head];
-        int distance = queue_distances[head++];
+        int distance = queue_dists[head++];
+        int next_distance = distance + 1;
         for (int i = 0; i < state->category_edge_count; i++) {
             CategoryEdge *edge = &state->category_edges[i];
             if (strcmp(edge->child, node) != 0) continue;
-            if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
-            int next_distance = distance + 1;
-            if (!target || strcmp(edge->parent, target) == 0) {
-                *target_out = edge->parent;
-                *parent_out = node;
-                *distance_out = next_distance;
-                return true;
+            const char *next = edge->parent;
+            int existing = -1;
+            for (int j = 0; j < dist_len; j++) {
+                if (strcmp(dist_nodes[j], next) == 0) {
+                    existing = j;
+                    break;
+                }
             }
-            if (tail >= 256 || visited_len >= 256) return false;
-            visited[visited_len++] = edge->parent;
-            queue_nodes[tail] = edge->parent;
-            queue_distances[tail++] = next_distance;
+            if (existing < 0) {
+                if (dist_len >= capacity + 1 || tail >= capacity + 1 ||
+                    parent_len >= capacity) {
+                    free(queue_nodes); free(queue_dists); free(dist_nodes);
+                    free(dist_vals); free(parent_targets); free(parent_preds);
+                    free(results);
+                    return false;
+                }
+                dist_nodes[dist_len] = next;
+                dist_vals[dist_len] = next_distance;
+                dist_len++;
+                parent_targets[parent_len] = next;
+                parent_preds[parent_len] = node;
+                parent_len++;
+                queue_nodes[tail] = next;
+                queue_dists[tail++] = next_distance;
+            } else if (dist_vals[existing] == next_distance) {
+                bool have = false;
+                for (int j = 0; j < parent_len; j++) {
+                    if (strcmp(parent_targets[j], next) == 0 &&
+                        strcmp(parent_preds[j], node) == 0) {
+                        have = true;
+                        break;
+                    }
+                }
+                if (!have) {
+                    if (parent_len >= capacity) {
+                        free(queue_nodes); free(queue_dists); free(dist_nodes);
+                        free(dist_vals); free(parent_targets); free(parent_preds);
+                        free(results);
+                        return false;
+                    }
+                    parent_targets[parent_len] = next;
+                    parent_preds[parent_len] = node;
+                    parent_len++;
+                }
+            }
         }
     }
-    return false;
+
+    for (int i = 0; i < parent_len; i++) {
+        const char *t = parent_targets[i];
+        const char *p = parent_preds[i];
+        int d = 0;
+        for (int j = 0; j < dist_len; j++) {
+            if (strcmp(dist_nodes[j], t) == 0) {
+                d = dist_vals[j];
+                break;
+            }
+        }
+        if (target_filter && strcmp(t, target_filter) != 0) continue;
+        if (parent_filter && strcmp(p, parent_filter) != 0) continue;
+        if (distance_filter && d != *distance_filter) continue;
+        results[value_count++] = val_atom(t);
+        results[value_count++] = val_atom(p);
+        results[value_count++] = val_int(d);
+    }
+
+    free(queue_nodes);
+    free(queue_dists);
+    free(dist_nodes);
+    free(dist_vals);
+    free(parent_targets);
+    free(parent_preds);
+    if (value_count == 0) {
+        free(results);
+        return false;
+    }
+    *results_out = results;
+    *value_count_out = value_count;
+    return true;
 }
 
 bool wam_transitive_parent_distance_handler(WamState *state, const char *pred, int arity) {
@@ -6430,188 +9550,320 @@ bool wam_transitive_parent_distance_handler(WamState *state, const char *pred, i
         return false;
     }
 
-    const char *result_target = NULL;
-    const char *result_parent = NULL;
-    int result_distance = 0;
-    if (!wam_transitive_parent_distance_bfs(state, start, target,
-                                            &result_target, &result_parent,
-                                            &result_distance)) {
+    WamValue *parent_cell = wam_deref_ptr(state, &state->A[2]);
+    const char *parent = NULL;
+    if (parent_cell->tag == VAL_ATOM) {
+        parent = parent_cell->data.atom;
+    } else if (!val_is_unbound(*parent_cell)) {
         return false;
     }
 
-    WamValue target_value = val_atom(result_target);
-    WamValue parent_value = val_atom(result_parent);
-    WamValue distance_value = val_int(result_distance);
-    return wam_unify(state, &state->A[1], &target_value) &&
-           wam_unify(state, &state->A[2], &parent_value) &&
-           wam_unify(state, &state->A[3], &distance_value);
+    WamValue *distance_cell = wam_deref_ptr(state, &state->A[3]);
+    int distance_filter_value = 0;
+    int *distance_filter = NULL;
+    if (distance_cell->tag == VAL_INT) {
+        distance_filter_value = distance_cell->data.integer;
+        if (distance_filter_value <= 0) return false;
+        distance_filter = &distance_filter_value;
+    } else if (!val_is_unbound(*distance_cell)) {
+        return false;
+    }
+
+    WamValue *results = NULL;
+    int value_count = 0;
+    if (!wam_collect_transitive_parent_distance(state, start, target, parent,
+                                                distance_filter,
+                                                &results, &value_count)) {
+        return false;
+    }
+
+    /* Fully bound Target+Parent (+ optional Distance): succeed once.
+     * Bind Distance when unbound; both-bound already filtered. */
+    if (target && parent) {
+        if (value_count < 3) {
+            free(results);
+            return false;
+        }
+        WamValue dist_v = results[2];
+        free(results);
+        if (distance_filter) return true;
+        return wam_unify(state, &state->A[3], &dist_v);
+    }
+
+    return wam_bind_foreign_triple_stream(state, results, value_count,
+                                          state->P + 1);
 }
 
-static bool wam_transitive_step_parent_distance_bfs(WamState *state,
-                                                    const char *start,
-                                                    const char *target,
-                                                    const char **target_out,
-                                                    const char **step_out,
-                                                    const char **parent_out,
-                                                    int *distance_out) {
-    const char *queue_nodes[256];
-    const char *queue_steps[256];
-    int queue_distances[256];
-    const char *visited[256];
+static int wam_count_relation_edges(WamState *state, const char *relation) {
+    int n = 0;
+    for (int i = 0; i < state->relation_edge_count; i++) {
+        if (strcmp(state->relation_edges[i].relation, relation) == 0) n++;
+    }
+    return n;
+}
+
+static bool wam_tspd5_ensure_pair_cap(const char ***pair_targets,
+                                      const char ***pair_steps,
+                                      const char ***pair_parents,
+                                      int *pair_cap,
+                                      int needed) {
+    if (needed <= *pair_cap) return true;
+    int new_cap = *pair_cap ? *pair_cap : 8;
+    while (new_cap < needed) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = needed;
+            break;
+        }
+        new_cap *= 2;
+    }
+    const char **targets = realloc(*pair_targets,
+                                   sizeof(const char *) * (size_t)new_cap);
+    if (!targets) return false;
+    *pair_targets = targets;
+    const char **steps = realloc(*pair_steps,
+                                 sizeof(const char *) * (size_t)new_cap);
+    if (!steps) return false;
+    *pair_steps = steps;
+    const char **parents = realloc(*pair_parents,
+                                   sizeof(const char *) * (size_t)new_cap);
+    if (!parents) return false;
+    *pair_parents = parents;
+    *pair_cap = new_cap;
+    return true;
+}
+
+static bool wam_tspd5_ensure_result_cap(WamValue **results, int *result_cap,
+                                        int needed) {
+    if (needed <= *result_cap) return true;
+    int new_cap = *result_cap ? *result_cap : 16;
+    while (new_cap < needed) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = needed;
+            break;
+        }
+        new_cap *= 2;
+    }
+    WamValue *grown = realloc(*results, sizeof(WamValue) * (size_t)new_cap);
+    if (!grown) return false;
+    *results = grown;
+    *result_cap = new_cap;
+    return true;
+}
+
+static bool wam_collect_transitive_step_parent_distance(
+    WamState *state,
+    const char *relation,
+    const char *start,
+    const char *target_filter,
+    const char *step_filter,
+    const char *parent_filter,
+    int *distance_filter,
+    WamValue **results_out,
+    int *value_count_out) {
+    /* Shortest-positive correlated step/parent
+     * (docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md):
+     * FIFO BFS seed (Source, 0); dist NOT seeded with Source; store
+     * correlated (Step, Parent) pairs per Target. */
+    int edge_n = wam_count_relation_edges(state, relation);
+    if (edge_n <= 0 || edge_n == INT_MAX) return false;
+
+    int node_cap = edge_n + 1;
+    const char **queue_nodes = malloc(sizeof(const char *) * (size_t)node_cap);
+    int *queue_dists = malloc(sizeof(int) * (size_t)node_cap);
+    const char **dist_nodes = malloc(sizeof(const char *) * (size_t)node_cap);
+    int *dist_vals = malloc(sizeof(int) * (size_t)node_cap);
+    const char **pair_targets = NULL;
+    const char **pair_steps = NULL;
+    const char **pair_parents = NULL;
+    int pair_cap = 0;
+    int pair_len = 0;
+    int result_cap = edge_n * 4;
+    if (result_cap < 4) result_cap = 4;
+    WamValue *results = malloc(sizeof(WamValue) * (size_t)result_cap);
+    if (!queue_nodes || !queue_dists || !dist_nodes || !dist_vals || !results) {
+        free(queue_nodes);
+        free(queue_dists);
+        free(dist_nodes);
+        free(dist_vals);
+        free(results);
+        return false;
+    }
+    if (!wam_tspd5_ensure_pair_cap(&pair_targets, &pair_steps, &pair_parents,
+                                   &pair_cap, edge_n > 0 ? edge_n : 8)) {
+        free(queue_nodes);
+        free(queue_dists);
+        free(dist_nodes);
+        free(dist_vals);
+        free(results);
+        return false;
+    }
+
+    int dist_len = 0;
     int head = 0;
     int tail = 0;
-    int visited_len = 0;
-
     queue_nodes[tail] = start;
-    queue_steps[tail] = start;
-    queue_distances[tail++] = 0;
-    visited[visited_len++] = start;
+    queue_dists[tail++] = 0;
 
     while (head < tail) {
         const char *node = queue_nodes[head];
-        const char *first_step = queue_steps[head];
-        int distance = queue_distances[head++];
-        for (int i = 0; i < state->category_edge_count; i++) {
-            CategoryEdge *edge = &state->category_edges[i];
+        int distance = queue_dists[head++];
+        int next_distance = distance + 1;
+        for (int i = 0; i < state->relation_edge_count; i++) {
+            RelationEdge *edge = &state->relation_edges[i];
+            if (strcmp(edge->relation, relation) != 0) continue;
             if (strcmp(edge->child, node) != 0) continue;
-            if (wam_visited_array_contains(visited, visited_len, edge->parent)) continue;
-            int next_distance = distance + 1;
-            const char *next_step = (distance == 0) ? edge->parent : first_step;
-            if (!target || strcmp(edge->parent, target) == 0) {
-                *target_out = edge->parent;
-                *step_out = next_step;
-                *parent_out = node;
-                *distance_out = next_distance;
-                return true;
-            }
-            if (tail >= 256 || visited_len >= 256) return false;
-            visited[visited_len++] = edge->parent;
-            queue_nodes[tail] = edge->parent;
-            queue_steps[tail] = next_step;
-            queue_distances[tail++] = next_distance;
-        }
-    }
-    return false;
-}
+            const char *next = edge->parent;
 
-bool wam_transitive_step_parent_distance_handler(WamState *state, const char *pred, int arity) {
-    (void)pred;
-    if (arity != 5) return false;
-
-    const char *start = NULL;
-    if (!wam_value_as_atom(state, state->A[0], &start)) return false;
-
-    WamValue *target_cell = wam_deref_ptr(state, &state->A[1]);
-    const char *target = NULL;
-    if (target_cell->tag == VAL_ATOM) {
-        target = target_cell->data.atom;
-    } else if (!val_is_unbound(*target_cell)) {
-        return false;
-    }
-
-    const char *result_target = NULL;
-    const char *result_step = NULL;
-    const char *result_parent = NULL;
-    int result_distance = 0;
-    if (!wam_transitive_step_parent_distance_bfs(state, start, target,
-                                                 &result_target, &result_step,
-                                                 &result_parent,
-                                                 &result_distance)) {
-        return false;
-    }
-
-    WamValue target_value = val_atom(result_target);
-    WamValue step_value = val_atom(result_step);
-    WamValue parent_value = val_atom(result_parent);
-    WamValue distance_value = val_int(result_distance);
-    return wam_unify(state, &state->A[1], &target_value) &&
-           wam_unify(state, &state->A[2], &step_value) &&
-           wam_unify(state, &state->A[3], &parent_value) &&
-           wam_unify(state, &state->A[4], &distance_value);
-}
-
-static bool wam_weighted_shortest_path_dijkstra(WamState *state,
-                                                const char *start,
-                                                const char *target,
-                                                const char **target_out,
-                                                double *weight_out) {
-    const char *nodes[256];
-    double distances[256];
-    bool done[256];
-    int node_count = 0;
-    const double inf = 1.0e100;
-
-    nodes[node_count] = start;
-    distances[node_count] = 0;
-    done[node_count] = false;
-    node_count++;
-
-    while (true) {
-        int best_idx = -1;
-        double best_distance = inf;
-        for (int i = 0; i < node_count; i++) {
-            if (!done[i] && distances[i] < best_distance) {
-                best_idx = i;
-                best_distance = distances[i];
-            }
-        }
-        if (best_idx < 0) break;
-
-        done[best_idx] = true;
-        const char *node = nodes[best_idx];
-        if (target && strcmp(node, target) == 0 && best_distance > 0) {
-            *target_out = node;
-            *weight_out = best_distance;
-            return true;
-        }
-
-        for (int i = 0; i < state->weighted_edge_count; i++) {
-            WeightedEdge *edge = &state->weighted_edges[i];
-            if (edge->weight < 0) continue;
-            if (strcmp(edge->source, node) != 0) continue;
-            int next_idx = -1;
-            for (int j = 0; j < node_count; j++) {
-                if (strcmp(nodes[j], edge->target) == 0) {
-                    next_idx = j;
+            int existing = -1;
+            for (int j = 0; j < dist_len; j++) {
+                if (strcmp(dist_nodes[j], next) == 0) {
+                    existing = j;
                     break;
                 }
             }
-            if (next_idx < 0) {
-                if (node_count >= 256) return false;
-                next_idx = node_count;
-                nodes[next_idx] = edge->target;
-                distances[next_idx] = inf;
-                done[next_idx] = false;
-                node_count++;
+            if (existing >= 0 && dist_vals[existing] < next_distance) {
+                continue; /* Longer path — ignore. */
             }
-            if (best_distance <= inf - edge->weight &&
-                best_distance + edge->weight < distances[next_idx]) {
-                distances[next_idx] = best_distance + edge->weight;
+
+            if (existing < 0) {
+                if (dist_len >= node_cap || tail >= node_cap) {
+                    free(queue_nodes); free(queue_dists); free(dist_nodes);
+                    free(dist_vals); free(pair_targets);
+                    free(pair_steps); free(pair_parents);
+                    free(results);
+                    return false;
+                }
+                dist_nodes[dist_len] = next;
+                dist_vals[dist_len] = next_distance;
+                dist_len++;
+                queue_nodes[tail] = next;
+                queue_dists[tail++] = next_distance;
+            } else if (dist_vals[existing] != next_distance) {
+                continue;
+            }
+
+            /* Emit candidate (Step, Parent) pairs for U→V and union. */
+            if (distance == 0) {
+                /* U is Source: cand = (V, Source). */
+                bool have = false;
+                for (int p = 0; p < pair_len; p++) {
+                    if (strcmp(pair_targets[p], next) == 0 &&
+                        strcmp(pair_steps[p], next) == 0 &&
+                        strcmp(pair_parents[p], start) == 0) {
+                        have = true;
+                        break;
+                    }
+                }
+                if (!have) {
+                    if (!wam_tspd5_ensure_pair_cap(&pair_targets, &pair_steps,
+                                                   &pair_parents, &pair_cap,
+                                                   pair_len + 1)) {
+                        free(queue_nodes); free(queue_dists); free(dist_nodes);
+                        free(dist_vals); free(pair_targets);
+                        free(pair_steps); free(pair_parents);
+                        free(results);
+                        return false;
+                    }
+                    pair_targets[pair_len] = next;
+                    pair_steps[pair_len] = next;
+                    pair_parents[pair_len] = start;
+                    pair_len++;
+                }
+            } else {
+                /* Distinct Steps from pairs[U]; cand = (Step, U).
+                 * Snapshot pair_len so newly appended V pairs are not
+                 * re-scanned as if they belonged to U. */
+                int pairs_before = pair_len;
+                for (int p = 0; p < pairs_before; p++) {
+                    if (strcmp(pair_targets[p], node) != 0) continue;
+                    const char *step = pair_steps[p];
+                    bool step_seen = false;
+                    for (int q = 0; q < p; q++) {
+                        if (strcmp(pair_targets[q], node) == 0 &&
+                            strcmp(pair_steps[q], step) == 0) {
+                            step_seen = true;
+                            break;
+                        }
+                    }
+                    if (step_seen) continue;
+                    bool have = false;
+                    for (int r = 0; r < pair_len; r++) {
+                        if (strcmp(pair_targets[r], next) == 0 &&
+                            strcmp(pair_steps[r], step) == 0 &&
+                            strcmp(pair_parents[r], node) == 0) {
+                            have = true;
+                            break;
+                        }
+                    }
+                    if (have) continue;
+                    if (!wam_tspd5_ensure_pair_cap(&pair_targets, &pair_steps,
+                                                   &pair_parents, &pair_cap,
+                                                   pair_len + 1)) {
+                        free(queue_nodes); free(queue_dists); free(dist_nodes);
+                        free(dist_vals); free(pair_targets);
+                        free(pair_steps); free(pair_parents);
+                        free(results);
+                        return false;
+                    }
+                    pair_targets[pair_len] = next;
+                    pair_steps[pair_len] = step;
+                    pair_parents[pair_len] = node;
+                    pair_len++;
+                }
             }
         }
     }
 
-    if (!target) {
-        int best_idx = -1;
-        double best_distance = inf;
-        for (int i = 0; i < node_count; i++) {
-            if (strcmp(nodes[i], start) != 0 && distances[i] < best_distance) {
-                best_idx = i;
-                best_distance = distances[i];
+    int value_count = 0;
+    for (int i = 0; i < pair_len; i++) {
+        const char *t = pair_targets[i];
+        const char *s = pair_steps[i];
+        const char *p = pair_parents[i];
+        int d = 0;
+        for (int j = 0; j < dist_len; j++) {
+            if (strcmp(dist_nodes[j], t) == 0) {
+                d = dist_vals[j];
+                break;
             }
         }
-        if (best_idx >= 0) {
-            *target_out = nodes[best_idx];
-            *weight_out = best_distance;
-            return true;
+        if (target_filter && strcmp(t, target_filter) != 0) continue;
+        if (step_filter && strcmp(s, step_filter) != 0) continue;
+        if (parent_filter && strcmp(p, parent_filter) != 0) continue;
+        if (distance_filter && d != *distance_filter) continue;
+        if (!wam_tspd5_ensure_result_cap(&results, &result_cap, value_count + 4)) {
+            free(queue_nodes); free(queue_dists); free(dist_nodes);
+            free(dist_vals); free(pair_targets);
+            free(pair_steps); free(pair_parents);
+            free(results);
+            return false;
         }
+        results[value_count++] = val_atom(t);
+        results[value_count++] = val_atom(s);
+        results[value_count++] = val_atom(p);
+        results[value_count++] = val_int(d);
     }
-    return false;
+
+    free(queue_nodes);
+    free(queue_dists);
+    free(dist_nodes);
+    free(dist_vals);
+    free(pair_targets);
+    free(pair_steps);
+    free(pair_parents);
+    if (value_count == 0) {
+        free(results);
+        return false;
+    }
+    *results_out = results;
+    *value_count_out = value_count;
+    return true;
 }
 
-bool wam_weighted_shortest_path_handler(WamState *state, const char *pred, int arity) {
-    (void)pred;
-    if (arity != 3) return false;
+bool wam_transitive_step_parent_distance_handler(WamState *state, const char *pred, int arity) {
+    if (arity != 5) return false;
+
+    const char *relation = wam_lookup_kernel_edge_relation(state, pred, arity);
+    if (!relation) return false;
 
     const char *start = NULL;
     if (!wam_value_as_atom(state, state->A[0], &start)) return false;
@@ -6624,100 +9876,483 @@ bool wam_weighted_shortest_path_handler(WamState *state, const char *pred, int a
         return false;
     }
 
-    const char *result_target = NULL;
-    double result_weight = 0.0;
-    if (!wam_weighted_shortest_path_dijkstra(state, start, target,
-                                             &result_target, &result_weight)) {
+    WamValue *step_cell = wam_deref_ptr(state, &state->A[2]);
+    const char *step = NULL;
+    if (step_cell->tag == VAL_ATOM) {
+        step = step_cell->data.atom;
+    } else if (!val_is_unbound(*step_cell)) {
         return false;
     }
 
-    WamValue target_value = val_atom(result_target);
-    WamValue weight_value = val_number_from_double(result_weight);
-    return wam_unify(state, &state->A[1], &target_value) &&
-           wam_unify(state, &state->A[2], &weight_value);
+    WamValue *parent_cell = wam_deref_ptr(state, &state->A[3]);
+    const char *parent = NULL;
+    if (parent_cell->tag == VAL_ATOM) {
+        parent = parent_cell->data.atom;
+    } else if (!val_is_unbound(*parent_cell)) {
+        return false;
+    }
+
+    WamValue *distance_cell = wam_deref_ptr(state, &state->A[4]);
+    int distance_filter_value = 0;
+    int *distance_filter = NULL;
+    if (distance_cell->tag == VAL_INT) {
+        distance_filter_value = distance_cell->data.integer;
+        if (distance_filter_value <= 0) return false;
+        distance_filter = &distance_filter_value;
+    } else if (!val_is_unbound(*distance_cell)) {
+        return false;
+    }
+
+    WamValue *results = NULL;
+    int value_count = 0;
+    if (!wam_collect_transitive_step_parent_distance(state, relation, start,
+                                                     target, step, parent,
+                                                     distance_filter,
+                                                     &results, &value_count)) {
+        return false;
+    }
+
+    /* Fully bound Target+Step+Parent (+ optional Distance): succeed once.
+     * Bind Distance when unbound; both-bound already filtered. */
+    if (target && step && parent) {
+        if (value_count < 4) {
+            free(results);
+            return false;
+        }
+        WamValue dist_v = results[3];
+        free(results);
+        if (distance_filter) return true;
+        return wam_unify(state, &state->A[4], &dist_v);
+    }
+
+    return wam_bind_foreign_quad_stream(state, results, value_count,
+                                        state->P + 1);
 }
 
-static double wam_astar_heuristic(WamState *state, const char *node, const char *target) {
-    for (int i = 0; i < state->direct_distance_edge_count; i++) {
-        WeightedEdge *edge = &state->direct_distance_edges[i];
-        if (strcmp(edge->source, node) == 0 && strcmp(edge->target, target) == 0) {
-            return edge->weight < 0 ? 0 : edge->weight;
+static int wam_count_weighted_relation_edges(WamState *state, const char *relation) {
+    int n = 0;
+    for (int i = 0; i < state->weighted_relation_edge_count; i++) {
+        if (strcmp(state->weighted_relation_edges[i].relation, relation) == 0) n++;
+    }
+    return n;
+}
+
+static bool wam_wsp3_grow_nodes_costs(const char ***nodes, double **costs,
+                                      int *cap, int needed) {
+    if (needed <= *cap) return true;
+    int new_cap = *cap ? *cap : 8;
+    while (new_cap < needed) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = needed;
+            break;
+        }
+        new_cap *= 2;
+    }
+    const char **grown_nodes =
+        realloc(*nodes, sizeof(const char *) * (size_t)new_cap);
+    if (!grown_nodes) return false;
+    *nodes = grown_nodes;
+    double *grown_costs = realloc(*costs, sizeof(double) * (size_t)new_cap);
+    if (!grown_costs) return false;
+    *costs = grown_costs;
+    *cap = new_cap;
+    return true;
+}
+
+static bool wam_wsp3_ensure_result_cap(WamValue **results, int *result_cap,
+                                       int needed) {
+    if (needed <= *result_cap) return true;
+    int new_cap = *result_cap ? *result_cap : 16;
+    while (new_cap < needed) {
+        if (new_cap > INT_MAX / 2) {
+            new_cap = needed;
+            break;
+        }
+        new_cap *= 2;
+    }
+    WamValue *grown = realloc(*results, sizeof(WamValue) * (size_t)new_cap);
+    if (!grown) return false;
+    *results = grown;
+    *result_cap = new_cap;
+    return true;
+}
+
+static bool wam_wsp3_weight_valid(double weight) {
+    return isfinite(weight) && weight >= 0.0;
+}
+
+/* Finite nonnegative Dijkstra over relation-keyed weighted edges.
+ * docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md */
+static bool wam_collect_weighted_shortest_path(
+    WamState *state,
+    const char *relation,
+    const char *start,
+    const char *target_filter,
+    const double *cost_filter,
+    WamValue **results_out,
+    int *value_count_out) {
+    int edge_n = wam_count_weighted_relation_edges(state, relation);
+    if (edge_n <= 0 || edge_n == INT_MAX) return false;
+
+    const char **dist_nodes = NULL;
+    double *dist_vals = NULL;
+    int dist_cap = 0;
+    int dist_len = 0;
+    const char **pq_nodes = NULL;
+    double *pq_costs = NULL;
+    int pq_cap = 0;
+    int pq_len = 0;
+    int result_cap = edge_n * 2;
+    if (result_cap < 4) result_cap = 4;
+    WamValue *results = malloc(sizeof(WamValue) * (size_t)result_cap);
+    if (!results) return false;
+    if (!wam_wsp3_grow_nodes_costs(&dist_nodes, &dist_vals, &dist_cap, 8) ||
+        !wam_wsp3_grow_nodes_costs(&pq_nodes, &pq_costs, &pq_cap, 8)) {
+        free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_costs);
+        free(results);
+        return false;
+    }
+
+    dist_nodes[0] = start;
+    dist_vals[0] = 0.0;
+    dist_len = 1;
+    pq_nodes[0] = start;
+    pq_costs[0] = 0.0;
+    pq_len = 1;
+
+    while (pq_len > 0) {
+        int best = 0;
+        for (int i = 1; i < pq_len; i++) {
+            if (pq_costs[i] < pq_costs[best]) best = i;
+        }
+        const char *u = pq_nodes[best];
+        double c = pq_costs[best];
+        pq_nodes[best] = pq_nodes[pq_len - 1];
+        pq_costs[best] = pq_costs[pq_len - 1];
+        pq_len--;
+
+        int u_idx = -1;
+        for (int j = 0; j < dist_len; j++) {
+            if (strcmp(dist_nodes[j], u) == 0) {
+                u_idx = j;
+                break;
+            }
+        }
+        /* Discard stale PQ entries. */
+        if (u_idx < 0 || c > dist_vals[u_idx]) continue;
+
+        for (int i = 0; i < state->weighted_relation_edge_count; i++) {
+            WeightedRelationEdge *edge = &state->weighted_relation_edges[i];
+            if (strcmp(edge->relation, relation) != 0) continue;
+            if (strcmp(edge->source, u) != 0) continue;
+            /* Reachable invalid row fails the whole call. */
+            if (!edge->target || !wam_wsp3_weight_valid(edge->weight)) {
+                free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_costs);
+                free(results);
+                return false;
+            }
+            double nc = c + edge->weight;
+            int v_idx = -1;
+            for (int j = 0; j < dist_len; j++) {
+                if (strcmp(dist_nodes[j], edge->target) == 0) {
+                    v_idx = j;
+                    break;
+                }
+            }
+            if (v_idx < 0) {
+                if (!wam_wsp3_grow_nodes_costs(&dist_nodes, &dist_vals,
+                                               &dist_cap, dist_len + 1) ||
+                    !wam_wsp3_grow_nodes_costs(&pq_nodes, &pq_costs,
+                                               &pq_cap, pq_len + 1)) {
+                    free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_costs);
+                    free(results);
+                    return false;
+                }
+                v_idx = dist_len;
+                dist_nodes[v_idx] = edge->target;
+                dist_vals[v_idx] = nc;
+                dist_len++;
+                pq_nodes[pq_len] = edge->target;
+                pq_costs[pq_len] = nc;
+                pq_len++;
+            } else if (nc < dist_vals[v_idx]) {
+                dist_vals[v_idx] = nc;
+                if (!wam_wsp3_grow_nodes_costs(&pq_nodes, &pq_costs,
+                                               &pq_cap, pq_len + 1)) {
+                    free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_costs);
+                    free(results);
+                    return false;
+                }
+                pq_nodes[pq_len] = edge->target;
+                pq_costs[pq_len] = nc;
+                pq_len++;
+            }
         }
     }
-    return 0;
+
+    int value_count = 0;
+    for (int i = 0; i < dist_len; i++) {
+        if (strcmp(dist_nodes[i], start) == 0) continue; /* Source never emitted. */
+        if (target_filter && strcmp(dist_nodes[i], target_filter) != 0) continue;
+        if (cost_filter && dist_vals[i] != *cost_filter) continue;
+        if (!wam_wsp3_ensure_result_cap(&results, &result_cap, value_count + 2)) {
+            free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_costs);
+            free(results);
+            return false;
+        }
+        results[value_count++] = val_atom(dist_nodes[i]);
+        /* Always VAL_FLOAT — never VAL_INT for integral 3.0. */
+        results[value_count++] = val_float(dist_vals[i]);
+    }
+
+    free(dist_nodes);
+    free(dist_vals);
+    free(pq_nodes);
+    free(pq_costs);
+    if (value_count == 0) {
+        free(results);
+        return false;
+    }
+    *results_out = results;
+    *value_count_out = value_count;
+    return true;
 }
 
+bool wam_weighted_shortest_path_handler(WamState *state, const char *pred, int arity) {
+    if (arity != 3) return false;
+    const char *relation = wam_lookup_kernel_edge_relation(state, pred, arity);
+    if (!relation) return false;
+
+    const char *start = NULL;
+    if (!wam_value_as_atom(state, state->A[0], &start)) return false;
+
+    WamValue *target_cell = wam_deref_ptr(state, &state->A[1]);
+    const char *target = NULL;
+    if (target_cell->tag == VAL_ATOM) {
+        target = target_cell->data.atom;
+    } else if (!val_is_unbound(*target_cell)) {
+        return false;
+    }
+
+    WamValue *cost_cell = wam_deref_ptr(state, &state->A[2]);
+    double cost_filter_value = 0.0;
+    const double *cost_filter = NULL;
+    if (cost_cell->tag == VAL_FLOAT) {
+        cost_filter_value = cost_cell->data.floating;
+        cost_filter = &cost_filter_value;
+    } else if (!val_is_unbound(*cost_cell)) {
+        /* Bound Cost must be float; integer 3 does not match float 3.0. */
+        return false;
+    }
+
+    WamValue *results = NULL;
+    int value_count = 0;
+    if (!wam_collect_weighted_shortest_path(state, relation, start, target,
+                                            cost_filter, &results, &value_count)) {
+        return false;
+    }
+
+    /* Bound Target (+ optional Cost): succeed once. Bind Cost when unbound. */
+    if (target) {
+        if (value_count < 2) {
+            free(results);
+            return false;
+        }
+        WamValue cost_v = results[1];
+        free(results);
+        if (cost_filter) return true;
+        return wam_unify(state, &state->A[2], &cost_v);
+    }
+
+    return wam_bind_foreign_pair_stream(state, results, value_count,
+                                        state->P + 1);
+}
+
+/* Relevant heuristic for (node, target): min valid weight; missing → 0.0.
+ * Prefer relation-keyed edges; fall back to global direct_distance_edges
+ * only when no heur_relation is bound. Malformed relevant row → false. */
+static bool wam_astar_heuristic(WamState *state, const char *heur_relation,
+                                const char *node, const char *target,
+                                double *out) {
+    bool saw = false;
+    double best = 0.0;
+    if (heur_relation) {
+        for (int i = 0; i < state->weighted_relation_edge_count; i++) {
+            WeightedRelationEdge *edge = &state->weighted_relation_edges[i];
+            if (strcmp(edge->relation, heur_relation) != 0) continue;
+            if (strcmp(edge->source, node) != 0) continue;
+            if (strcmp(edge->target, target) != 0) continue;
+            if (!wam_wsp3_weight_valid(edge->weight)) return false;
+            if (!saw || edge->weight < best) {
+                best = edge->weight;
+                saw = true;
+            }
+        }
+        *out = saw ? best : 0.0;
+        return true;
+    }
+    for (int i = 0; i < state->direct_distance_edge_count; i++) {
+        WeightedEdge *edge = &state->direct_distance_edges[i];
+        if (strcmp(edge->source, node) != 0) continue;
+        if (strcmp(edge->target, target) != 0) continue;
+        if (!wam_wsp3_weight_valid(edge->weight)) return false;
+        if (!saw || edge->weight < best) {
+            best = edge->weight;
+            saw = true;
+        }
+    }
+    *out = saw ? best : 0.0;
+    return true;
+}
+
+/* Correctness-safe A* for astar_shortest_path4
+ * (docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md).
+ * Final cost is the finite Dijkstra minimum (PQ settled by g-cost).
+ * Heuristic / Dim are secondary scheduling keys only. Dynamic storage. */
 static bool wam_astar_shortest_path_search(WamState *state,
+                                           const char *edge_relation,
+                                           const char *heur_relation,
                                            const char *start,
                                            const char *target,
                                            int dimensionality,
                                            double *weight_out) {
-    const char *nodes[256];
-    double distances[256];
-    bool done[256];
-    int node_count = 0;
-    const double inf = 1.0e100;
     (void)dimensionality;
+    if (strcmp(start, target) == 0) {
+        *weight_out = 0.0;
+        return true;
+    }
 
-    nodes[node_count] = start;
-    distances[node_count] = 0;
-    done[node_count] = false;
-    node_count++;
+    const char **dist_nodes = NULL;
+    double *dist_vals = NULL;
+    int dist_cap = 0;
+    int dist_len = 0;
+    const char **pq_nodes = NULL;
+    double *pq_g = NULL;
+    double *pq_f = NULL;
+    int pq_cap = 0;
+    int pq_len = 0;
 
-    while (true) {
-        int best_idx = -1;
-        double best_score = inf;
-        double best_distance = inf;
-        for (int i = 0; i < node_count; i++) {
-            if (done[i]) continue;
-            double heuristic = wam_astar_heuristic(state, nodes[i], target);
-            double score = distances[i] <= inf - heuristic ? distances[i] + heuristic : inf;
-            if (score < best_score || (score == best_score && distances[i] < best_distance)) {
-                best_idx = i;
-                best_score = score;
-                best_distance = distances[i];
+    if (!wam_wsp3_grow_nodes_costs(&dist_nodes, &dist_vals, &dist_cap, 8)) {
+        return false;
+    }
+    pq_nodes = malloc(sizeof(const char *) * 8);
+    pq_g = malloc(sizeof(double) * 8);
+    pq_f = malloc(sizeof(double) * 8);
+    if (!pq_nodes || !pq_g || !pq_f) {
+        free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+        return false;
+    }
+    pq_cap = 8;
+
+    double h_start = 0.0;
+    if (!wam_astar_heuristic(state, heur_relation, start, target, &h_start)) {
+        free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+        return false;
+    }
+    dist_nodes[0] = start;
+    dist_vals[0] = 0.0;
+    dist_len = 1;
+    pq_nodes[0] = start;
+    pq_g[0] = 0.0;
+    pq_f[0] = h_start; /* secondary only; primary key is g */
+    pq_len = 1;
+
+    while (pq_len > 0) {
+        int best = 0;
+        for (int i = 1; i < pq_len; i++) {
+            if (pq_g[i] < pq_g[best] ||
+                (pq_g[i] == pq_g[best] && pq_f[i] < pq_f[best])) {
+                best = i;
             }
         }
-        if (best_idx < 0) break;
+        const char *u = pq_nodes[best];
+        double g_u = pq_g[best];
+        pq_nodes[best] = pq_nodes[pq_len - 1];
+        pq_g[best] = pq_g[pq_len - 1];
+        pq_f[best] = pq_f[pq_len - 1];
+        pq_len--;
 
-        done[best_idx] = true;
-        const char *node = nodes[best_idx];
-        if (strcmp(node, target) == 0 && best_distance > 0) {
-            *weight_out = best_distance;
+        int u_idx = -1;
+        for (int j = 0; j < dist_len; j++) {
+            if (strcmp(dist_nodes[j], u) == 0) {
+                u_idx = j;
+                break;
+            }
+        }
+        if (u_idx < 0 || g_u > dist_vals[u_idx]) continue;
+
+        /* Settled by g-cost (Dijkstra). Safe even if h overestimates. */
+        if (strcmp(u, target) == 0) {
+            *weight_out = g_u;
+            free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
             return true;
         }
 
-        for (int i = 0; i < state->weighted_edge_count; i++) {
-            WeightedEdge *edge = &state->weighted_edges[i];
-            if (edge->weight < 0) continue;
-            if (strcmp(edge->source, node) != 0) continue;
-            int next_idx = -1;
-            for (int j = 0; j < node_count; j++) {
-                if (strcmp(nodes[j], edge->target) == 0) {
-                    next_idx = j;
+        for (int i = 0; i < state->weighted_relation_edge_count; i++) {
+            WeightedRelationEdge *edge = &state->weighted_relation_edges[i];
+            if (strcmp(edge->relation, edge_relation) != 0) continue;
+            if (strcmp(edge->source, u) != 0) continue;
+            if (!edge->target || !wam_wsp3_weight_valid(edge->weight)) {
+                free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+                return false;
+            }
+            double ng = g_u + edge->weight;
+            int v_idx = -1;
+            for (int j = 0; j < dist_len; j++) {
+                if (strcmp(dist_nodes[j], edge->target) == 0) {
+                    v_idx = j;
                     break;
                 }
             }
-            if (next_idx < 0) {
-                if (node_count >= 256) return false;
-                next_idx = node_count;
-                nodes[next_idx] = edge->target;
-                distances[next_idx] = inf;
-                done[next_idx] = false;
-                node_count++;
-            }
-            if (best_distance <= inf - edge->weight &&
-                best_distance + edge->weight < distances[next_idx]) {
-                distances[next_idx] = best_distance + edge->weight;
+            if (v_idx < 0 || ng < dist_vals[v_idx]) {
+                double h = 0.0;
+                if (!wam_astar_heuristic(state, heur_relation, edge->target,
+                                         target, &h)) {
+                    free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+                    return false;
+                }
+                if (v_idx < 0) {
+                    if (!wam_wsp3_grow_nodes_costs(&dist_nodes, &dist_vals,
+                                                   &dist_cap, dist_len + 1)) {
+                        free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+                        return false;
+                    }
+                    v_idx = dist_len;
+                    dist_nodes[v_idx] = edge->target;
+                    dist_len++;
+                }
+                dist_vals[v_idx] = ng;
+                if (pq_len >= pq_cap) {
+                    int new_cap = pq_cap * 2;
+                    const char **nn = realloc(pq_nodes, sizeof(const char *) * (size_t)new_cap);
+                    double *ng_a = realloc(pq_g, sizeof(double) * (size_t)new_cap);
+                    double *nf = realloc(pq_f, sizeof(double) * (size_t)new_cap);
+                    if (nn) pq_nodes = nn;
+                    if (ng_a) pq_g = ng_a;
+                    if (nf) pq_f = nf;
+                    if (!nn || !ng_a || !nf) {
+                        free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
+                        return false;
+                    }
+                    pq_cap = new_cap;
+                }
+                pq_nodes[pq_len] = edge->target;
+                pq_g[pq_len] = ng;
+                pq_f[pq_len] = h; /* secondary scheduling key only */
+                pq_len++;
             }
         }
     }
+
+    free(dist_nodes); free(dist_vals); free(pq_nodes); free(pq_g); free(pq_f);
     return false;
 }
 
 bool wam_astar_shortest_path_handler(WamState *state, const char *pred, int arity) {
-    (void)pred;
     if (arity != 4) return false;
+    const char *edge_relation = wam_lookup_kernel_edge_relation(state, pred, arity);
+    if (!edge_relation) return false;
+    const char *heur_relation = wam_lookup_kernel_heur_relation(state, pred, arity);
 
     const char *start = NULL;
     const char *target = NULL;
@@ -6725,16 +10360,21 @@ bool wam_astar_shortest_path_handler(WamState *state, const char *pred, int arit
     if (!wam_value_as_atom(state, state->A[1], &target)) return false;
 
     WamValue *dim_cell = wam_deref_ptr(state, &state->A[2]);
-    if (dim_cell->tag != VAL_INT) return false;
+    if (dim_cell->tag != VAL_INT || dim_cell->data.integer <= 0) return false;
+
+    WamValue *cost_cell = wam_deref_ptr(state, &state->A[3]);
+    if (!val_is_unbound(*cost_cell) && cost_cell->tag != VAL_FLOAT) return false;
 
     double result_weight = 0.0;
-    if (!wam_astar_shortest_path_search(state, start, target,
+    if (!wam_astar_shortest_path_search(state, edge_relation, heur_relation,
+                                        start, target,
                                         dim_cell->data.integer,
                                         &result_weight)) {
         return false;
     }
 
-    WamValue weight_value = val_number_from_double(result_weight);
+    /* Always VAL_FLOAT — never VAL_INT for integral 3.0. */
+    WamValue weight_value = val_float(result_weight);
     return wam_unify(state, &state->A[3], &weight_value);
 }
 '.

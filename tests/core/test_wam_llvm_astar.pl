@@ -3,8 +3,8 @@
 % Verifies M5.4: @wam_astar_weighted_distance helper.
 %
 % A* over a %WeightedFact table with a precomputed heuristic double[]
-% indexed by atom ID. Same structure as Dijkstra but orders the
-% frontier by f(n) = g(n) + h(n).
+% indexed by atom ID.  The contract-safe LLVM helper orders by g so an
+% overestimating heuristic cannot change the shortest-path result.
 
 :- use_module('../../src/unifyweaver/targets/wam_llvm_target',
     [write_wam_llvm_project/3,
@@ -26,7 +26,23 @@ test_helper_defined :-
     ),
     ( sub_string(Src, _, _, _, '%heuristic')
     -> format('  PASS: heuristic parameter present~n')
-    ;  format('  FAIL: heuristic parameter missing~n')
+    ;  format('  FAIL: heuristic parameter missing~n'),
+       throw(heuristic_parameter_missing)
+    ),
+    ( sub_string(Src, _, _, _, '%as_dim_positive = icmp sgt i64 %as_dim, 0'),
+      sub_string(Src, _, _, _, '%WamState* %vm, i32 3, %Value %as_result'),
+      sub_string(Src, _, _, _, 'br i1 %as_same, label %as_zero, label %as_check_ids'),
+      sub_string(Src, _, _, _, '%as_zero_result = call %Value @value_float(double 0.0)'),
+      \+ sub_string(Src, _, _, _, '%as_st_ok = call i1 @wam_wsp3_stream_run')
+    -> format('  PASS: canonical bound-target A1/A2/A3/A4 runner present~n')
+    ;  format('  FAIL: canonical astar/4 runner contract missing~n'),
+       throw(canonical_astar4_runner_missing)
+    ),
+    ( sub_string(Src, _, _, _, '; Push with g.  h cannot alter correctness'),
+      \+ sub_string(Src, _, _, _, '%f_new = fadd double %alt, %h_to')
+    -> format('  PASS: frontier is correctness-safe g-primary~n')
+    ;  format('  FAIL: unsafe f-primary frontier remains~n'),
+       throw(unsafe_astar_frontier)
     ),
     catch(delete_file(LLPath), _, true).
 
@@ -86,7 +102,8 @@ entry:
     shell(Cmd, Exit),
     ( Exit == 0
     -> format('  PASS: llvm-as accepted astar caller module~n')
-    ;  format('  FAIL: llvm-as exit=~w~n', [Exit])
+    ;  format('  FAIL: llvm-as exit=~w~n', [Exit]),
+       throw(llvm_as_failed(Exit))
     ),
     ( process_which('opt')
     -> format(atom(VCmd),
@@ -94,7 +111,8 @@ entry:
        shell(VCmd, VExit),
        ( VExit == 0
        -> format('  PASS: opt -passes=verify accepted bitcode~n')
-       ;  format('  FAIL: opt -passes=verify exit=~w~n', [VExit])
+       ;  format('  FAIL: opt -passes=verify exit=~w~n', [VExit]),
+          throw(opt_verify_failed(VExit))
        )
     ;  format('  SKIP: opt not found on PATH~n')
     ),
@@ -114,7 +132,6 @@ process_which(Tool) :-
 
 test_all :-
     test_helper_defined,
-    catch(test_astar_module_validates, E,
-        format('  ERROR in llvm-as test: ~w~n', [E])).
+    test_astar_module_validates.
 
 :- initialization(test_all, main).

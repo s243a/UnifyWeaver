@@ -36,6 +36,8 @@
 :- dynamic user:wam_r_parser_dep/0.
 :- dynamic user:wam_r_t2a_forward/0.
 :- dynamic user:wam_r_t2a_reverse/0.
+:- dynamic user:r_switch_ft/2.
+:- dynamic user:r_switch_ft_backtracks/0.
 
 user:wam_r_fact(a).
 user:wam_r_choice_fact(a).
@@ -543,8 +545,8 @@ test(builtin_call_emitted) :-
             TmpDir),
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
-        assertion(sub_string(Code, _, _, _, 'BuiltinCall("is/2", 2)')),
-        assertion(sub_string(Code, _, _, _, 'BuiltinCall(">/2", 2)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall("is_lax/2", 2)')),
+        assertion(sub_string(Code, _, _, _, 'BuiltinCall(">_lax/2", 2)')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -998,23 +1000,19 @@ e2e_mode_phase2_get_constant :-
 % Mode-analysis phase 3: is/2 specialisations.
 %
 % Two combined changes:
-%   (a) Runtime fast-path: the is/2 handler in call_builtin recognises
-%       simple binary int-only expressions and bypasses eval_arith's
-%       recursion + arith_to_term dispatch, plus fast-binds the target
-%       when it derefs to unbound.
-%   (b) Lowered-emitter inline: the lowered emitter emits is/2 directly,
-%       skipping the WamRuntime$step -> WamRuntime$call_builtin
-%       function-call + switch hop.
+%   (a) Runtime fast-path: builtin_is_lax (shared with is_lax/2 after
+%       ISO-R-0 rewrite) recognises simple binary int-only expressions.
+%   (b) Lowered-emitter inline: emits WamRuntime$builtin_is_lax(...)
+%       directly, skipping step → call_builtin dispatch.
 %
-% Two structural assertions on the codegen (for (b)), plus an e2e
-% Rscript correctness check covering simple + nested + non-int cases
-% (validates both (a) and (b) together).
+% ISO-R-0 always rewrites default is/2 → is_lax/2 (lax default), so the
+% structural assertion looks for the shared lax helper call.
 % ------------------------------------------------------------------
 test(mode_analysis_phase3_is_inlined) :-
     once((
         retractall(user:p3_compute(_, _)),
         % Single-clause arith predicate; lowered emitter will emit the
-        % is/2 inline form for this clause body.
+        % shared is_lax helper for this clause body.
         assertz((user:p3_compute(N, R) :- R is N * 2 + 1)),
         unique_r_tmp_dir('tmp_r_phase3_is_inlined', TmpDir),
         write_wam_r_project(
@@ -1023,14 +1021,12 @@ test(mode_analysis_phase3_is_inlined) :-
             TmpDir),
         directory_file_path(TmpDir, 'R/generated_program.R', Program),
         read_file_to_string(Program, Code, []),
-        % Inline is/2 form present.
         assertion(sub_string(Code, _, _, _,
-            'is_target_ <- WamRuntime$get_reg(state, 1L)')),
-        assertion(sub_string(Code, _, _, _,
-            'is_n_      <- WamRuntime$eval_arith(state, is_expr_,')),
-        % AND the step-delegating form for builtin_call is/2 is absent.
+            'WamRuntime$builtin_is_lax(program, state)')),
         assertion(\+ sub_string(Code, _, _, _,
             'WamRuntime$step(program, state, BuiltinCall("is/2"')),
+        assertion(\+ sub_string(Code, _, _, _,
+            'WamRuntime$step(program, state, BuiltinCall("is_lax/2"')),
         delete_directory_and_contents(TmpDir)
     )).
 
@@ -3779,6 +3775,8 @@ e2e_kernel_wsp3_via_rscript :-
     retractall(user:wedge(_, _, _)),
     retractall(user:wsp(_, _, _)),
     % a -1-> b -2-> c -3-> d, plus a heavy direct a-5->c.
+    % Integral edge facts are fine; emitted costs are always floats
+    % (WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md).
     assertz(user:wedge(a, b, 1)),
     assertz(user:wedge(b, c, 2)),
     assertz(user:wedge(c, d, 3)),
@@ -3787,25 +3785,27 @@ e2e_kernel_wsp3_via_rscript :-
     assertz((user:wsp(X, Y, W) :- user:wedge(X, Z, W1),
                                    user:wsp(Z, Y, W2),
                                    W is W1 + W2)),
-    assertz((user:wsp_direct  :- wsp(a, b, 1))),
-    assertz((user:wsp_shorter :- wsp(a, c, 3))),       % via b, not 5
-    assertz((user:wsp_threehop :- wsp(a, d, 6))),
-    assertz((user:wsp_no_heavy :- wsp(a, c, 5))),      % wrong weight
+    assertz((user:wsp_direct  :- wsp(a, b, 1.0))),
+    assertz((user:wsp_shorter :- wsp(a, c, 3.0))),      % via b, not 5
+    assertz((user:wsp_threehop :- wsp(a, d, 6.0))),
+    assertz((user:wsp_no_heavy :- wsp(a, c, 5.0))),     % wrong weight
+    assertz((user:wsp_no_int   :- wsp(a, b, 1))),       % int != float
     assertz((user:wsp_no_back  :- wsp(d, a, _))),
     assertz((user:wsp_findall :-
         findall(Y-W, wsp(a, Y, W), L),
         msort(L, S),
-        S == [b-1, c-3, d-6])),
+        S == [b-1.0, c-3.0, d-6.0])),
     unique_r_tmp_dir('tmp_r_kernel_wsp3_e2e', TmpDir),
     write_wam_r_project(
         [user:wedge/3, user:wsp/3,
          user:wsp_direct/0, user:wsp_shorter/0, user:wsp_threehop/0,
-         user:wsp_no_heavy/0, user:wsp_no_back/0, user:wsp_findall/0],
+         user:wsp_no_heavy/0, user:wsp_no_int/0, user:wsp_no_back/0,
+         user:wsp_findall/0],
         [],
         TmpDir),
     directory_file_path(TmpDir, 'R', RDir),
     Yes = [wsp_direct, wsp_shorter, wsp_threehop, wsp_findall],
-    No  = [wsp_no_heavy, wsp_no_back],
+    No  = [wsp_no_heavy, wsp_no_int, wsp_no_back],
     forall(member(P, Yes), (
         format(string(Q), '~w/0', [P]),
         run_rscript_query(RDir, Q, Out),
@@ -3825,12 +3825,14 @@ e2e_kernel_wsp3_via_rscript :-
 
 % ------------------------------------------------------------------
 % End-to-end Rscript run for the transitive_parent_distance4
-% kernel. BFS that tracks the immediate predecessor of each
-% reachable node alongside its distance, yielding (target, parent,
-% distance) triples. Direct/multi-hop checks, branch traversal,
-% wrong-parent failure, and a findall over the reachable set
-% (using a struct template t(Y,P,D) since the WAM compiler doesn't
-% accept pair templates like Y-P-D).
+% kernel. Exercises the strict shortest-positive R+ contract over a
+% diamond, self-loop, and longer cycle: exact
+% correlated triples (including both equal-shortest parents), all
+% eight bound/free output modes, ordinary variable aliases, retry to
+% a later compatible tuple, stream exhaustion/cleanup, and invalid
+% source/distance rejection.  The aggregate uses a struct template
+% t(Y,P,D) since the WAM compiler doesn't accept pair templates like
+% Y-P-D.
 % Auto-skips when Rscript is not on PATH.
 % ------------------------------------------------------------------
 test(kernel_tpd4_e2e_rscript) :-
@@ -3843,49 +3845,91 @@ test(kernel_tpd4_e2e_rscript) :-
 e2e_kernel_tpd4_via_rscript :-
     retractall(user:pedge(_, _)),
     retractall(user:pd(_, _, _, _)),
-    % a -> b -> c -> d, plus branch a -> e -> f.
+    % Result order before sorting is b, c, a, d/b, d/c, e/d.  Keeping
+    % the self-loop third makes the T=P alias case skip incompatible
+    % tuples before finding (a,a,1).
     assertz(user:pedge(a, b)),
-    assertz(user:pedge(b, c)),
-    assertz(user:pedge(c, d)),
-    assertz(user:pedge(a, e)),
-    assertz(user:pedge(e, f)),
+    assertz(user:pedge(a, c)),
+    assertz(user:pedge(a, a)),
+    assertz(user:pedge(b, d)),
+    assertz(user:pedge(c, d)),             % equal-shortest second parent
+    assertz(user:pedge(d, e)),
+    assertz(user:pedge(e, a)),             % longer cycle loses to self-loop
+    % Acyclic disconnected component for alias-exhaustion checks.
+    assertz(user:pedge(q, r)),
+    assertz(user:pedge(r, s)),
     assertz((user:pd(X, Y, X, 1) :- user:pedge(X, Y))),
     assertz((user:pd(X, Y, P, D) :- user:pedge(X, Z),
                                      user:pd(Z, Y, P, D1),
                                      D is D1 + 1)),
     assertz((user:tpd_direct  :- pd(a, b, a, 1))),
-    assertz((user:tpd_two     :- pd(a, c, b, 2))),
-    assertz((user:tpd_three   :- pd(a, d, c, 3))),
-    assertz((user:tpd_branch  :- pd(a, e, a, 1))),
-    assertz((user:tpd_branch2 :- pd(a, f, e, 2))),
-    assertz((user:tpd_wrong   :- pd(a, c, a, 2))),
-    assertz((user:tpd_no_back :- pd(b, a, _, _))),
+    assertz((user:tpd_self    :- pd(a, a, a, 1))),
+    % The first d tuple has parent b, so this must transactionally
+    % retry to the later equal-shortest tuple with parent c.
+    assertz((user:tpd_retry_later :- pd(a, d, c, 2))),
+    assertz((user:tpd_three       :- pd(a, e, d, 3))),
+    % All eight modes for the (Target, Parent, Distance) outputs.
+    assertz((user:tpd_mode_fff :- pd(a, _, _, _))),
+    assertz((user:tpd_mode_tff :- pd(a, d, _, _))),
+    assertz((user:tpd_mode_fpf :- pd(a, _, a, _))),
+    assertz((user:tpd_mode_ffd :- pd(a, _, _, 3))),
+    assertz((user:tpd_mode_tpf :- pd(a, d, c, _))),
+    assertz((user:tpd_mode_tfd :- pd(a, d, _, 2))),
+    assertz((user:tpd_mode_fpd :- pd(a, _, a, 1))),
+    assertz((user:tpd_mode_tpd :- pd(a, d, c, 2))),
+    % Ordinary aliases: skip b/c before T=P reaches the self-loop.
+    assertz((user:tpd_alias_later :- pd(a, X, X, 1))),
+    % Exhaust a no-match alias stream, then prove bindings/CPs were
+    % cleaned up by running a known-successful query.
+    assertz((user:tpd_alias_cleanup :-
+        \+ pd(q, X, X, _),
+        pd(a, d, c, 2))),
+    assertz((user:tpd_wrong_parent :- pd(a, d, a, 2))),
+    assertz((user:tpd_no_back      :- pd(s, q, _, _))),
+    assertz((user:tpd_bad_src      :- pd(7, _, _, _))),
+    assertz((user:tpd_bad_d0       :- pd(a, _, _, 0))),
+    assertz((user:tpd_bad_dneg     :- pd(a, _, _, -1))),
+    assertz((user:tpd_bad_datom    :- pd(a, _, _, nope))),
+    % Atom/int alias can never match and must exhaust without leaking.
+    assertz((user:tpd_alias_type   :- pd(a, X, _, X))),
+    assertz((user:tpd_equal_parents :-
+        findall(P, pd(a, d, P, 2), Ps),
+        Ps == [b, c])),
+    assertz((user:tpd_alias_exact :-
+        findall(t(X, D), pd(a, X, X, D), L),
+        L == [t(a, 1)])),
     assertz((user:tpd_findall :-
         findall(t(Y, P, D), pd(a, Y, P, D), L),
         msort(L, S),
-        S == [t(b, a, 1), t(c, b, 2), t(d, c, 3), t(e, a, 1), t(f, e, 2)])),
+        S == [t(a, a, 1), t(b, a, 1), t(c, a, 1),
+              t(d, b, 2), t(d, c, 2), t(e, d, 3)])),
     unique_r_tmp_dir('tmp_r_kernel_tpd4_e2e', TmpDir),
     write_wam_r_project(
         [user:pedge/2, user:pd/4,
-         user:tpd_direct/0, user:tpd_two/0, user:tpd_three/0,
-         user:tpd_branch/0, user:tpd_branch2/0,
-         user:tpd_wrong/0, user:tpd_no_back/0, user:tpd_findall/0],
+         user:tpd_direct/0, user:tpd_self/0,
+         user:tpd_retry_later/0, user:tpd_three/0,
+         user:tpd_mode_fff/0, user:tpd_mode_tff/0,
+         user:tpd_mode_fpf/0, user:tpd_mode_ffd/0,
+         user:tpd_mode_tpf/0, user:tpd_mode_tfd/0,
+         user:tpd_mode_fpd/0, user:tpd_mode_tpd/0,
+         user:tpd_alias_later/0, user:tpd_alias_cleanup/0,
+         user:tpd_equal_parents/0, user:tpd_alias_exact/0,
+         user:tpd_findall/0,
+         user:tpd_wrong_parent/0, user:tpd_no_back/0,
+         user:tpd_bad_src/0, user:tpd_bad_d0/0,
+         user:tpd_bad_dneg/0, user:tpd_bad_datom/0,
+         user:tpd_alias_type/0],
         [],
         TmpDir),
     directory_file_path(TmpDir, 'R', RDir),
-    Yes = [tpd_direct, tpd_two, tpd_three, tpd_branch, tpd_branch2,
-           tpd_findall],
-    No  = [tpd_wrong, tpd_no_back],
-    forall(member(P, Yes), (
-        format(string(Q), '~w/0', [P]),
-        run_rscript_query(RDir, Q, Out),
-        assertion(sub_string(Out, _, _, _, "true"))
-    )),
-    forall(member(P, No), (
-        format(string(Q), '~w/0', [P]),
-        run_rscript_query(RDir, Q, Out),
-        assertion(sub_string(Out, _, _, _, "false"))
-    )),
+    Yes = [tpd_direct, tpd_self, tpd_retry_later, tpd_three,
+           tpd_mode_fff, tpd_mode_tff, tpd_mode_fpf, tpd_mode_ffd,
+           tpd_mode_tpf, tpd_mode_tfd, tpd_mode_fpd, tpd_mode_tpd,
+           tpd_alias_later, tpd_alias_cleanup, tpd_equal_parents,
+           tpd_alias_exact, tpd_findall],
+    No  = [tpd_wrong_parent, tpd_no_back, tpd_bad_src, tpd_bad_d0,
+           tpd_bad_dneg, tpd_bad_datom, tpd_alias_type],
+    assert_rscript_truth_batch(RDir, Yes, No),
     directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
     read_file_to_string(ProgPath, Code, []),
     assertion(sub_string(Code, _, _, _, 'pred_pd_kernel_tpd4 <- function(')),
@@ -3978,12 +4022,10 @@ e2e_kernel_tspd5_via_rscript :-
 
 % ------------------------------------------------------------------
 % End-to-end Rscript run for the category_ancestor kernel.
-% Hierarchical BFS with explicit depth cap (read from
-% user:max_depth/1 at codegen time) and visited-set cycle
-% detection. Result layout is tuple(1) -- yields each reached
-% ancestor. The Visited and Hops slots in the user-side call are
-% inputs / discarded outputs that the native impl doesn't touch.
-% Auto-skips when Rscript is not on PATH.
+% Fleet layout: category_ancestor(+Cat, +Root, -Hops, +Visited).
+% Depth-bounded DFS over the edge predicate streams one hop count
+% per path to Root (shared with Go/Rust/F#). Auto-skips when
+% Rscript is not on PATH.
 % ------------------------------------------------------------------
 test(kernel_ca_e2e_rscript) :-
     once((
@@ -4006,23 +4048,25 @@ e2e_kernel_ca_via_rscript :-
     assertz(user:cparent(dog, poodle)),
     assertz(user:cparent(animal, fish)),
     assertz(user:cparent(fish, salmon)),
-    assertz((user:cat_anc(Cat, Anc, Visited, 0) :-
-        \+ member(Cat, Visited),
-        user:cparent(Cat, Anc))),
-    assertz((user:cat_anc(Cat, Anc, Visited, Hops) :-
-        \+ member(Cat, Visited),
+    assertz((user:cat_anc(Cat, Parent, 1, Visited) :-
+        user:cparent(Cat, Parent),
+        \+ member(Parent, Visited))),
+    assertz((user:cat_anc(Cat, Ancestor, Hops, Visited) :-
+        max_depth(MaxD),
+        length(Visited, Depth),
+        Depth < MaxD, !,
         user:cparent(Cat, Mid),
-        user:cat_anc(Mid, Anc, [Cat | Visited], Hops0),
-        Hops is Hops0 + 1)),
-    assertz((user:ca_direct  :- cat_anc(animal, mammal, [], _))),
-    assertz((user:ca_two     :- cat_anc(animal, dog, [], _))),
-    assertz((user:ca_three   :- cat_anc(animal, poodle, [], _))),
-    assertz((user:ca_branch  :- cat_anc(animal, salmon, [], _))),
-    assertz((user:ca_no_back :- cat_anc(mammal, animal, [], _))),
+        \+ member(Mid, Visited),
+        user:cat_anc(Mid, Ancestor, H1, [Mid|Visited]),
+        Hops is H1 + 1)),
+    assertz((user:ca_direct  :- cat_anc(animal, mammal, 1, []))),
+    assertz((user:ca_two     :- cat_anc(animal, dog, 2, []))),
+    assertz((user:ca_three   :- cat_anc(animal, poodle, 3, []))),
+    assertz((user:ca_branch  :- cat_anc(animal, salmon, 2, []))),
+    assertz((user:ca_no_back :- cat_anc(mammal, animal, _, []))),
     assertz((user:ca_findall :-
-        findall(A, cat_anc(animal, A, [], _), L),
-        msort(L, S),
-        S == [dog, fish, mammal, poodle, salmon])),
+        findall(H, cat_anc(animal, poodle, H, []), L),
+        L == [3])),
     unique_r_tmp_dir('tmp_r_kernel_ca_e2e', TmpDir),
     write_wam_r_project(
         [user:cparent/2, user:cat_anc/4,
@@ -4048,8 +4092,8 @@ e2e_kernel_ca_via_rscript :-
     assertion(sub_string(Code, _, _, _, 'pred_cat_anc_kernel_ca <- function(')),
     assertion(sub_string(Code, _, _, _,
         'assign("cat_anc/4", pred_cat_anc_kernel_ca, envir = shared_program$lowered_dispatch)')),
-    % max_depth(3) should be embedded into the generated dispatch call.
-    assertion(sub_string(Code, _, _, _, '3L, source, ancestor')),
+    % max_depth(3) + fleet hops regs should be embedded in the dispatch call.
+    assertion(sub_string(Code, _, _, _, '3L, source, root, hops, visited')),
     delete_directory_and_contents(TmpDir).
 
 % ------------------------------------------------------------------
@@ -4481,6 +4525,404 @@ r_escape_chars([C | Rest], Out) :-
     r_escape_chars(Rest, OutRest).
 
 % ------------------------------------------------------------------
+% LMDB-R-0: legacy lmdb/1 eager; lmdb_arg1_v1 on-demand + mock proof.
+% ------------------------------------------------------------------
+test(lmdb_r0_source_dispatch_selection) :-
+    once((
+        unique_r_tmp_dir('tmp_r_lmdb_r0_sel', Tmp),
+        write_wam_r_project([user:legedge/2],
+            [r_fact_sources([source(legedge/2, lmdb('/tmp/leg.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P1),
+        read_file_to_string(P1, C1, []),
+        assertion(sub_string(C1,_,_,_,'WamRuntime$read_facts_lmdb(')),
+        assertion(\+ sub_string(C1,_,_,_,'lmdb_arg1_v1_dispatch')),
+        delete_directory_and_contents(Tmp),
+        unique_r_tmp_dir('tmp_r_lmdb_r0_v1', Tmp2),
+        write_wam_r_project([user:ixedge/2],
+            [r_fact_sources([source(ixedge/2, lmdb_arg1_v1('/tmp/ix.lmdb'))])], Tmp2),
+        directory_file_path(Tmp2, 'R/generated_program.R', P2),
+        read_file_to_string(P2, C2, []),
+        assertion(sub_string(C2,_,_,_,'WamRuntime$lmdb_arg1_v1_dispatch(')),
+        assertion(\+ sub_string(C2,_,_,_,'WamRuntime$read_facts_lmdb(')),
+        assertion(\+ sub_string(C2,_,_,_,'build_fact_indexes')),
+        delete_directory_and_contents(Tmp2)
+    )).
+
+% Authoritative mock adapter (no thor required). Conditional real e2e below.
+test(lmdb_arg1_v1_mock_adapter_lookup_and_stream) :-
+    once((rscript_available -> lmdb_arg1_v1_mock_adapter_proof ; true)).
+
+lmdb_arg1_v1_mock_adapter_proof :-
+    unique_r_tmp_dir('tmp_r_lmdb_v1_mock', TmpDir),
+    write_wam_r_project([user:medge/2],
+        [intern_atoms([alice,bob,carol,eve,p,q,r]),
+         r_fact_sources([source(medge/2, lmdb_arg1_v1('mock.lmdb'))])], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    directory_file_path(RDir, 'lmdb_arg1_v1_mock_proof.R', Script),
+    setup_call_cleanup(open(Script, write, S), write(S,
+'source("wam_runtime.R"); source("generated_program.R")
+store <- new.env(parent=emptyenv())
+assign("__uw_schema__",charToRaw("lmdb_arg1_v1"),envir=store)
+assign("a:alice",charToRaw("a:bob\na:eve"),envir=store); assign("a:bob",charToRaw("a:carol"),envir=store)
+listed <<- 0L
+WamRuntime$lmdb_kv_adapter <- list(
+  get=function(path,key) if (exists(key,envir=store,inherits=FALSE)) get(key,envir=store) else NULL,
+  list=function(path){ listed <<- listed+1L; ls(envir=store,all.names=TRUE) },
+  put_all=function(path,pairs){ for(k in names(pairs)) assign(k,charToRaw(pairs[[k]]),envir=store); TRUE })
+it <- intern_table
+rows <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
+stopifnot(length(rows)==2L, listed==0L)
+ys <- vapply(rows, function(t) WamRuntime$string_of(it,t[[2]]$id), character(1))
+stopifnot(setequal(ys,c("bob","eve")))
+stopifnot(length(WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"zzz")), 2L, it))==0L, listed==0L)
+stopifnot(length(WamRuntime$lmdb_arg1_v1_stream("mock.lmdb", 2L, it))==3L, listed>=1L)
+assign("a:p",charToRaw("a:q\ti:3\na:r\ti:4"),envir=store)
+t3 <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"p")), 3L, it)
+stopifnot(length(t3)==2L, t3[[1]][[3]]$val==3L)
+special <- "tab\tline\npercent%"
+special_fact <- list(list(Atom(WamRuntime$intern(it,special)), Atom(WamRuntime$intern(it,"value"))))
+stopifnot(WamRuntime$lmdb_write_facts_arg1_v1("mock.lmdb", special_fact, it))
+special_rows <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,special)), 2L, it)
+stopifnot(length(special_rows)==1L, WamRuntime$string_of(it,special_rows[[1]][[1]]$id)==special)
+st <- WamRuntime$new_state(); st$regs2[[1]] <- Atom(WamRuntime$intern(it,"alice"))
+st$regs2[[2]] <- Unbound("V0"); args <- list(st$regs2[[1]], st$regs2[[2]])
+stopifnot(isTRUE(WamRuntime$fact_table_iter(shared_program, st, "medge/2", rows, args, 1L, 0L)), length(st$cps)>=1L)
+cat("OK\n")
+'), close(S)),
+    process_create(path('Rscript'), [Script],
+                   [cwd(RDir), stdout(pipe(O)), stderr(pipe(E)), process(PID)]),
+    read_string(O, _, Out), close(O), read_string(E, _, Err), close(E),
+    process_wait(PID, Status),
+    assertion(Status == exit(0)), assertion(sub_string(Out,_,_,_,"OK")),
+    assertion(\+ sub_string(Err,_,_,_,"Error")),
+    delete_directory_and_contents(TmpDir).
+
+test(lmdb_arg1_v1_real_binding_e2e_rscript) :-
+    once((rscript_available, r_lmdb_pkg_available -> lmdb_arg1_v1_real_binding_e2e ; true)).
+
+lmdb_arg1_v1_real_binding_e2e :-
+    retractall(user:redge(_,_)), retractall(user:r_hit), retractall(user:r_miss), retractall(user:r_findall),
+    unique_r_tmp_dir('tmp_r_lmdb_v1_real', TmpDir), make_directory_path(TmpDir),
+    directory_file_path(TmpDir, 'redge.lmdb', LmdbPath), atom_string(LmdbPath, LmdbPathStr),
+    r_double_quoted_literal(LmdbPathStr, LmdbPathLit),
+    assertz((user:r_hit :- redge(alice, bob))),
+    assertz((user:r_miss :- redge(zzz, bob))),
+    assertz((user:r_findall :- findall(Y, redge(alice, Y), L), msort(L, S), S == [bob, eve])),
+    write_wam_r_project(
+        [user:redge/2, user:r_hit/0, user:r_miss/0, user:r_findall/0],
+        [intern_atoms([alice,bob,eve,zzz]),
+         r_fact_sources([source(redge/2, lmdb_arg1_v1(LmdbPathStr))])], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    directory_file_path(RDir, 'seed_arg1_v1.R', Seed),
+    format(string(SeedSrc),
+'source("wam_runtime.R"); source("generated_program.R")
+facts <- list(
+  list(Atom(WamRuntime$intern(intern_table,"alice")), Atom(WamRuntime$intern(intern_table,"bob"))),
+  list(Atom(WamRuntime$intern(intern_table,"alice")), Atom(WamRuntime$intern(intern_table,"eve"))),
+  list(Atom(WamRuntime$intern(intern_table,"bob")), Atom(WamRuntime$intern(intern_table,"eve"))))
+stopifnot(WamRuntime$lmdb_write_facts_arg1_v1(~w, facts, intern_table))
+', [LmdbPathLit]),
+    setup_call_cleanup(open(Seed, write, S), write(S, SeedSrc), close(S)),
+    process_create(path('Rscript'), [Seed], [cwd(RDir), stdout(null), stderr(null), process(PID0)]),
+    process_wait(PID0, exit(0)),
+    run_rscript_query(RDir, 'r_hit/0', Hit), run_rscript_query(RDir, 'r_miss/0', Miss),
+    run_rscript_query(RDir, 'r_findall/0', FA),
+    assertion(sub_string(Hit,_,_,_,"true")), assertion(sub_string(Miss,_,_,_,"false")),
+    assertion(sub_string(FA,_,_,_,"true")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% LMDB-R-1: lmdb_materialisation(lazy|eager) over lmdb_arg1_v1.
+% ------------------------------------------------------------------
+test(lmdb_r1_materialisation_codegen) :-
+    once((
+        unique_r_tmp_dir('tmp_r_lmdb_r1_cg', Tmp),
+        forall(member(Opts, [[], [lmdb_materialisation(lazy)]]), (
+            write_wam_r_project([user:lzedge/2],
+                [r_fact_sources([source(lzedge/2, lmdb_arg1_v1('/tmp/lz.lmdb'))])|Opts], Tmp),
+            directory_file_path(Tmp, 'R/generated_program.R', P),
+            read_file_to_string(P, C, []),
+            assertion((sub_string(C,_,_,_,'lmdb_arg1_v1_dispatch('),
+                       sub_string(C,_,_,_,'lmdb_arg1_v1 lazy:'),
+                       \+ sub_string(C,_,_,_,'lmdb_arg1_v1_stream('),
+                       \+ sub_string(C,_,_,_,'build_fact_indexes'),
+                       \+ sub_string(C,_,_,_,'read_facts_lmdb'))),
+            delete_directory_and_contents(Tmp), make_directory_path(Tmp))),
+        write_wam_r_project([user:egedge/2],
+            [lmdb_materialisation(eager),
+             r_fact_sources([source(egedge/2, lmdb_arg1_v1('/tmp/eg.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P2),
+        read_file_to_string(P2, C2, []),
+        assertion((sub_string(C2,_,_,_,'lmdb_arg1_v1_stream('),
+                   sub_string(C2,_,_,_,'build_fact_indexes('),
+                   sub_string(C2,_,_,_,'fact_table_dispatch('),
+                   \+ sub_string(C2,_,_,_,'lmdb_arg1_v1_dispatch('),
+                   \+ sub_string(C2,_,_,_,'read_facts_lmdb'))),
+        delete_directory_and_contents(Tmp),
+        catch((write_wam_r_project([user:bedge/2],
+                    [lmdb_materialisation(weird),
+                     r_fact_sources([source(bedge/2, lmdb_arg1_v1('/tmp/b.lmdb'))])], Tmp),
+               throw(unexpected_success)),
+              error(domain_error(lmdb_materialisation, weird), _), true),
+        write_wam_r_project([user:leg2/2],
+            [lmdb_materialisation(eager),
+             r_fact_sources([source(leg2/2, lmdb('/tmp/leg2.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P3),
+        read_file_to_string(P3, C3, []),
+        assertion((sub_string(C3,_,_,_,'read_facts_lmdb('),
+                   \+ sub_string(C3,_,_,_,'lmdb_arg1_v1_'))),
+        delete_directory_and_contents(Tmp))).
+
+test(lmdb_r1_eager_lazy_runtime_parity) :-
+    once((rscript_available -> lmdb_r1_eager_lazy_runtime_parity ; true)).
+lmdb_r1_eager_lazy_runtime_parity :-
+    unique_r_tmp_dir('tmp_r_lmdb_r1_rt', TmpDir),
+    write_wam_r_project([user:pledge/2],
+        [intern_atoms([alice,bob,carol,eve,p,q,r]),
+         lmdb_materialisation(eager),
+         r_fact_sources([source(pledge/2, lmdb_arg1_v1('mock.lmdb'))])], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    directory_file_path(RDir, 'lmdb_r1_parity.R', Script),
+    setup_call_cleanup(open(Script, write, S), write(S,
+'store <- new.env(parent=emptyenv())
+assign("__uw_schema__",charToRaw("lmdb_arg1_v1"),envir=store)
+assign("a:alice",charToRaw("a:bob\na:eve"),envir=store); assign("a:bob",charToRaw("a:carol"),envir=store)
+assign("a:p",charToRaw("a:q\ti:3\na:r\ti:4"),envir=store)
+nget <<- 0L; nlist <<- 0L
+options(unifyweaver.lmdb_kv_adapter=list(
+  get=function(path,key){ nget <<- nget+1L; if (exists(key,envir=store,inherits=FALSE)) get(key,envir=store) else NULL },
+  list=function(path){ nlist <<- nlist+1L; ls(envir=store,all.names=TRUE) },
+  put_all=function(path,pairs){ for (k in names(pairs)) assign(k,charToRaw(pairs[[k]]),envir=store); TRUE }))
+source("generated_program.R")
+options(unifyweaver.lmdb_kv_adapter=NULL)
+stopifnot(nlist==1L, length(pred_pledge_facts)>=3L, length(pred_pledge_indexes)>0L)
+it <- intern_table; eager_facts <- pred_pledge_facts; eager_idx <- pred_pledge_indexes
+g0 <- nget; l0 <- nlist
+lazy_g <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
+stopifnot(length(lazy_g)==2L, nget>g0, nlist==l0)
+lazy_all <- WamRuntime$lmdb_arg1_v1_stream("mock.lmdb", 2L, it)
+stopifnot(length(lazy_all)==length(eager_facts), nlist>l0)
+nget <<- 0L; nlist <<- 0L
+st <- WamRuntime$new_state(); st$regs2[[1]] <- Atom(WamRuntime$intern(it,"alice"))
+st$regs2[[2]] <- Unbound("V0"); args <- list(st$regs2[[1]], st$regs2[[2]])
+stopifnot(isTRUE(WamRuntime$fact_table_dispatch(shared_program, st, "pledge/2", eager_facts, eager_idx, args, 0L)), nget==0L, nlist==0L, length(st$cps)>=1L)
+t3 <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"p")), 3L, it)
+stopifnot(length(t3)==2L, t3[[1]][[3]]$val==3L)
+stopifnot(length(WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,"zzz")), 2L, it))==0L)
+special <- "tab\tline\npercent%"
+stopifnot(WamRuntime$lmdb_write_facts_arg1_v1("mock.lmdb", list(list(Atom(WamRuntime$intern(it,special)), Atom(WamRuntime$intern(it,"value")))), it))
+sr <- WamRuntime$lmdb_arg1_v1_lookup("mock.lmdb", Atom(WamRuntime$intern(it,special)), 2L, it)
+stopifnot(length(sr)==1L, WamRuntime$string_of(it,sr[[1]][[1]]$id)==special); cat("OK\n")
+'), close(S)),
+    process_create(path('Rscript'), [Script], [cwd(RDir), stdout(pipe(O)), stderr(pipe(E)), process(PID)]),
+    read_string(O, _, Out), close(O), read_string(E, _, Err), close(E),
+    process_wait(PID, Status),
+    assertion(Status == exit(0)), assertion(sub_string(Out,_,_,_,"OK")),
+    assertion(\+ sub_string(Err,_,_,_,"Error")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% LMDB-R-2A: cached materialisation (L1 MRU + bounded L2 LRU).
+% ------------------------------------------------------------------
+test(lmdb_r2a_cached_codegen) :-
+    once((
+        unique_r_tmp_dir('tmp_r_lmdb_r2a_cg', Tmp),
+        write_wam_r_project([user:cedge/2],
+            [lmdb_materialisation(cached),
+             r_fact_sources([source(cedge/2, lmdb_arg1_v1('/tmp/c.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P),
+        read_file_to_string(P, C, []),
+        assertion((sub_string(C,_,_,_,'lmdb_arg1_v1_new_cache(4096L)'),
+                   sub_string(C,_,_,_,'lmdb_arg1_v1_cached_dispatch('),
+                   sub_string(C,_,_,_,'lmdb_arg1_v1 cached cap=4096:'),
+                   \+ sub_string(C,_,_,_,'lmdb_arg1_v1_stream('),
+                   \+ sub_string(C,_,_,_,'read_facts_lmdb'))),
+        delete_directory_and_contents(Tmp), make_directory_path(Tmp),
+        write_wam_r_project([user:cedge2/2],
+            [lmdb_materialisation(cached), lmdb_l2_capacity(2),
+             r_fact_sources([source(cedge2/2, lmdb_arg1_v1('/tmp/c2.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P2),
+        read_file_to_string(P2, C2, []),
+        assertion(sub_string(C2,_,_,_,'lmdb_arg1_v1_new_cache(2L)')),
+        delete_directory_and_contents(Tmp),
+        forall(member(BadCap, [0, -1, 1.5, foo]),
+               catch((write_wam_r_project([user:badc/2],
+                          [lmdb_materialisation(cached), lmdb_l2_capacity(BadCap),
+                           r_fact_sources([source(badc/2, lmdb_arg1_v1('/tmp/x.lmdb'))])], Tmp),
+                      throw(unexpected_success)),
+                     error(domain_error(lmdb_l2_capacity_positive_integer, BadCap), _), true)),
+        write_wam_r_project([user:legc/2],
+            [lmdb_materialisation(cached),
+             r_fact_sources([source(legc/2, lmdb('/tmp/legc.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', P3),
+        read_file_to_string(P3, C3, []),
+        assertion((sub_string(C3,_,_,_,'read_facts_lmdb('),
+                   \+ sub_string(C3,_,_,_,'lmdb_arg1_v1_'))),
+        delete_directory_and_contents(Tmp)
+    )).
+
+test(lmdb_r2a_cached_runtime) :-
+    once((rscript_available -> lmdb_r2a_cached_runtime ; true)).
+lmdb_r2a_cached_runtime :-
+    unique_r_tmp_dir('tmp_r_lmdb_r2a_rt', TmpDir),
+    write_wam_r_project([user:chedge/2],
+        [intern_atoms([alice,bob,carol,eve,p,q,r]),
+         lmdb_materialisation(cached), lmdb_l2_capacity(2),
+         r_fact_sources([source(chedge/2, lmdb_arg1_v1('mock.lmdb'))])], TmpDir),
+    directory_file_path(TmpDir, 'R', RDir),
+    directory_file_path(RDir, 'lmdb_r2a_cached.R', Script),
+    setup_call_cleanup(open(Script, write, S), write(S,
+'store <- new.env(parent=emptyenv())
+assign("__uw_schema__",charToRaw("lmdb_arg1_v1"),envir=store)
+assign("a:alice",charToRaw("a:bob\na:eve"),envir=store)
+assign("a:bob",charToRaw("a:carol"),envir=store)
+assign("a:carol",charToRaw("a:eve"),envir=store)
+assign("a:p",charToRaw("a:q\ti:3\na:r\ti:4"),envir=store)
+nget <<- 0L; nlist <<- 0L
+options(unifyweaver.lmdb_kv_adapter=list(
+  get=function(path,key){ nget <<- nget+1L
+    if (exists(key,envir=store,inherits=FALSE)) get(key,envir=store) else NULL },
+  list=function(path){ nlist <<- nlist+1L; ls(envir=store,all.names=TRUE) },
+  put_all=function(path,pairs){ for (k in names(pairs)) assign(k,charToRaw(pairs[[k]]),envir=store); TRUE }))
+source("generated_program.R")
+stopifnot(nget==0L, nlist==0L)  # cached init: no LMDB I/O
+it <- intern_table; cache <- pred_chedge_lmdb_cache
+# positive miss then hit
+nget <<- 0L; nlist <<- 0L
+r1 <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
+stopifnot(length(r1)==2L, nget>=1L, nlist==0L)
+g0 <- nget
+r1b <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it)
+stopifnot(length(r1b)==2L, nget==g0, nlist==0L)
+# negative miss then hit
+nget <<- 0L
+mz <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"zzz")), 2L, it)
+stopifnot(length(mz)==0L, nget>=1L, nlist==0L)
+g1 <- nget
+mz2 <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"zzz")), 2L, it)
+stopifnot(length(mz2)==0L, nget==g1, nlist==0L)
+# capacity-2 LRU: fill alice,bob then carol evicts alice; alice rereads
+cache2 <- WamRuntime$lmdb_arg1_v1_new_cache(2L)
+nget <<- 0L
+invisible(WamRuntime$lmdb_arg1_v1_cached_lookup(cache2, "mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it))
+invisible(WamRuntime$lmdb_arg1_v1_cached_lookup(cache2, "mock.lmdb", Atom(WamRuntime$intern(it,"bob")), 2L, it))
+stopifnot(identical(cache2$order, c("a:alice","a:bob")))
+nget <<- 0L
+invisible(WamRuntime$lmdb_arg1_v1_cached_lookup(cache2, "mock.lmdb", Atom(WamRuntime$intern(it,"carol")), 2L, it))
+stopifnot(identical(cache2$order, c("a:bob","a:carol")), !exists("a:alice", envir=cache2$l2, inherits=FALSE))
+g2 <- nget
+invisible(WamRuntime$lmdb_arg1_v1_cached_lookup(cache2, "mock.lmdb", Atom(WamRuntime$intern(it,"alice")), 2L, it))
+stopifnot(nget>g2, nlist==0L)  # reread after eviction; still no list
+# generated unbound wrapper streams but leaves its cache/recency unchanged
+ord0 <- cache$order; keys0 <- sort(ls(envir=cache$l2, all.names=TRUE)); l1k0 <- cache$l1_key
+nlist <<- 0L; nget <<- 0L
+stu <- WamRuntime$new_state(); stu$regs2[[1]] <- Unbound("U0"); stu$regs2[[2]] <- Unbound("U1")
+stopifnot(isTRUE(pred_chedge_fact_iter(shared_program, stu)), nlist>=1L)
+stopifnot(identical(cache$order, ord0), identical(sort(ls(envir=cache$l2, all.names=TRUE)), keys0),
+          identical(cache$l1_key, l1k0))
+# generated ground wrapper: warm hit has zero I/O and preserves CP behavior
+st <- WamRuntime$new_state(); st$regs2[[1]] <- Atom(WamRuntime$intern(it,"alice"))
+st$regs2[[2]] <- Unbound("V0"); nget <<- 0L; nlist <<- 0L
+stopifnot(isTRUE(pred_chedge_fact_iter(shared_program, st)), length(st$cps)>=1L,
+          nget==0L, nlist==0L)
+# arity-3 + escaped
+t3 <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,"p")), 3L, it)
+stopifnot(length(t3)==2L, t3[[1]][[3]]$val==3L)
+special <- "tab\tline\npercent%"
+stopifnot(WamRuntime$lmdb_write_facts_arg1_v1("mock.lmdb", list(list(Atom(WamRuntime$intern(it,special)), Atom(WamRuntime$intern(it,"value")))), it))
+sr <- WamRuntime$lmdb_arg1_v1_cached_lookup(cache, "mock.lmdb", Atom(WamRuntime$intern(it,special)), 2L, it)
+stopifnot(length(sr)==1L, WamRuntime$string_of(it,sr[[1]][[1]]$id)==special)
+cat("OK\n")
+'), close(S)),
+    process_create(path('Rscript'), [Script], [cwd(RDir), stdout(pipe(O)), stderr(pipe(E)), process(PID)]),
+    read_string(O, _, Out), close(O), read_string(E, _, Err), close(E),
+    process_wait(PID, Status),
+    assertion(Status == exit(0)), assertion(sub_string(Out,_,_,_,"OK")),
+    assertion(\+ sub_string(Err,_,_,_,"Error")),
+    delete_directory_and_contents(TmpDir).
+
+% ------------------------------------------------------------------
+% LMDB-R-2B: shared auto materialisation resolution (codegen-time).
+% ------------------------------------------------------------------
+%% lmdb_r_mode_markers(+Mode, +Code) — concrete path only, no auto runtime.
+lmdb_r_mode_markers(lazy, C) :-
+    assertion((sub_string(C,_,_,_,'lmdb_arg1_v1_dispatch('),
+               sub_string(C,_,_,_,'lmdb_arg1_v1 lazy:'),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_stream('),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_cached_dispatch('))).
+lmdb_r_mode_markers(eager, C) :-
+    assertion((sub_string(C,_,_,_,'lmdb_arg1_v1_stream('),
+               sub_string(C,_,_,_,'build_fact_indexes('),
+               sub_string(C,_,_,_,'lmdb_arg1_v1 eager:'),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_dispatch('),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_cached_dispatch('))).
+lmdb_r_mode_markers(cached, C) :-
+    assertion((sub_string(C,_,_,_,'lmdb_arg1_v1_cached_dispatch('),
+               sub_string(C,_,_,_,'lmdb_arg1_v1_new_cache('),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_dispatch('),
+               \+ sub_string(C,_,_,_,'lmdb_arg1_v1_stream('))).
+
+lmdb_r_gen_mode(Tmp, ExtraOpts, Mode) :-
+    append([r_fact_sources([source(aedge/2, lmdb_arg1_v1('/tmp/a.lmdb'))])],
+           ExtraOpts, Opts),
+    write_wam_r_project([user:aedge/2], Opts, Tmp),
+    directory_file_path(Tmp, 'R/generated_program.R', P),
+    read_file_to_string(P, C, []),
+    lmdb_r_mode_markers(Mode, C),
+    assertion(\+ sub_string(C,_,_,_,'resolve_auto_lmdb')),
+    delete_directory_and_contents(Tmp), make_directory_path(Tmp).
+
+test(lmdb_r2b_auto_materialisation_codegen) :-
+    once((
+        unique_r_tmp_dir('tmp_r_lmdb_r2b', Tmp),
+        % 1) absent option → lazy (must not invoke shared no-metadata eager)
+        lmdb_r_gen_mode(Tmp, [], lazy),
+        % 2) explicit modes pass through
+        forall(member(M, [lazy, eager, cached]),
+               lmdb_r_gen_mode(Tmp, [lmdb_materialisation(M)], M)),
+        % 3) auto → eager at 1k
+        lmdb_r_gen_mode(Tmp, [lmdb_materialisation(auto), fact_count(1000)], eager),
+        % 4) auto → cached (default + explicit capacity)
+        lmdb_r_gen_mode(Tmp, [lmdb_materialisation(auto), fact_count(297000)], cached),
+        write_wam_r_project([user:aedge/2],
+            [lmdb_materialisation(auto), fact_count(297000), lmdb_l2_capacity(7),
+             r_fact_sources([source(aedge/2, lmdb_arg1_v1('/tmp/a.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', PCap),
+        read_file_to_string(PCap, CCap, []),
+        assertion(sub_string(CCap,_,_,_,'lmdb_arg1_v1_new_cache(7L)')),
+        lmdb_r_mode_markers(cached, CCap),
+        delete_directory_and_contents(Tmp), make_directory_path(Tmp),
+        % 5) large + segregated → lazy
+        lmdb_r_gen_mode(Tmp,
+            [lmdb_materialisation(auto), fact_count(9930000),
+             workload_segregated(true)], lazy),
+        % 6) budget-overflow branches
+        lmdb_r_gen_mode(Tmp,
+            [lmdb_materialisation(auto), fact_count(2000), memory_budget(1000)],
+            cached),
+        lmdb_r_gen_mode(Tmp,
+            [lmdb_materialisation(auto), fact_count(2000), memory_budget(1000),
+             workload_segregated(true)], lazy),
+        % 7) explicit auto, no metadata → shared resolver (eager)
+        lmdb_r_gen_mode(Tmp, [lmdb_materialisation(auto)], eager),
+        % 8) unknown mode → generic domain_error
+        catch((write_wam_r_project([user:aedge/2],
+                    [lmdb_materialisation(bogus),
+                     r_fact_sources([source(aedge/2, lmdb_arg1_v1('/tmp/a.lmdb'))])], Tmp),
+               throw(unexpected_success)),
+              error(domain_error(lmdb_materialisation, bogus), _), true),
+        % 9) legacy lmdb(Path) unchanged under auto metadata
+        write_wam_r_project([user:legb/2],
+            [lmdb_materialisation(auto), fact_count(297000),
+             r_fact_sources([source(legb/2, lmdb('/tmp/legb.lmdb'))])], Tmp),
+        directory_file_path(Tmp, 'R/generated_program.R', PLeg),
+        read_file_to_string(PLeg, CLeg, []),
+        assertion((sub_string(CLeg,_,_,_,'read_facts_lmdb('),
+                   \+ sub_string(CLeg,_,_,_,'lmdb_arg1_v1_'))),
+        delete_directory_and_contents(Tmp)
+    )).
+
+% ------------------------------------------------------------------
 % End-to-end: cut barrier truncates state$cps back to the depth at the
 % predicate's call site, so a `!` in a clause body that has just
 % returned from a multi-clause helper drops both the helper's leftover
@@ -4770,6 +5212,113 @@ test(r_wam_bindings_list_parity) :-
     assertion(r_wam_bindings:r_wam_binding(nth1/3, _, _, _, _)),
     assertion(r_wam_bindings:r_wam_binding(is_list/1, _, _, _, _)),
     assertion(r_wam_bindings:r_wam_binding(ground/1, _, _, _, _)).
+
+% ------------------------------------------------------------------
+% R-SWITCH-INDEX-CONFORMANCE: indexing hints reuse the safe linear no-op
+% ------------------------------------------------------------------
+test(switch_on_constant_fallthrough_is_linear_noop) :-
+    once(wam_parts_to_r(
+        ["switch_on_constant_fallthrough", "0:default", "1:L_cfib_2_2"],
+        [], Lit)),
+    assertion(Lit == 'SwitchOnTerm()').
+
+test(switch_on_term_a2_is_switch_on_term_noop) :-
+    once(wam_parts_to_r(["switch_on_term_a2", "0", "0", "default"], [], Lit)),
+    assertion(Lit == 'SwitchOnTerm()').
+
+test(switch_on_constant_fallthrough_preserves_backtracking,
+     [condition(rscript_available)]) :-
+    retractall(user:r_switch_ft(_, _)),
+    retractall(user:r_switch_ft_backtracks),
+    assertz(user:r_switch_ft(a, first)),
+    assertz(user:r_switch_ft(b, specific)),
+    assertz(user:r_switch_ft(_, fallback)),
+    assertz((user:r_switch_ft_backtracks :-
+        user:r_switch_ft(b, Value), Value = fallback)),
+    unique_r_tmp_dir('tmp_r_switch_ft', TmpDir),
+    call_cleanup(
+        ( write_wam_r_project(
+              [user:r_switch_ft/2, user:r_switch_ft_backtracks/0],
+              [emit_mode(interpreter), fact_table_layout(off)], TmpDir),
+          directory_file_path(TmpDir, 'R', RDir),
+          run_rscript_query(RDir, 'r_switch_ft_backtracks/0', Out),
+          assertion(once(sub_string(Out, _, _, _, "true")))
+        ),
+        ( ( exists_directory(TmpDir)
+          -> delete_directory_and_contents(TmpDir)
+          ;  true
+          ),
+          retractall(user:r_switch_ft(_, _)),
+          retractall(user:r_switch_ft_backtracks)
+        )),
+    !.
+
+% ------------------------------------------------------------------
+% R-A2-INDEX-FALLBACK-COVERAGE: remaining A2 hints → SwitchOnTerm()
+% ------------------------------------------------------------------
+r_a2_switch_token(["switch_on_constant_a2", "a:default", "b:L2"]).
+r_a2_switch_token(["switch_on_constant_a2_fallthrough", "a:default", "b:L2"]).
+r_a2_switch_token(["switch_on_structure_a2", "f/1:default", "g/1:L2"]).
+
+test(r_a2_switch_hints_are_linear_noop) :-
+    forall(r_a2_switch_token(Parts),
+           ( once(wam_parts_to_r(Parts, [], Lit)),
+             assertion(Lit == 'SwitchOnTerm()') )), !.
+
+test(r_a2_fallthrough_preserves_backtracking,
+     [condition(rscript_available)]) :-
+    maplist(retractall,
+            [user:r_a2_ft(_,_), user:r_a2_ft_backtracks,
+             user:r_a2_const(_,_), user:r_a2_const_ok,
+             user:r_a2_struct(_,_), user:r_a2_struct_ok]),
+    % Free A1 + constant/var A2 ⇒ switch_on_constant_a2_fallthrough.
+    assertz((user:r_a2_ft(Out, a) :- Out = first)),
+    assertz((user:r_a2_ft(Out, b) :- Out = specific)),
+    assertz((user:r_a2_ft(Out, _) :- Out = fallback)),
+    assertz((user:r_a2_ft_backtracks :-
+                user:r_a2_ft(Value, b), Value = fallback)),
+    % Free A1 + all-constant A2 ⇒ switch_on_constant_a2.
+    assertz((user:r_a2_const(Out, a) :- Out = ok)),
+    assertz((user:r_a2_const(Out, b) :- Out = ok)),
+    assertz((user:r_a2_const(Out, c) :- Out = ok)),
+    assertz((user:r_a2_const_ok :- user:r_a2_const(ok, b))),
+    % Free A1 + compound A2 ⇒ switch_on_structure_a2.
+    assertz((user:r_a2_struct(Out, f(_)) :- Out = ok)),
+    assertz((user:r_a2_struct(Out, g(_)) :- Out = ok)),
+    assertz((user:r_a2_struct(Out, h(_)) :- Out = ok)),
+    assertz((user:r_a2_struct_ok :- user:r_a2_struct(ok, g(1)))),
+    compile_predicate_to_wam_items(user:r_a2_ft/2, [], FtItems),
+    assertion(member(switch_on_constant_a2_fallthrough(_), FtItems)),
+    compile_predicate_to_wam_items(user:r_a2_const/2, [], ConstItems),
+    assertion(member(switch_on_constant_a2(_), ConstItems)),
+    compile_predicate_to_wam_items(user:r_a2_struct/2, [], StructItems),
+    assertion(member(switch_on_structure_a2(_), StructItems)),
+    unique_r_tmp_dir('tmp_r_a2_ft', TmpDir),
+    call_cleanup(
+        ( write_wam_r_project(
+              [user:r_a2_ft/2, user:r_a2_ft_backtracks/0,
+               user:r_a2_const/2, user:r_a2_const_ok/0,
+               user:r_a2_struct/2, user:r_a2_struct_ok/0],
+              [emit_mode(interpreter), fact_table_layout(off)], TmpDir),
+          directory_file_path(TmpDir, 'R/generated_program.R', ProgPath),
+          read_file_to_string(ProgPath, Prog, []),
+          assertion(\+ sub_string(Prog, _, _, _, "Raw(\"switch_on_")),
+          assertion(sub_string(Prog, _, _, _, "SwitchOnTerm()")),
+          directory_file_path(TmpDir, 'R', RDir),
+          run_rscript_query(RDir, 'r_a2_ft_backtracks/0', FtOut),
+          assertion(once(sub_string(FtOut, _, _, _, "true"))),
+          run_rscript_query(RDir, 'r_a2_const_ok/0', ConstOut),
+          assertion(once(sub_string(ConstOut, _, _, _, "true"))),
+          run_rscript_query(RDir, 'r_a2_struct_ok/0', StructOut),
+          assertion(once(sub_string(StructOut, _, _, _, "true")))
+        ),
+        ( ( exists_directory(TmpDir)
+          -> delete_directory_and_contents(TmpDir) ; true ),
+          maplist(retractall,
+                  [user:r_a2_ft(_,_), user:r_a2_ft_backtracks,
+                    user:r_a2_const(_,_), user:r_a2_const_ok,
+                    user:r_a2_struct(_,_), user:r_a2_struct_ok])
+        )), !.
 
 :- end_tests(wam_r_generator).
 

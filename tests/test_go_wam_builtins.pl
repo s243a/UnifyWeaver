@@ -729,6 +729,42 @@ test(builtins_execution) :-
                 read_line_to_string(S, L4), L4 = end_of_file,
                 close(S)
             )),
+          assertz(user:test_read_string_builtin :-
+            (   open('string.txt', read, S),
+                peek_char(S, C0), C0 = h,
+                read_string(S, 5, N1, _, S1), N1 =:= 5, S1 = hello,
+                read_string(S, 100, N2, _, S2), N2 =:= 6, S2 = ' world',
+                read_string(S, 3, N3, _, S3), N3 =:= 0, atom_length(S3, 0),
+                close(S),
+                \+ read_string(S, 1, _, _, _)
+            )),
+          assertz(user:test_stream_eof_builtin :-
+            (   open('eof.txt', read, S),
+                \+ at_end_of_stream(S),
+                peek_char(S, C0), C0 = a,
+                \+ at_end_of_stream(S),
+                get_char(S, C1), C1 = a,
+                \+ at_end_of_stream(S),
+                read_string(S, 1, N, _, S1), N =:= 1, S1 = b,
+                at_end_of_stream(S),
+                read_string(S, 1, N2, _, S2), N2 =:= 0, atom_length(S2, 0),
+                at_end_of_stream(S),
+                close(S),
+                \+ at_end_of_stream(S)
+            )),
+          assertz(user:test_stream_output_helper_builtin :-
+            (   open('stream_helpers.txt', write, Out),
+                write_to_stream(Out, alpha),
+                nl_to_stream(Out),
+                write_to_stream(Out, beta),
+                close(Out),
+                \+ write_to_stream(Out, closed),
+                \+ nl_to_stream(Out),
+                open('stream_helpers.txt', read, In),
+                \+ write_to_stream(In, bad),
+                \+ nl_to_stream(In),
+                close(In)
+            )),
           assertz(user:test_format_builtin :-
             (   format('fmt_one ~~ ok~n'),
                 format('fmt_two ~w ~w~~~n', [go, 42]),
@@ -802,6 +838,9 @@ test(builtins_execution) :-
           retractall(user:test_char_input_builtin),
           retractall(user:test_stream_char_io_builtin),
           retractall(user:test_read_line_builtin),
+          retractall(user:test_read_string_builtin),
+          retractall(user:test_stream_eof_builtin),
+          retractall(user:test_stream_output_helper_builtin),
           retractall(user:test_format_builtin),
           retractall(user:test_set_aggregate),
           retractall(user:test_unify_builtin),
@@ -812,7 +851,7 @@ test(builtins_execution) :-
     ).
 
 run_builtins_test(TmpDir) :-
-    Predicates = [test_builtins/1, test_arithmetic_expr_builtin/0, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_append_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_keysort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_output_builtin/0, test_char_input_builtin/0, test_stream_char_io_builtin/0, test_read_line_builtin/0, test_format_builtin/0, test_tab_builtin/0, test_env_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
+    Predicates = [test_builtins/1, test_arithmetic_expr_builtin/0, test_term_builtins/0, test_member_collect/0, test_memberchk_builtin/0, test_select_builtin/0, test_delete_builtin/0, test_append_builtin/0, test_subtract_builtin/0, test_intersection_builtin/0, test_union_builtin/0, test_permutation_builtin/0, test_reverse_builtin/0, test_last_builtin/0, test_nth_builtin/0, test_numlist_builtin/0, test_between_builtin/0, test_list_numeric_builtin/0, test_list_to_set_builtin/0, test_sort_builtin/0, test_keysort_builtin/0, test_term_order_builtin/0, test_ground_builtin/0, test_sub_atom_builtin/0, test_char_type_builtin/0, test_string_code_builtin/0, test_split_string_builtin/0, test_output_builtin/0, test_char_input_builtin/0, test_stream_char_io_builtin/0, test_read_line_builtin/0, test_read_string_builtin/0, test_stream_eof_builtin/0, test_stream_output_helper_builtin/0, test_format_builtin/0, test_tab_builtin/0, test_env_builtin/0, test_succ_builtin/0, test_atom_number_builtin/0, test_atom_case_builtin/0, test_atom_concat_builtin/0, test_atom_string_length_builtin/0, test_char_code_builtin/0, test_atom_codes_builtin/0, test_atom_chars_builtin/0, test_string_list_builtin/0, test_number_list_builtin/0, test_atom_string_builtin/0, test_set_aggregate/0, test_unify_builtin/0, test_neg_fact/1, test_neg_goal/0, test_neg_goal_fail/0],
     Options = [module_name(builtin_test), prefer_wam(true)],
 
     write_wam_go_project(Predicates, Options, TmpDir),
@@ -894,6 +933,10 @@ run_builtins_test(TmpDir) :-
     assertion(sub_string(LibCode, _, _, _, 'Op: "open/3"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "close/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "read_line_to_string/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "read_string/5"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "at_end_of_stream/1"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "write_to_stream/2"')),
+    assertion(sub_string(LibCode, _, _, _, 'Op: "nl_to_stream/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "format/1"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "format/2"')),
     assertion(sub_string(LibCode, _, _, _, 'Op: "succ/2"')),
@@ -1311,6 +1354,41 @@ func main() {
 		fmt.Println("READ_LINE_FAILURE")
 	}
 
+	if writeErr := os.WriteFile("string.txt", []byte("hello world"), 0644); writeErr != nil {
+		panic(writeErr)
+	}
+	readStringVM := wam.NewWamState(wam.Test_read_string_builtinCode, wam.Test_read_string_builtinLabels)
+	readStringVM.PC = wam.Test_read_string_builtinStartPC
+	if readStringVM.Run() {
+		fmt.Println("READ_STRING_SUCCESS")
+	} else {
+		fmt.Println("READ_STRING_FAILURE")
+	}
+
+	if writeErr := os.WriteFile("eof.txt", []byte("ab"), 0644); writeErr != nil {
+		panic(writeErr)
+	}
+	streamEofVM := wam.NewWamState(wam.Test_stream_eof_builtinCode, wam.Test_stream_eof_builtinLabels)
+	streamEofVM.PC = wam.Test_stream_eof_builtinStartPC
+	if streamEofVM.Run() {
+		fmt.Println("STREAM_EOF_SUCCESS")
+	} else {
+		fmt.Println("STREAM_EOF_FAILURE")
+	}
+
+	streamOutputHelperVM := wam.NewWamState(wam.Test_stream_output_helper_builtinCode, wam.Test_stream_output_helper_builtinLabels)
+	streamOutputHelperVM.PC = wam.Test_stream_output_helper_builtinStartPC
+	if streamOutputHelperVM.Run() {
+		fmt.Println("STREAM_OUTPUT_HELPER_SUCCESS")
+	} else {
+		fmt.Println("STREAM_OUTPUT_HELPER_FAILURE")
+	}
+	streamHelperOut, streamHelperErr := os.ReadFile("stream_helpers.txt")
+	if streamHelperErr != nil {
+		panic(streamHelperErr)
+	}
+	fmt.Printf("STREAM_OUTPUT_HELPER_OUTPUT=%q\\n", string(streamHelperOut))
+
 	formatVM := wam.NewWamState(wam.Test_format_builtinCode, wam.Test_format_builtinLabels)
 	formatVM.PC = wam.Test_format_builtinStartPC
 	if formatVM.Run() {
@@ -1413,13 +1491,20 @@ func main() {
         assertion(sub_string(FullOutput, _, _, _, "STREAM_CHAR_IO_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "STREAM_CHAR_IO_OUTPUT=\"xy\\n\"")),
         assertion(sub_string(FullOutput, _, _, _, "READ_LINE_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "READ_STRING_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "STREAM_EOF_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "STREAM_OUTPUT_HELPER_SUCCESS")),
+        assertion(sub_string(FullOutput, _, _, _, "STREAM_OUTPUT_HELPER_OUTPUT=\"alpha\\nbeta\"")),
         assertion(sub_string(FullOutput, _, _, _, "'Hello World'")),
         assertion(sub_string(FullOutput, _, _, _, "[a, 'two words', 42]")),
         assertion(sub_string(FullOutput, _, _, _, "pair('two words', 7)")),
         assertion(sub_string(FullOutput, _, _, _, "pair('two words', 7)\ngo\n")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_one ~ ok")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_two go 42~")),
-        assertion(sub_string(FullOutput, _, _, _, "fmt_more atom_arg 17 pair/2/2 quoted_atom")),
+        % ~p renders the compound with its arguments, like SWI's write/1.
+        % This used to read "pair/2/2" -- Value.String() on a *Structure
+        % printed functor/arity and dropped the arguments entirely.
+        assertion(sub_string(FullOutput, _, _, _, "fmt_more atom_arg 17 pair(a, b) quoted_atom")),
         assertion(sub_string(FullOutput, _, _, _, "fmt_string atom_text ok")),
         assertion(sub_string(FullOutput, _, _, _, "FORMAT_SUCCESS")),
         assertion(sub_string(FullOutput, _, _, _, "SET_SUCCESS")),

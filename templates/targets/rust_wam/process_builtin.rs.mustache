@@ -1,0 +1,252 @@
+{{match part}}{{case helpers}}
+    fn shell_process(command: &str) -> std::process::Command {
+        #[cfg(windows)]
+        let mut process = {
+            let mut process = std::process::Command::new("cmd");
+            process.arg("/C");
+            process
+        };
+        #[cfg(not(windows))]
+        let mut process = {
+            let mut process = std::process::Command::new("/bin/sh");
+            process.arg("-c");
+            process
+        };
+        process.arg(command);
+        process
+    }
+
+    #[cfg(unix)]
+    fn process_identity(op: &str) -> Option<i64> {
+        extern "C" {
+            fn getuid() -> std::os::raw::c_uint;
+            fn geteuid() -> std::os::raw::c_uint;
+            fn getgid() -> std::os::raw::c_uint;
+            fn getegid() -> std::os::raw::c_uint;
+            fn getppid() -> std::os::raw::c_int;
+            fn getpgrp() -> std::os::raw::c_int;
+        }
+
+        let value = unsafe {
+            match op {
+                "getuid/1" => i64::from(getuid()),
+                "geteuid/1" => i64::from(geteuid()),
+                "getgid/1" => i64::from(getgid()),
+                "getegid/1" => i64::from(getegid()),
+                "getppid/1" => i64::from(getppid()),
+                "getpgrp/1" => i64::from(getpgrp()),
+                _ => return None,
+            }
+        };
+        Some(value)
+    }
+
+    #[cfg(not(unix))]
+    fn process_identity(_op: &str) -> Option<i64> {
+        None
+    }
+
+    #[cfg(unix)]
+    fn system_name(op: &str) -> Option<String> {
+        if op == "gethostname/1" {
+            extern "C" {
+                fn gethostname(
+                    name: *mut std::os::raw::c_char,
+                    len: usize,
+                ) -> std::os::raw::c_int;
+            }
+
+            let mut buffer = [0u8; 256];
+            if unsafe { gethostname(buffer.as_mut_ptr().cast(), buffer.len()) } != 0 {
+                return None;
+            }
+            let end = buffer.iter().position(|byte| *byte == 0)?;
+            return String::from_utf8(buffer[..end].to_vec()).ok();
+        }
+
+        let field_index = match op {
+            "uname_sysname/1" => 0usize,
+            "uname_machine/1" => 4usize,
+            _ => return None,
+        };
+        let field_width = if cfg!(any(target_os = "linux", target_os = "android")) {
+            65usize
+        } else if cfg!(any(
+            target_os = "macos", target_os = "ios", target_os = "tvos",
+            target_os = "watchos", target_os = "freebsd", target_os = "dragonfly",
+            target_os = "netbsd", target_os = "openbsd"
+        )) {
+            256usize
+        } else if cfg!(any(target_os = "solaris", target_os = "illumos")) {
+            257usize
+        } else {
+            return None;
+        };
+
+        #[repr(align(16))]
+        struct UnameBuffer([u8; 2048]);
+        extern "C" {
+            fn uname(name: *mut std::ffi::c_void) -> std::os::raw::c_int;
+        }
+
+        let mut buffer = UnameBuffer([0u8; 2048]);
+        if unsafe { uname(buffer.0.as_mut_ptr().cast()) } != 0 {
+            return None;
+        }
+        let start = field_index * field_width;
+        let field = &buffer.0[start..start + field_width];
+        let end = field.iter().position(|byte| *byte == 0)?;
+        String::from_utf8(field[..end].to_vec()).ok()
+    }
+
+    #[cfg(not(unix))]
+    fn system_name(_op: &str) -> Option<String> {
+        None
+    }
+{{case arms}}
+            "getuid/1" | "geteuid/1" | "getgid/1" | "getegid/1"
+            | "getppid/1" | "getpgrp/1" => {
+                let identity = match Self::process_identity(op) {
+                    Some(identity) => Value::Integer(identity),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &identity) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "gethostname/1" | "uname_sysname/1" | "uname_machine/1" => {
+                let name = match Self::system_name(op) {
+                    Some(name) => Value::Atom(name.into()),
+                    None => return false,
+                };
+                let output = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &name) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "shell/1" => {
+                let command = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(command)) => command,
+                    _ => return false,
+                };
+                match Self::shell_process(&command).status() {
+                    Ok(status) if status.success() => { self.pc += 1; true }
+                    _ => false,
+                }
+            }
+            "shell/2" => {
+                let command = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(command)) => command,
+                    _ => return false,
+                };
+                let status = match Self::shell_process(&command).status() {
+                    Ok(status) => status,
+                    Err(_) => return false,
+                };
+                let code = Value::Integer(i64::from(status.code().unwrap_or(1)));
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &code) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "system_to_atom/2" => {
+                let command = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(command)) => command,
+                    _ => return false,
+                };
+                let captured = match Self::shell_process(&command).output() {
+                    Ok(captured) => captured,
+                    Err(_) => return false,
+                };
+                if captured.stdout.len() > 65_536 {
+                    return false;
+                }
+                let text = match String::from_utf8(captured.stdout) {
+                    Ok(text) => text,
+                    Err(_) => return false,
+                };
+                let output = self.get_reg_raw("A2").unwrap_or(Value::Uninit);
+                let mark = self.trail.len();
+                if self.unify(&output, &Value::Atom(text.into())) {
+                    self.pc += 1; true
+                } else {
+                    self.unwind_trail_to(mark);
+                    false
+                }
+            }
+            "atom_to_system/2" => {
+                let command = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(command)) => command,
+                    _ => return false,
+                };
+                let content = match self.get_reg_raw("A2")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Atom(content)) => content,
+                    _ => return false,
+                };
+                let mut child = match Self::shell_process(&command)
+                    .stdin(std::process::Stdio::piped())
+                    .spawn() {
+                    Ok(child) => child,
+                    Err(_) => return false,
+                };
+                let wrote = match child.stdin.take() {
+                    Some(mut stdin) => std::io::Write::write_all(
+                        &mut stdin, content.as_bytes()).is_ok(),
+                    None => false,
+                };
+                if !wrote {
+                    let _ = child.wait();
+                    return false;
+                }
+                match child.wait() {
+                    Ok(status) if status.success() => { self.pc += 1; true }
+                    _ => false,
+                }
+            }
+            "sleep/1" => {
+                let seconds = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let duration = match seconds {
+                    Value::Integer(seconds) if seconds >= 0 => {
+                        std::time::Duration::from_secs(seconds as u64)
+                    }
+                    Value::Float(seconds)
+                        if seconds.is_finite()
+                            && seconds >= 0.0
+                            && seconds <= i64::MAX as f64 => {
+                        std::time::Duration::from_secs_f64(seconds)
+                    }
+                    _ => return false,
+                };
+                std::thread::sleep(duration);
+                self.pc += 1; true
+            }
+            "halt/0" => std::process::exit(0),
+            "halt/1" => {
+                let code = match self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v))) {
+                    Some(Value::Integer(code)) => code,
+                    _ => return false,
+                };
+                std::process::exit(code as i32)
+            }
+{{/match}}

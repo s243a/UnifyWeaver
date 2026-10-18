@@ -1,0 +1,32 @@
+/// Native foreign acceleration for the shared transitive_distance3 pattern.
+/// Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
+///
+/// Contract: dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md).
+/// Emit each reachable Target exactly once with its minimum positive
+/// edge distance. Source appears only for a self-loop (distance 1) or
+/// the shortest nonempty cycle back to Source — never distance 0.
+///
+/// Organization: Mustache kept (non-trivial BFS body; mirrors F# TC2 and
+/// Haskell kernel_transitive_distance.hs.mustache). Lookup-function
+/// style matches nativeKernel_transitive_closure. Visited tracks nodes
+/// discovered *via an edge* — do not seed with Source. Distinct from
+/// reachableToRoot* (no distances; reverse/child edges; includes root).
+///
+/// Returns (interned Target id, distance) pairs; executeForeign streams
+/// them via the existing multi-output binder + FFIStreamRetry.
+let nativeKernel_transitive_distance
+    (edges: int -> int list)
+    (source: int) : (int * int) list =
+    let visited = System.Collections.Generic.HashSet<int>()
+    let acc = System.Collections.Generic.List<int * int>()
+    let mutable frontier = [(source, 0)]
+    while not (List.isEmpty frontier) do
+        let next = System.Collections.Generic.List<int * int>()
+        for (node, d) in frontier do
+            let nd = d + 1
+            for n in edges node do
+                if visited.Add(n) then
+                    acc.Add((n, nd))
+                    next.Add((n, nd))
+        frontier <- List.ofSeq next
+    List.ofSeq acc

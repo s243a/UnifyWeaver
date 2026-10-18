@@ -1,0 +1,276 @@
+:- encoding(utf8).
+% SPDX-License-Identifier: MIT OR Apache-2.0
+%
+% run_wam_kotlin_lowered_vs_interpreter.pl
+%
+% In-process timing of emit_mode(interpreter) vs emit_mode(functions) for the
+% Kotlin hybrid WAM target. Times tryRun loops inside the generated Main
+% (benchmark_main) — NOT gradle/JVM startup.
+%
+% Usage:
+%   LANG=C.UTF-8 swipl -q -s examples/benchmark/run_wam_kotlin_lowered_vs_interpreter.pl \
+%       -g main -t halt
+%
+% Optional argv after -- :
+%   <output-dir>   (default: output/kotlin_lowered_bench)
+
+:- use_module(library(lists)).
+:- use_module(library(filesex), [
+    make_directory_path/1,
+    delete_directory_and_contents/1,
+    directory_file_path/3
+]).
+:- use_module(library(process)).
+:- use_module(library(option)).
+:- use_module('../../src/unifyweaver/targets/wam_kotlin_target').
+
+:- dynamic user:bk_fact/2.
+:- dynamic user:bk_make_list/3.
+:- dynamic user:bk_color/1.
+:- dynamic user:bk_t4/2.
+:- dynamic user:bk_member/2.
+:- dynamic user:bk_append/3.
+:- dynamic user:bk_fib/2.
+:- dynamic user:bk_ack/3.
+
+main :-
+    current_prolog_flag(argv, Argv),
+    (   Argv = [OutDir|_] -> true
+    ;   OutDir = 'output/kotlin_lowered_bench'
+    ),
+    (   exists_directory(OutDir)
+    ->  delete_directory_and_contents(OutDir)
+    ;   true
+    ),
+    make_directory_path(OutDir),
+    setup_benchmark_predicates,
+    findall(Row, run_case(OutDir, Row), Rows),
+    cleanup_benchmark_predicates,
+    print_results(Rows),
+    write_results_markdown(OutDir, Rows),
+    (   forall(member(row(_, _, _, _, _, _, _, _, ok), Rows), true)
+    ->  halt(0)
+    ;   halt(1)
+    ).
+
+setup_benchmark_predicates :-
+    cleanup_benchmark_predicates,
+    assertz(user:bk_fact(alpha, beta)),
+    assertz(user:(bk_make_list(A, B, [A, B]))),
+    assertz(user:bk_color(red)),
+    assertz(user:bk_color(green)),
+    assertz(user:bk_color(blue)),
+    assertz(user:bk_t4(_, a)),
+    assertz(user:bk_t4(_, b)),
+    assertz(user:bk_member(X, [X|_])),
+    assertz(user:(bk_member(X, [_|T]) :- bk_member(X, T))),
+    assertz(user:bk_append([], L, L)),
+    assertz(user:(bk_append([H|T], L, [H|R]) :- bk_append(T, L, R))),
+    assertz(user:bk_fib(0, 0)),
+    assertz(user:bk_fib(1, 1)),
+    assertz(user:(bk_fib(N, R) :- N > 1, N1 is N - 1, N2 is N - 2,
+        bk_fib(N1, R1), bk_fib(N2, R2), R is R1 + R2)),
+    assertz(user:(bk_ack(0, N, R) :- R is N + 1)),
+    assertz(user:(bk_ack(M, 0, R) :- M > 0, M1 is M - 1, bk_ack(M1, 1, R))),
+    assertz(user:(bk_ack(M, N, R) :- M > 0, N > 0, M1 is M - 1, N1 is N - 1,
+        bk_ack(M, N1, R1), bk_ack(M1, R1, R))).
+
+cleanup_benchmark_predicates :-
+    retractall(user:bk_fact(_, _)),
+    retractall(user:bk_make_list(_, _, _)),
+    retractall(user:bk_color(_)),
+    retractall(user:bk_t4(_, _)),
+    retractall(user:bk_member(_, _)),
+    retractall(user:bk_append(_, _, _)),
+    retractall(user:bk_fib(_, _)),
+    retractall(user:bk_ack(_, _, _)).
+
+%% case(Name, Preds, PredKey, Iterations, StateSetupKotlin, ExpectNativeKeys)
+bench_case(fact,
+           [user:bk_fact/2],
+           'bk_fact/2',
+           40000,
+           'stateFromCliArgs(listOf("alpha", "beta"))',
+           ['bk_fact/2']).
+bench_case(list_builder,
+           [user:bk_make_list/3],
+           'bk_make_list/3',
+           20000,
+           'stateFromCliArgs(listOf("alpha", "beta"))',
+           ['bk_make_list/3']).
+bench_case(t5_color,
+           [user:bk_color/1],
+           'bk_color/1',
+           40000,
+           'stateFromCliArgs(listOf("blue"))',
+           ['bk_color/1']).
+bench_case(t4_second_arg,
+           [user:bk_t4/2],
+           'bk_t4/2',
+           30000,
+           'stateFromCliArgs(listOf("x", "b"))',
+           ['bk_t4/2']).
+bench_case(member_100,
+           [user:bk_member/2],
+           'bk_member/2',
+           2000,
+           'run { val st = WamState(); st.writeRegister("A1", Value.IntVal(100L)); st.writeRegister("A2", intRangeList(100)); st }',
+           ['bk_member/2']).
+bench_case(member_500,
+           [user:bk_member/2],
+           'bk_member/2',
+           400,
+           'run { val st = WamState(); st.writeRegister("A1", Value.IntVal(500L)); st.writeRegister("A2", intRangeList(500)); st }',
+           ['bk_member/2']).
+bench_case(append_100,
+           [user:bk_append/3],
+           'bk_append/3',
+           1500,
+           'run { val st = WamState(); val a = intRangeList(100); val b = intRangeList(100); st.writeRegister("A1", a); st.writeRegister("A2", b); st.writeRegister("A3", st.newVariable("R")); st }',
+           ['bk_append/3']).
+bench_case(append_500,
+           [user:bk_append/3],
+           'bk_append/3',
+           300,
+           'run { val st = WamState(); val a = intRangeList(500); val b = intRangeList(500); st.writeRegister("A1", a); st.writeRegister("A2", b); st.writeRegister("A3", st.newVariable("R")); st }',
+           ['bk_append/3']).
+% EMIT-KOTLIN-5: mid-body call + arithmetic (tree recursion / ack).
+bench_case(fib_15,
+           [user:bk_fib/2],
+           'bk_fib/2',
+           80,
+           'run { val st = WamState(); st.writeRegister("A1", Value.IntVal(15L)); st.writeRegister("A2", Value.IntVal(610L)); st }',
+           ['bk_fib/2']).
+bench_case(ack_23,
+           [user:bk_ack/3],
+           'bk_ack/3',
+           800,
+           'run { val st = WamState(); st.writeRegister("A1", Value.IntVal(2L)); st.writeRegister("A2", Value.IntVal(3L)); st.writeRegister("A3", Value.IntVal(9L)); st }',
+           ['bk_ack/3']).
+
+%% row(Name, IMin, IMed, LMin, LMed, SpeedupMin, SpeedupMed, NativeOk, Status)
+run_case(OutDir, row(Name, IMin, IMed, LMin, LMed, SpMin, SpMed, NativeOk, Status)) :-
+    bench_case(Name, Preds, PredKey, Iters, StateSetup, NativeKeys),
+    format(atom(CaseDir), '~w/~w', [OutDir, Name]),
+    make_directory_path(CaseDir),
+    directory_file_path(CaseDir, 'interpreter', InterpDir),
+    directory_file_path(CaseDir, 'functions', FunDir),
+    format('~n=== case ~w (~w iters) ===~n', [Name, Iters]),
+    BenchOpts = [
+        benchmark_main(PredKey, Iters),
+        benchmark_warmup(5),
+        benchmark_batches(15),
+        benchmark_state_setup(StateSetup)
+    ],
+    time_mode(interpreter, Preds, BenchOpts, InterpDir, IMin, IMed, InterpOk),
+    time_mode(functions, Preds, BenchOpts, FunDir, LMin, LMed, LowerOk),
+    confirm_native(FunDir, NativeKeys, NativeOk),
+    (   InterpOk == true, LowerOk == true, NativeOk == true,
+        number(IMin), number(LMin), LMin > 0, number(IMed), number(LMed), LMed > 0
+    ->  SpMin0 is IMin / LMin,
+        SpMed0 is IMed / LMed,
+        format(atom(SpMin), '~2f', [SpMin0]),
+        format(atom(SpMed), '~2f', [SpMed0]),
+        Status = ok
+    ;   SpMin = nan, SpMed = nan,
+        Status = fail
+    ),
+    format('  interpreter min/med=~2f/~2f  lowered min/med=~2f/~2f  speedup_min=~w× speedup_med=~w×  native=~w  status=~w~n',
+           [IMin, IMed, LMin, LMed, SpMin, SpMed, NativeOk, Status]).
+
+time_mode(Mode, Preds, BenchOpts, Dir, MinMs, MedianMs, Ok) :-
+    ( exists_directory(Dir) -> delete_directory_and_contents(Dir) ; true ),
+    make_directory_path(Dir),
+    append([emit_mode(Mode)], BenchOpts, Options),
+    catch(
+        wam_kotlin_target:write_wam_kotlin_project(Preds, Options, Dir),
+        E,
+        ( format(user_error, 'project gen failed (~w): ~q~n', [Mode, E]), fail )
+    ),
+    !,
+    run_gradle_bench(Dir, Out, Status),
+    (   Status == exit(0),
+        parse_bench_line(Out, MinMs, MedianMs)
+    ->  Ok = true
+    ;   format(user_error, 'bench run failed mode=~w status=~q out=~w~n',
+               [Mode, Status, Out]),
+        MinMs = nan, MedianMs = nan,
+        Ok = false
+    ).
+time_mode(_, _, _, _, nan, nan, false).
+
+run_gradle_bench(Dir, Out, Status) :-
+    setup_call_cleanup(
+        process_create(path(gradle), ['-q', 'run'],
+                       [cwd(Dir), stdout(pipe(O)), stderr(pipe(E)), process(PID)]),
+        (   read_string(O, _, Out0),
+            read_string(E, _, _Err),
+            process_wait(PID, Status),
+            Out = Out0
+        ),
+        (   close(O), close(E) )
+    ).
+
+parse_bench_line(Out, MinMs, MedianMs) :-
+    split_string(Out, "\n", "", Lines),
+    member(Line, Lines),
+    sub_string(Line, _, _, _, "BENCH "),
+    sub_string(Line, _, _, _, "min_ms="),
+    sub_string(Line, _, _, _, "median_ms="),
+    sub_string(Line, _, _, _, "ok=true"),
+    bench_field(Line, "min_ms=", MinMs),
+    bench_field(Line, "median_ms=", MedianMs).
+
+bench_field(Line, Key, Num) :-
+    sub_string(Line, B, _, After, Key),
+    sub_string(Line, B, Len, After, _),
+    Start is B + Len,
+    sub_string(Line, Start, _, 0, Rest),
+    split_string(Rest, " \t", " \t", [MsStr|_]),
+    number_string(Num, MsStr).
+
+confirm_native(FunDir, Keys, Ok) :-
+    directory_file_path(FunDir,
+        'src/main/kotlin/generated/wam/Main.kt', MainPath),
+    (   exists_file(MainPath)
+    ->  read_file_to_string(MainPath, Main, []),
+        (   forall(member(Key, Keys),
+                   ( format(string(Reg), 'registerNative("~w"', [Key]),
+                     sub_string(Main, _, _, _, Reg),
+                     format(string(Fun), 'fun lowered_', []),
+                     sub_string(Main, _, _, _, Fun)
+                   ))
+        ->  Ok = true
+        ;   format(user_error, 'native confirm failed for ~w~n', [Keys]),
+            Ok = false
+        )
+    ;   Ok = false
+    ).
+
+print_results(Rows) :-
+    nl,
+    format('~w~n', ['program | i_min | i_med | l_min | l_med | speedup_min | speedup_med | native | status']),
+    format('~w~n', ['--------|------:|------:|------:|------:|------------:|------------:|:------:|:------:']),
+    forall(member(row(Name, IMin, IMed, LMin, LMed, SpMin, SpMed, N, St), Rows),
+           format('~w | ~2f | ~2f | ~2f | ~2f | ~w× | ~w× | ~w | ~w~n',
+                  [Name, IMin, IMed, LMin, LMed, SpMin, SpMed, N, St])).
+
+write_results_markdown(OutDir, Rows) :-
+    directory_file_path(OutDir, 'RESULTS.md', Path),
+    setup_call_cleanup(
+        open(Path, write, Stream),
+        (   format(Stream,
+'# Kotlin WAM: interpreter vs lowered (in-process)~n~n', []),
+            format(Stream,
+'Measured via `benchmark_main` — 5 warmup + 15 timed `tryRun` batches; report **min** (robust for JIT) and median.~n~n', []),
+            format(Stream,
+'| program | interp min | interp med | lowered min | lowered med | speedup min | speedup med | native | status |~n', []),
+            format(Stream,
+'|---|---:|---:|---:|---:|---:|---:|:---:|:---:|~n', []),
+            forall(member(row(Name, IMin, IMed, LMin, LMed, SpMin, SpMed, N, St), Rows),
+                   format(Stream, '| ~w | ~2f | ~2f | ~2f | ~2f | ~w× | ~w× | ~w | ~w |~n',
+                          [Name, IMin, IMed, LMin, LMed, SpMin, SpMed, N, St]))
+        ),
+        close(Stream)
+    ),
+    format('Wrote ~w~n', [Path]).

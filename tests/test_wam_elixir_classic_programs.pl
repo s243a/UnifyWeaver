@@ -357,12 +357,54 @@ elixir_available :-
         process_wait(Pid, exit(0))
     ).
 
+% --- Var-var aliasing reached through a HEAD ---
+% Every other query in this file is ground, so a head is always
+% matched and never used to bind the caller's term. That hid a
+% dereference bug: unify/3 acted on the caller's raw value, and
+% deref_var stopped at any {:heap_ref, _} rather than only a
+% SELF-reference, so an already-aliased variable reported itself as
+% unbound and the next binding overwrote the alias.
+%
+% A repeated variable inside the head structure is the shape that
+% exposes it: unify_value aliases slot 0 with slot 1, then get_value
+% binds slot 0 over that alias and slot 1 is left unbound.
+%
+% The probes use ==/2 on purpose. `T = p(a,a)` would re-unify and
+% happily bind the leftover slot, reporting success either way.
+:- dynamic user:elx_same_slots/2.
+:- dynamic user:elx_repeat_head/1.
+:- dynamic user:elx_repeat_first/1.
+:- dynamic user:elx_repeat_second/1.
+:- dynamic user:elx_repeat_reject/1.
+user:elx_same_slots(p(U, U), U).
+user:elx_repeat_head(X)   :- T = p(_, _), user:elx_same_slots(T, X), T == p(X, X).
+user:elx_repeat_first(X)  :- T = p(A, _), user:elx_same_slots(T, X), A == X.
+user:elx_repeat_second(X) :- T = p(_, B), user:elx_same_slots(T, X), B == X.
+% The head must still DISCRIMINATE: two different slots cannot both be X.
+% Built in the body because run_classic.exs parses only atoms, integers
+% and flat atom-lists — a compound cannot be passed on the command line.
+user:elx_repeat_reject(X) :- T = p(a, b), user:elx_same_slots(T, X).
+
 % ============================================================
 % Tests
 % ============================================================
 
 :- begin_tests(wam_elixir_classic_programs,
                [ condition(elixir_available) ]).
+
+test(repeated_head_variable_aliases_both_slots) :-
+    with_elixir_project(
+        [user:elx_same_slots/2, user:elx_repeat_head/1,
+         user:elx_repeat_first/1, user:elx_repeat_second/1,
+         user:elx_repeat_reject/1],
+        _Opts,
+        TmpDir,
+        (
+            verify_elixir_args(TmpDir, 'elx_repeat_first/1',  ['a'], "true"),
+            verify_elixir_args(TmpDir, 'elx_repeat_second/1', ['a'], "true"),
+            verify_elixir_args(TmpDir, 'elx_repeat_head/1',   ['a'], "true"),
+            verify_elixir_args(TmpDir, 'elx_repeat_reject/1', ['a'], "false")
+        )).
 
 test(fibonacci) :-
     with_elixir_project(

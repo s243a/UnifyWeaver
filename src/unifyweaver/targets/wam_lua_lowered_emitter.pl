@@ -291,9 +291,7 @@ emit_multi_clause_n_function(PredName, FuncName, Clauses, Code) :-
     format(string(Code),
 '-- Lowered: ~w (T4 all-clauses inline)
 local function ~w(program, state)
-  local _t4_trail = #state.trail
-  local _t4_regs = Runtime.copy_table(state.regs)
-  local _t4_vc = state.var_counter
+  local _t4_state = Runtime.snapshot_execution(state)
 ~w  return false
 end
 ', [PredName, FuncName, ClausesBody]).
@@ -304,16 +302,14 @@ emit_lua_t4_clauses([Clause|Rest]) :-
     emit_lines(Clause, "    "),
     format("    return false~n"),
     format("  end)() then return true end~n"),
-    format("  while #state.trail > _t4_trail do state.bindings[table.remove(state.trail)] = nil end~n"),
-    format("  state.regs = Runtime.copy_table(_t4_regs)~n"),
-    format("  state.var_counter = _t4_vc~n"),
+    format("  Runtime.restore_execution(state, _t4_state)~n"),
     emit_lua_t4_clauses(Rest).
 
 % If-then-else / negation / once. Same wrapper as the deterministic case,
 % but the body is the structured term list rendered by emit_struct_lua/2.
-% lua's bind_var always trails, so undoing the trail to the pre-condition
-% mark before the else branch restores any partial bindings the condition
-% made (no register snapshot needed; mirrors the Rust emitter).
+% A condition may enter a framed bytecode callee and fail before that callee's
+% deallocate. Restore the complete execution state before the else branch;
+% on success, discard only condition-local choicepoints (soft-cut commit).
 emit_ite_function(PredName, FuncName, Structured, Code) :-
     with_output_to(string(Body), emit_struct_lua(Structured, "  ")),
     format(string(Code),
@@ -331,15 +327,16 @@ emit_struct_lua([Item|Rest], Ind) :-
 emit_struct_item_lua(ite(Cond, Then, Else), Ind) :- !,
     string_concat(Ind, "    ", Ind4),
     format("~wdo~n", [Ind]),
-    format("~w  local _ite_mark = #state.trail~n", [Ind]),
+    format("~w  local _ite_state = Runtime.snapshot_execution(state)~n", [Ind]),
     format("~w  local _ite_cond = (function()~n", [Ind]),
     emit_struct_lua(Cond, Ind4),
     format("~w    return true~n", [Ind]),
     format("~w  end)()~n", [Ind]),
     format("~w  if _ite_cond then~n", [Ind]),
+    format("~w    state.cps = Runtime.copy_array(_ite_state.cps)~n", [Ind]),
     emit_struct_lua(Then, Ind4),
     format("~w  else~n", [Ind]),
-    format("~w    while #state.trail > _ite_mark do state.bindings[table.remove(state.trail)] = nil end~n", [Ind]),
+    format("~w    Runtime.restore_execution(state, _ite_state)~n", [Ind]),
     emit_struct_lua(Else, Ind4),
     format("~w  end~n", [Ind]),
     format("~wend~n", [Ind]).
@@ -365,21 +362,16 @@ emit_multi_clause_function(PredName, FuncName, AltLabel, Lines, Code) :-
 local function ~w(program, state)
   local alt_pc = program.labels[~w]
   if alt_pc == nil then return false end
-  table.insert(state.cps, {
-    next_pc = alt_pc,
-    regs = Runtime.copy_table(state.regs),
-    cp = state.cp,
-    trail_len = #state.trail,
-    var_counter = state.var_counter
-  })
+  local _cp_floor = #state.cps
+  table.insert(state.cps, Runtime.new_choicepoint(state, { next_pc = alt_pc }))
   local ok = (function()
 ~w    return false
   end)()
   if ok == true then return true end
-  if Runtime.backtrack(state) ~~= true then return false end
+  if Runtime.backtrack(state, _cp_floor) ~~= true then return false end
   state.pc = state.pc + 1
   state.halt = false
-  return Runtime.run(program, state) == true
+  return Runtime.run(program, state, _cp_floor) == true
 end
 ', [PredName, FuncName, AltQ, Body]).
 
@@ -415,21 +407,16 @@ do
     -- unbound first argument: enumerate all clauses via the interpreter
     local alt_pc = program.labels[~w]
     if alt_pc == nil then return false end
-    table.insert(state.cps, {
-      next_pc = alt_pc,
-      regs = Runtime.copy_table(state.regs),
-      cp = state.cp,
-      trail_len = #state.trail,
-      var_counter = state.var_counter
-    })
+    local _cp_floor = #state.cps
+    table.insert(state.cps, Runtime.new_choicepoint(state, { next_pc = alt_pc }))
     local ok = (function()
 ~w      return false
     end)()
     if ok == true then return true end
-    if Runtime.backtrack(state) ~~= true then return false end
+    if Runtime.backtrack(state, _cp_floor) ~~= true then return false end
     state.pc = state.pc + 1
     state.halt = false
-    return Runtime.run(program, state) == true
+    return Runtime.run(program, state, _cp_floor) == true
   end
 end
 ', [PredName, FuncName, Table, FuncName, AltQ, Clause1Body]).
@@ -447,21 +434,16 @@ local function ~w(program, state)
   -- unbound first argument: enumerate all clauses via the interpreter
   local alt_pc = program.labels[~w]
   if alt_pc == nil then return false end
-  table.insert(state.cps, {
-    next_pc = alt_pc,
-    regs = Runtime.copy_table(state.regs),
-    cp = state.cp,
-    trail_len = #state.trail,
-    var_counter = state.var_counter
-  })
+  local _cp_floor = #state.cps
+  table.insert(state.cps, Runtime.new_choicepoint(state, { next_pc = alt_pc }))
   local ok = (function()
 ~w    return false
   end)()
   if ok == true then return true end
-  if Runtime.backtrack(state) ~~= true then return false end
+  if Runtime.backtrack(state, _cp_floor) ~~= true then return false end
   state.pc = state.pc + 1
   state.halt = false
-  return Runtime.run(program, state) == true
+  return Runtime.run(program, state, _cp_floor) == true
 end
 ', [PredName, FuncName, Dispatch, AltQ, Clause1Body]).
 
@@ -541,9 +523,9 @@ emit_line_parts(["execute", PredArity], I) :- !, emit_execute(PredArity, I).
 emit_line_parts(["execute", Pred, ArityStr], I) :- !,
     strip_arity_local(Pred, Name), format(string(PA), "~w/~w", [Name, ArityStr]), emit_execute(PA, I).
 emit_line_parts(["allocate"], I) :- !,
-    format("~wtable.insert(state.stack, {cp = state.cp, locals = {}})~n", [I]).
+    format("~wRuntime.push_frame(state)~n", [I]).
 emit_line_parts(["deallocate"], I) :- !,
-    format("~wdo local fr = table.remove(state.stack); if fr then state.cp = fr.cp end end~n", [I]).
+    format("~wRuntime.pop_frame(state)~n", [I]).
 emit_line_parts(["put_constant", C, R], I) :- !,
     wam_lua_target:reg_to_int(R, RI),
     wam_lua_target:constant_to_lua_term(C, T),
@@ -567,12 +549,17 @@ emit_line_parts(Parts, I) :-
 emit_call(PredArity, I) :-
     wam_lua_target:lua_string_literal(PredArity, Q),
     format("~wdo~n", [I]),
+    format("~w  local call_state = Runtime.snapshot_execution(state)~n", [I]),
+    format("~w  local call_floor = #state.cps~n", [I]),
     format("~w  local saved_cp = state.cp~n", [I]),
     format("~w  local target = program.labels[~w]~n", [I, Q]),
     format("~w  if target == nil then return false end~n", [I]),
     format("~w  state.cp = 0~n", [I]),
     format("~w  state.pc = target~n", [I]),
-    format("~w  if Runtime.run(program, state) ~~= true then return false end~n", [I]),
+    format("~w  if Runtime.run(program, state, call_floor) ~~= true then~n", [I]),
+    format("~w    Runtime.restore_execution(state, call_state)~n", [I]),
+    format("~w    return false~n", [I]),
+    format("~w  end~n", [I]),
     format("~w  state.halt = false~n", [I]),
     format("~w  state.cp = saved_cp~n", [I]),
     format("~wend~n", [I]).
@@ -580,10 +567,16 @@ emit_call(PredArity, I) :-
 emit_execute(PredArity, I) :-
     wam_lua_target:lua_string_literal(PredArity, Q),
     format("~wdo~n", [I]),
+    % The imperative lowerer has no continuation for code preceding a tail
+    % call. Keep an interpreted callee from consuming those older alternatives
+    % and mistaking their resumed Proceed for callee success. This preserves
+    % sound first-solution behaviour; nondeterministic-prefix completeness is
+    % an explicit lowered-mode limitation (see docs/WAM_LUA_STATUS.md).
+    format("~w  local execute_floor = #state.cps~n", [I]),
     format("~w  local target = program.labels[~w]~n", [I, Q]),
     format("~w  if target == nil then return false end~n", [I]),
     format("~w  state.pc = target~n", [I]),
-    format("~w  return Runtime.run(program, state) == true~n", [I]),
+    format("~w  return Runtime.run(program, state, execute_floor) == true~n", [I]),
     format("~wend~n", [I]).
 
 strip_arity_local(Tok, Name) :-

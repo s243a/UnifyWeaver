@@ -143,11 +143,13 @@ F# now has all three materialisation modes from
 
 ### Remaining LMDB work
 
-- **`lmdb_materialisation(auto)` cost-model resolver**: The
-  current default (`cached`) is unconditionally correct for
-  effective-distance workloads at any scale. A future `auto`
-  resolver would only be needed if a workload benefits from eager
-  (full-graph scan with high demand ratio) — rare in practice.
+- **`lmdb_materialisation(auto)`**: **Shipped** as
+  `resolve_auto_lmdb_materialisation_fs/2` in `wam_fsharp_target.pl`.
+  The unconditional `cached` default remains correct for
+  effective-distance workloads; `auto` exists for workloads that may
+  prefer eager (full-graph scan with high demand ratio) — rare in
+  practice. Earlier drafts of this audit listed `auto` as future; that
+  wording is obsolete.
 - **Scan-mode** and **workload-segregation** contract: Rust R9/R10;
   out of scope for F# until Rust ships the reference.
 - **L2 cache sizing**: defaults to `auto` (runtime memory-based

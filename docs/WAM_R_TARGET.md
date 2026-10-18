@@ -219,16 +219,18 @@ pd(X, Y, P, D) :- edge(X, Z), pd(Z, Y, P, D1), D is D1 + 1.
 tspd(X, Y, Y, X, 1) :- edge(X, Y).
 tspd(X, Y, M, P, D) :- edge(X, M), tspd(M, Y, _, P, D1), D is D1 + 1.
 
-% category_ancestor -- streams reachable ancestors with depth cap.
-% max_depth/1 must be asserted before write_wam_r_project/3 runs;
-% the detector reads it at codegen time and the cap is embedded
-% in the lowered function. Visited and Hops are inputs / discarded
-% outputs that the native impl doesn't touch.
+% category_ancestor -- fleet layout (+Cat, +Root, -Hops, +Visited).
+% Streams one hop count per path from Cat to Root. max_depth/1 must
+% be asserted before write_wam_r_project/3; the detector embeds the
+% depth cap in the lowered function. Matches Go/Rust/F# kernel hops
+% semantics (used by effective-distance power-sum helpers).
 :- assertz(user:max_depth(3)).
-ca(Cat, Anc, Visited, 0) :- \+ member(Cat, Visited), edge(Cat, Anc).
-ca(Cat, Anc, Visited, Hops) :- \+ member(Cat, Visited),
-    edge(Cat, Mid), ca(Mid, Anc, [Cat | Visited], Hops0),
-    Hops is Hops0 + 1.
+ca(Cat, Parent, 1, Visited) :-
+    edge(Cat, Parent), \+ member(Parent, Visited).
+ca(Cat, Ancestor, Hops, Visited) :-
+    max_depth(MaxD), length(Visited, Depth), Depth < MaxD, !,
+    edge(Cat, Mid), \+ member(Mid, Visited),
+    ca(Mid, Ancestor, H1, [Mid|Visited]), Hops is H1 + 1.
 
 % astar_shortest_path4 -- goal-directed shortest-path search.
 % direct_dist_pred/1 names the heuristic predicate (arity 3:
@@ -337,12 +339,24 @@ supported today:
 - `grouped_by_first('data.tsv')` -- tab-separated rows shaped as
   `key<TAB>v1<TAB>v2<TAB>...`; the loader explodes each row into
   separate `(key, vK)` tuples. Arity-2 only.
-- `lmdb('path.lmdb')` -- on-disk LMDB env containing one fact per
-  key, value encoded as TAB-separated `tag:payload` fields. Any
-  arity. Requires an R LMDB binding (see *LMDB install* below);
-  loader returns an empty fact table with a warning if the binding
-  is absent. Step-1 semantics: load-everything (treats LMDB as a
-  serialization format); step-2 probe-on-demand is a follow-up.
+- `lmdb('path.lmdb')` -- legacy load-everything LMDB (opaque keys,
+  full-tuple values). Requires thor/lmdbr; empty table if absent.
+- `lmdb_arg1_v1('path.lmdb')` -- versioned arg1-indexed source
+  (arity ≥ 2). Schema key `__uw_schema__=lmdb_arg1_v1`; values are
+  NL-buckets of TAB-tagged args 2..N (atom payloads URL-percent-encoded).
+  Materialisation via project option `lmdb_materialisation(Mode)`:
+  - omit / `lazy` — ground arg1 exact-key get; unbound stream-all
+    (absent option stays lazy; shared resolver is not consulted)
+  - `eager` — stream the v1 DB once at init, `build_fact_indexes`,
+    then `fact_table_dispatch` (not legacy `read_facts_lmdb`)
+  - `cached` — per-source L1 MRU + bounded L2 true-LRU over lookup;
+    `lmdb_l2_capacity(N)` (default 4096, positive int) sizes L2 by
+    distinct arg1 keys (empty/missing buckets count). Unbound queries
+    stream-all and bypass the cache.
+  - `auto` — resolved at codegen via shared
+    `resolve_auto_lmdb_materialisation/2` into eager/lazy/cached
+    (no runtime auto conditional)
+  Writer: `lmdb_write_facts_arg1_v1`.
 
 ```prolog
 :- write_wam_r_project(
@@ -540,31 +554,27 @@ shorthand (input / output / any), the same convention
 [`design/WAM_R_MODE_ANALYSIS_PLAN.md`](design/WAM_R_MODE_ANALYSIS_PLAN.md)
 for the phase roadmap and measured impact.
 
-### `is/2` specialisation (phase 3)
+### `is/2` specialisation (phase 3 + ISO-R-0)
 
-Two complementary specialisations targeting the `is/2` arithmetic
-builtin (dominant cost on arith-heavy recursive predicates):
+ISO-R-0 rewrites default `is/2` to `is_lax/2` (or `is_iso/2` under
+`iso_errors(true)`). Evaluation lives in shared runtime helpers
+`WamRuntime$builtin_is_lax` / `builtin_is_iso` (also used by the
+interpreter path).
 
-**Runtime fast-path** (in `WamRuntime$call_builtin`'s is/2 branch).
-When the expression is a 2-arg arithmetic struct (`+`, `-`, `*`,
-`//`, `mod`) with both operands derefing to ints, bypasses the
-recursive `eval_arith` walk + `arith_to_term` dispatch and
-fast-binds when the target is unbound. Falls through to the
-original slow path for floats, nested expressions, unbound vars in
-the RHS, etc. Always active, no codegen flag needed.
+**Runtime.** `builtin_is_lax` keeps the prior fail-on-bad-eval behaviour
+and the binary-int fast path (`+ - * // mod`). `builtin_is_iso`
+classifies unbound → zero_divisor → non-evaluable and throws structured
+`error/2`.
 
-**Lowered-emitter inline.** For `builtin_call is/2 2` lines in a
-lowered function body, the emitter emits inline R that bypasses
-`WamRuntime$step` → `WamRuntime$call_builtin` (saving 2 function
-calls + 2 switch lookups per is/2 hit). Always fires when the
-lowered emitter handles the clause; the runtime fast-path then
-applies inside the inline body.
+**Lowered-emitter inline.** For `builtin_call is/2|is_lax/2|is_iso/2 2`
+(and Execute forms of the explicit keys), the emitter calls the matching
+helper instead of `WamRuntime$step(... BuiltinCall(...))`.
 
 Note: phase 4 broadens lowered emission from the older
 `multi_clause_1` shape to `multi_clause_n`: when every clause is in
 the lowered emitter's supported instruction subset, each clause is
-emitted inline. That means lowered-emitter inline `is/2` now applies
-to clause 2+ as well as deterministic predicates and first clauses.
+emitted inline. That means the inlined `is_*` helper path applies to
+clause 2+ as well as deterministic predicates and first clauses.
 
 ## Supported features
 
@@ -744,6 +754,34 @@ of the thrown term; `catch/3` unwinds the trail and CP stack to its
 entry snapshot before unifying with the catcher and running the
 recovery. Uncaught throws at the top level become query failure.
 
+### ISO errors (ISO-R-0/2A/2B adoption unit)
+
+Shared `iso_errors` config / per-predicate rewrite / `wam_r_iso_audit/3`
+are wired. Project options: `iso_errors(true|false)`,
+`iso_errors(PI, true|false)`, `iso_errors_config(File)`.
+
+Key table: `is/2`, the six comparison families, and `succ/2` → matching
+`_iso`/`_lax`. Explicit `_iso`/`_lax` forms survive mode rewrites.
+Runtime helpers in `runtime.R.mustache`: `builtin_is_*`,
+`builtin_arith_compare_*`, `builtin_succ_*` (+ `make_domain_error`),
+and structured `error/2` constructors.
+
+**succ ISO classify order** (Python/F# fleet contract): both unbound →
+`instantiation_error`; bound non-int X → `type_error(integer, X)`; bound
+non-int Y → `type_error(integer, Y)`; X < 0 →
+`type_error(not_less_than_zero, X)`; reverse Y ≤ 0 →
+`domain_error(not_less_than_zero, Y)`; valid inconsistent pairs fail
+normally. Integer overflow follows existing R `IntTerm` arithmetic
+(NA on signed 32-bit wrap) — no target-specific overflow policy.
+
+**Lax float `/`:** host IEEE-754 Inf/NaN via R `/`. ISO arith still
+throws `evaluation_error(zero_divisor)` when a zero divisor is detected.
+
+R satisfies the seven-item adoption checklist in
+`docs/design/WAM_ISO_ERRORS_CROSS_TARGET_STATUS.md` for the audited
+surface. Remaining builtins without three-form keys are the same
+open-ended caveat as Python/F#.
+
 ## Supported WAM instructions
 
 `call`, `execute`, `proceed`, `jump`, `allocate`, `deallocate`, the
@@ -906,7 +944,7 @@ Coverage map (e2e tests, by feature group):
 | `kernel_wsp3_e2e_rscript` | recursive-kernel detection: `weighted_shortest_path3` Dijkstra over a weighted fact-table edge predicate |
 | `kernel_tpd4_e2e_rscript` | recursive-kernel detection: `transitive_parent_distance4` BFS with parent tracking |
 | `kernel_tspd5_e2e_rscript` | recursive-kernel detection: `transitive_step_parent_distance5` BFS with step + parent + distance |
-| `kernel_ca_e2e_rscript` | recursive-kernel detection: `category_ancestor` BFS with depth-cap + visited-set cycle detection |
+| `kernel_ca_e2e_rscript` | recursive-kernel detection: `category_ancestor` DFS hop streams (fleet layout) with depth-cap + visited-set cycle detection |
 | `kernel_astar4_e2e_rscript` | recursive-kernel detection: `astar_shortest_path4` goal-directed search with user heuristic |
 | `external_fact_source_e2e_rscript` | external CSV fact sources via `r_fact_sources([source(P/A, file(...))])` |
 | `external_fact_source_grouped_tsv_e2e_rscript` | external grouped-by-first TSV fact sources (arity-2): `r_fact_sources([source(P/2, grouped_by_first(...))])` |
@@ -923,7 +961,7 @@ Coverage map (e2e tests, by feature group):
 | `mode_analysis_phase1_comments` | Mode-analysis visibility: `mode_comments(on)` option prepends `# Mode analysis:` block to each lowered function with per-clause head-binding states; covers `+`, `-`, `?`, undeclared mode shapes |
 | `mode_analysis_phase2_get_constant_inlined` | Mode-analysis phase 2: structural assertion that `get_constant` head match is emitted as inline `WamRuntime$deref + identical()` when the target A-register's declared mode is `+`; falls back to `WamRuntime$step` when no mode declaration or `mode_specialise(off)` |
 | `mode_analysis_phase2_get_constant_e2e_rscript` | Mode-analysis phase 2: e2e correctness -- a predicate with `:- mode(p(+))` and three clauses compiles + runs via Rscript, queries return correct true/false matching across the multi-clause backtracking path |
-| `mode_analysis_phase3_is_inlined` | Mode-analysis phase 3: structural assertion that `builtin_call is/2 2` is emitted as inline `WamRuntime$eval_arith + bind/unify` in the lowered function (instead of `WamRuntime$step(... BuiltinCall("is/2", 2))`) |
+| `mode_analysis_phase3_is_inlined` | Mode-analysis phase 3: structural assertion that rewritten `is_lax/2` is emitted as `WamRuntime$builtin_is_lax(...)` in the lowered function (instead of `WamRuntime$step(... BuiltinCall(...))`) |
 | `mode_analysis_phase3_is_e2e_rscript` | Mode-analysis phase 3: e2e correctness -- a predicate using `is/2` with simple binary int op (runtime fast-path), nested arith (slow path), and negative-result arith compiles + runs via Rscript with correct values |
 | `mode_analysis_phase4_multiclause_n_e2e_rscript` | Mode-analysis phase 4: all-supported-clause `multi_clause_n` lowering, including direct R-wrapper execution of clause 2's inline `is/2` path |
 | `mode_analysis_get_value_inlined` | Mode-analysis follow-up: structural assertion that repeated bound head variables compile `get_value` to an inline atomic identity fast path with safe fallback |

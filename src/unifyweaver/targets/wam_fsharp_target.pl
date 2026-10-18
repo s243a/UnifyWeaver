@@ -40,6 +40,8 @@
     compile_wam_predicate_to_fsharp/4,   % +Pred/Arity, +WamCode, +Options, -FSharpCode
     compile_wam_runtime_to_fsharp/3,     % +Options, +DetectedKernels, -Code
     write_wam_fsharp_project/3,          % +Predicates, +Options, +ProjectDir
+    wam_fsharp_native_kernel_supported/1, % +recursive_kernel(Kind,...)
+    wam_fsharp_native_kernel_kind/1,     % ?Kind — authoritative native allow-list
     wam_fsharp_resolve_emit_mode/2,      % +Options, -Mode
     wam_fsharp_partition_predicates/5,   % +Mode, +Predicates, +DK, -Interp, -Lowered
     % Fact-shape classification parity with Haskell/Elixir hybrid targets
@@ -239,6 +241,74 @@ ffi_owned_fact_filter_fs(DetectedKernels, PI) :-
 % Kernel detection (shared with Haskell target pattern)
 % ============================================================================
 
+%% wam_fsharp_native_kernel_kind(?Kind)
+%  Authoritative allow-list of recursive-kernel kinds for which F# can
+%  actually emit a nativeKernel_* handler. Detection may fire on more
+%  kinds (shared detector); unsupported kinds must stay ordinary WAM
+%  predicates — never CallForeign / executeForeign to a missing symbol.
+%
+%  Inventory (do not confuse with this allow-list):
+%   - Generic WAM recursive tc/2 already works (no_kernels(true)).
+%   - category_ancestor / bidirectional_ancestor have .fs.mustache bodies.
+%   - lmdb_fact_source reachableToRoot* is demand-pruning BFS over
+%     category_child (includes root); not a drop-in for transitive_closure2.
+%   - BuildEmptySet / SetInsert / NotMemberSet + FFIStreamRetry are the
+%     WAM/FFI plumbing TC2/TD3 streaming reuses.
+%   - transitive_distance3 Mustache handler emits (atom,int) pairs via the
+%     existing multi-output binder (dist+ contract).
+%   - transitive_parent_distance4 Mustache handler emits (atom,atom,int)
+%     triples via the existing three-output binder (shortest-positive
+%     parents contract).
+%   - transitive_step_parent_distance5 Mustache handler emits
+%     (atom,atom,atom,int) quadruples via the existing four-output binder
+%     (shortest-positive correlated step/parent contract).
+%   - weighted_shortest_path3 Mustache handler emits (atom,float) pairs via
+%     the existing two-output binder (finite nonnegative Dijkstra contract).
+%     Relation-keyed weighted facts are materialized into WcFfiWeightedFacts.
+%   - astar_shortest_path4 Mustache handler emits a singleton float via the
+%     existing single-output binder (correctness-safe A* / Dijkstra-minimum
+%     contract). Dual relation-keyed weighted facts (edge + direct_dist).
+wam_fsharp_native_kernel_kind(category_ancestor).
+wam_fsharp_native_kernel_kind(bidirectional_ancestor).
+wam_fsharp_native_kernel_kind(transitive_closure2).
+wam_fsharp_native_kernel_kind(transitive_distance3).
+wam_fsharp_native_kernel_kind(transitive_parent_distance4).
+wam_fsharp_native_kernel_kind(transitive_step_parent_distance5).
+wam_fsharp_native_kernel_kind(weighted_shortest_path3).
+wam_fsharp_native_kernel_kind(astar_shortest_path4).
+
+fsharp_kernel_template_path(Kind, AbsPath) :-
+    kernel_template_file(Kind, HsTemplateFile),
+    atom_concat(Base, '.hs.mustache', HsTemplateFile),
+    atom_concat(Base, '.fs.mustache', TemplateFile),
+    atom_concat('templates/targets/fsharp_wam/', TemplateFile, RelPath),
+    (   source_file(wam_fsharp_target, SrcFile)
+    ->  file_directory_name(SrcFile, SrcDir),
+        file_directory_name(SrcDir, TargetsDir),
+        file_directory_name(TargetsDir, UnifyWeaverDir),
+        file_directory_name(UnifyWeaverDir, ProjectDir),
+        atomic_list_concat([ProjectDir, '/', RelPath], AbsPath)
+    ;   AbsPath = RelPath
+    ).
+
+%% wam_fsharp_native_kernel_supported(+Kernel)
+wam_fsharp_native_kernel_supported(recursive_kernel(Kind, _Pred, _ConfigOps)) :-
+    wam_fsharp_native_kernel_kind(Kind),
+    fsharp_kernel_template_path(Kind, HandlerPath),
+    exists_file(HandlerPath).
+
+filter_supported_kernel_pairs_fs([], []).
+filter_supported_kernel_pairs_fs([Key-Kernel|Rest], Supported) :-
+    (   wam_fsharp_native_kernel_supported(Kernel)
+    ->  Supported = [Key-Kernel|SupportedRest]
+    ;   Kernel = recursive_kernel(Kind, _, _),
+        format(user_error,
+               '[WAM-FSharp] detected ~w (~w) but no native F# handler; falling back to WAM~n',
+               [Key, Kind]),
+        Supported = SupportedRest
+    ),
+    filter_supported_kernel_pairs_fs(Rest, SupportedRest).
+
 detect_kernels_fs([], []).
 detect_kernels_fs([PI|Rest], Kernels) :-
     (   PI = _Mod:Pred/Arity -> true ; PI = Pred/Arity ),
@@ -247,7 +317,8 @@ detect_kernels_fs([PI|Rest], Kernels) :-
     (   Clauses \= [],
         detect_recursive_kernel(Pred, Arity, Clauses, Kernel)
     ->  format(atom(Key), '~w/~w', [Pred, Arity]),
-        Kernels = [Key-Kernel|RestKernels]
+        filter_supported_kernel_pairs_fs([Key-Kernel], Supported),
+        append(Supported, RestKernels, Kernels)
     ;   Kernels = RestKernels
     ),
     detect_kernels_fs(Rest, RestKernels).
@@ -632,9 +703,10 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                     | None -> tryNext more
                 | _ -> tryNext more
         tryNext candidates
-    | FFIStreamRetry (_, _, [], _) ->
+    | FFIStreamRetry (_, _, [], _, _, _, _) ->
         backtrack { s with WsCPs = rest; WsCPsLen = s.WsCPsLen - 1 }
-    | FFIStreamRetry (outRegs, outVars, tuple :: restTuples, retPC) ->
+    | FFIStreamRetry (outRegs, outVars, tuple :: restTuples, retPC,
+                      returnCP, returnCutBar, returnB0Stack) ->
         let newRegs     = Array.copy cp.CpRegs
         List.iter2 (fun rN v -> newRegs.[rN] <- v) outRegs tuple
         let newBindings = List.fold2
@@ -642,20 +714,21 @@ and resumeBuiltin (bs: BuiltinState) (cp: ChoicePoint) (rest: ChoicePoint list) 
                             cp.CpBindings outVars tuple
         let newCPs = match restTuples with
                      | [] -> rest
-                     | _  -> { cp with CpBuiltin = Some (FFIStreamRetry (outRegs, outVars, restTuples, retPC)) } :: rest
+                     | _  -> { cp with CpBuiltin = Some (FFIStreamRetry (outRegs, outVars, restTuples, retPC,
+                                                                         returnCP, returnCutBar, returnB0Stack)) } :: rest
         let diff = s.WsTrailLen - cp.CpTrailLen
         Some { s with
                  WsPC       = retPC
                  WsRegs     = newRegs
                  WsStack    = cp.CpStack
-                 WsCP       = cp.CpCP
+                 WsCP       = returnCP
                  WsTrail    = List.skip diff s.WsTrail
                  WsTrailLen = cp.CpTrailLen
                  WsHeap     = List.take cp.CpHeapLen s.WsHeap
                  WsHeapLen  = cp.CpHeapLen
                  WsBindings = newBindings
-                 WsCutBar   = cp.CpCutBar
-                 WsB0Stack  = (let n = List.length s.WsB0Stack - cp.CpB0StackLen in if n > 0 then List.skip n s.WsB0Stack else s.WsB0Stack)
+                 WsCutBar   = returnCutBar
+                 WsB0Stack  = returnB0Stack
                  WsCPs      = newCPs
                  WsCPsLen   = List.length newCPs }
 
@@ -753,20 +826,16 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
         | None    -> None
 
     | GetValue (xn, ai) ->
-        let va = getReg ai s
-        let vx = getReg xn s
-        match va, vx with
-        | Some a, Some x when a = x -> Some { s with WsPC = s.WsPC + 1 }
-        | Some (Unbound vid), Some x ->
-            let r = Array.copy s.WsRegs
-            r.[ai] <- x
-            Some { s with
-                     WsPC      = s.WsPC + 1
-                     WsRegs    = r
-                     WsBindings= Map.add vid x s.WsBindings
-                     WsTrail   = { TrailVarId = vid; TrailOldVal = Map.tryFind vid s.WsBindings } :: s.WsTrail
-                     WsTrailLen= s.WsTrailLen + 1 }
-        | _ -> None
+        // Structural unify (not F# `=`). Ground append/reverse answers
+        // materialize the result spine as Str("[|]", [h; t]) via
+        // PutList+SetVariable+PutStructure, while A2 / peeled tails are
+        // often compact VList — same VList <-> "[|]"/2 class unifyTerms
+        // already handles for UnifyValue / =/2. Shallow equality made
+        // capp([a],[b],[a,b]) fail in the base-case GetValue while
+        // capp([a],[b],X), X=[a,b] (open + =/2) passed (FS-LIST-PARTIAL-TAIL).
+        match getReg ai s, getReg xn s with
+        | Some a, Some x -> unifyVal a x s
+        | _              -> None
 
     | GetStructure (fn, arity, ai) ->
         // If we''re already inside a build/read context, push it so the
@@ -945,16 +1014,16 @@ let rec step (ctx: WamContext) (s: WamState) (instr: Instruction) : WamState opt
                       WsCutBar  = s.WsCPsLen }
 
     | CallForeign (pred, _arity) ->
-        // Foreign predicates don''t emit Proceed in the F# WAM (they
-        // either succeed via dispatchForeign''s direct return or push
-        // a builtin CP).  Mirror Call''s B0 protocol so any cut inside
-        // the foreign handler sees the correct barrier; if the
-        // foreign handler bypasses Proceed (e.g. via direct WsPC
-        // assignment) the B0 entry stays — that matches existing
-        // semantics where WsCutBar would not be restored either.
-        executeForeign ctx pred { s with WsCP      = s.WsPC + 1
-                                         WsB0Stack = s.WsCutBar :: s.WsB0Stack
-                                         WsCutBar  = s.WsCPsLen }
+        // The generated binder completes the same return transition as
+        // Proceed for both the first result and every FFIStreamRetry result.
+        executeForeign ctx pred true { s with WsCP      = s.WsPC + 1
+                                              WsB0Stack = s.WsCutBar :: s.WsB0Stack
+                                              WsCutBar  = s.WsCPsLen }
+
+    | ExecuteForeign pred ->
+        // Foreign tail call: preserve the caller''s continuation and do not
+        // push B0. The binder performs the callee''s missing Proceed.
+        executeForeign ctx pred true { s with WsCutBar = s.WsCPsLen }
 
     // catch/3 and throw/1 are emitted by the WAM compiler as
     // Call / Execute (meta-call shape) rather than BuiltinCall.
@@ -3433,7 +3502,9 @@ and dispatchCall (ctx: WamContext) (pred: string) (sc: WamState) : WamState opti
 
 /// Foreign call for lowered functions.
 and callForeign (ctx: WamContext) (pred: string) (sc: WamState) : WamState option =
-    executeForeign ctx pred sc
+    // Lowered/manual callers own their continuation; keep the raw return
+    // shape. Interpreter CallForeign/ExecuteForeign pass completeReturn=true.
+    executeForeign ctx pred false sc
 
 {{execute_foreign}}
 
@@ -3450,6 +3521,8 @@ let resolveCallInstrs (labels: Map<string, int>) (foreignPreds: string list) (in
             match Map.tryFind pred labels with
             | Some pc -> CallResolved (pc, arity)
             | None    -> Call (pred, arity)
+        | Execute pred when List.contains pred foreignPreds ->
+            ExecuteForeign pred
         | Execute pred ->
             match Map.tryFind pred labels with
             | Some pc -> ExecutePc pc
@@ -3545,36 +3618,43 @@ open WamTypes
 
 generate_kernel_fsharp([], KF, EF) :- !,
     KF = "// No kernels detected.",
-    EF = "and executeForeign (_ctx: WamContext) (_pred: string) (_s: WamState) : WamState option = None".
+    EF = "and executeForeign (_ctx: WamContext) (_pred: string) (_completeReturn: bool) (_s: WamState) : WamState option = None".
 generate_kernel_fsharp(DetectedKernels, KernelFunctionsCode, ExecuteForeignCode) :-
-    maplist(render_kernel_function_fs, DetectedKernels, KernelParts),
+    % The Mustache bodies are named by kernel kind, not by predicate key, and
+    % every runtime fact lookup is supplied as an argument.  Rendering once
+    % per detected predicate therefore produces duplicate `let
+    % nativeKernel_*` definitions when two predicates share a kind.  Keep all
+    % predicate pairs for executeForeign dispatch, but emit one reusable body
+    % for each distinct kind.
+    distinct_kernel_handler_pairs_fs(DetectedKernels, HandlerKernels),
+    maplist(render_kernel_function_fs, HandlerKernels, KernelParts),
     atomic_list_concat(KernelParts, '\n\n', KernelFunctionsCode),
     generate_execute_foreign_fs(DetectedKernels, ExecuteForeignCode).
 
+distinct_kernel_handler_pairs_fs(KernelPairs, DistinctPairs) :-
+    distinct_kernel_handler_pairs_fs(KernelPairs, [], DistinctPairs).
+
+distinct_kernel_handler_pairs_fs([], _, []).
+distinct_kernel_handler_pairs_fs([Key-Kernel|Rest], SeenKinds, DistinctPairs) :-
+    Kernel = recursive_kernel(Kind, _, _),
+    (   memberchk(Kind, SeenKinds)
+    ->  DistinctPairs = RestDistinct,
+        NextSeen = SeenKinds
+    ;   DistinctPairs = [Key-Kernel|RestDistinct],
+        NextSeen = [Kind|SeenKinds]
+    ),
+    distinct_kernel_handler_pairs_fs(Rest, NextSeen, RestDistinct).
+
 render_kernel_function_fs(Key-Kernel, Code) :-
     Kernel = recursive_kernel(Kind, _, ConfigOps),
-    (   kernel_template_file(Kind, HsTemplateFile),
-        % Replace .hs.mustache with .fs.mustache for F# target
-        atom_concat(Base, '.hs.mustache', HsTemplateFile),
-        atom_concat(Base, '.fs.mustache', TemplateFile)
-    ->  atom_concat('templates/targets/fsharp_wam/', TemplateFile, RelPath),
-        (   source_file(wam_fsharp_target, SrcFile)
-        ->  file_directory_name(SrcFile, SrcDir),
-            file_directory_name(SrcDir, TargetsDir),
-            file_directory_name(TargetsDir, UnifyWeaverDir),
-            file_directory_name(UnifyWeaverDir, ProjectDir),
-            atom_concat(ProjectDir, '/', P1),
-            atom_concat(P1, RelPath, AbsPath)
-        ;   AbsPath = RelPath
-        ),
-        (   exists_file(AbsPath)
-        ->  read_file_to_string(AbsPath, Template, []),
-            config_ops_to_template_vars_fs(ConfigOps, TemplateVars),
-            render_template(Template, TemplateVars, Code0),
-            atom_string(Code0, Code)
-        ;   format(atom(Code), '// Kernel ~w: template not found at ~w', [Key, AbsPath])
-        )
-    ;   format(atom(Code), '// Kernel ~w: no F# template available', [Key])
+    (   fsharp_kernel_template_path(Kind, AbsPath),
+        exists_file(AbsPath)
+    ->  read_file_to_string(AbsPath, Template, []),
+        config_ops_to_template_vars_fs(ConfigOps, TemplateVars),
+        render_template(Template, TemplateVars, Code0),
+        atom_string(Code0, Code)
+    ;   throw(error(existence_error(fsharp_native_kernel_handler, Kind),
+                    context(render_kernel_function_fs/2, Key)))
     ).
 
 config_ops_to_template_vars_fs([], []).
@@ -3585,7 +3665,7 @@ config_ops_to_template_vars_fs([Op|Rest], [Key=Value|RestVars]) :-
 
 generate_execute_foreign_fs(DetectedKernels, Code) :-
     with_output_to(string(Code), (
-        format("and executeForeign (ctx: WamContext) (pred: string) (s: WamState) : WamState option =~n"),
+        format("and executeForeign (ctx: WamContext) (pred: string) (completeReturn: bool) (s: WamState) : WamState option =~n"),
         format("    match pred with~n"),
         forall(member(KV, DetectedKernels), emit_execute_foreign_entry_fs(KV)),
         format("    | _ -> None~n")
@@ -3737,17 +3817,34 @@ emit_reg_extraction_fs(VarName, integer) :-
 emit_stream_binding_multi_fs(OutputRegs, Indent) :-
     length(OutputRegs, NOuts),
     format('~wlet retPC = s.WsCP~n', [Indent]),
+    format('~wlet returnCP, returnCutBar, returnB0Stack =~n', [Indent]),
+    format('~w    if completeReturn then~n', [Indent]),
+    format('~w        match s.WsB0Stack with~n', [Indent]),
+    format('~w        | top :: rest -> 0, top, rest~n', [Indent]),
+    format('~w        | [] -> 0, 0, []~n', [Indent]),
+    format('~w    else~n', [Indent]),
+    format('~w        s.WsCP, s.WsCutBar, s.WsB0Stack~n', [Indent]),
     emit_multi_out_derefs_fs(OutputRegs, Indent),
+    % Respect already-bound output registers (e.g. tc(+Source, +Target)):
+    % filter the native result stream before FFIStreamRetry packing.
+    % Mirrors Rust transitive_closure2 target_filter retain.
+    emit_bound_output_filter_fs(OutputRegs, NOuts, Indent),
     format('~wlet bindResult ', [Indent]),
     emit_tuple_pattern_fs(NOuts),
     format(' =~n', []),
     format('~w    let ', [Indent]),
     emit_multi_wrap_bindings_fs(OutputRegs, 1),
+    format('~w    let trailDelta = [', [Indent]),
+    emit_outreg_values_list_fs(OutputRegs, 1),
+    format('] |> List.sumBy (function Unbound _ -> 1 | _ -> 0)~n', []),
     format('~w    { s with WsPC = retPC~n', [Indent]),
+    format('~w             WsCP = returnCP~n', [Indent]),
+    format('~w             WsCutBar = returnCutBar~n', [Indent]),
+    format('~w             WsB0Stack = returnB0Stack~n', [Indent]),
     emit_multi_reg_updates_fs(OutputRegs, Indent),
     emit_multi_binding_updates_fs(OutputRegs, Indent),
     emit_multi_trail_updates_fs(OutputRegs, Indent),
-    format('~w             WsTrailLen = s.WsTrailLen + ~w }~n', [Indent, NOuts]),
+    format('~w             WsTrailLen = s.WsTrailLen + trailDelta }~n', [Indent]),
     format('~wmatch results with~n', [Indent]),
     format('~w| [] -> None~n', [Indent]),
     format('~w| [h] -> Some (bindResult h)~n', [Indent]),
@@ -3771,14 +3868,109 @@ emit_stream_binding_multi_fs(OutputRegs, Indent) :-
     format('~w               CpAggFrame = None~n', [Indent]),
     format('~w               CpBuiltin  = Some (FFIStreamRetry (', [Indent]),
     emit_outregs_list_fs(OutputRegs),
-    format(', outVars, restWrapped, retPC)) }~n', []),
+    format(', outVars, restWrapped, retPC, returnCP, returnCutBar, returnB0Stack)) }~n', []),
     format('~w    Some { s1 with WsCPs = cp :: s1.WsCPs; WsCPsLen = s1.WsCPsLen + 1 }~n', [Indent]).
+
+%% emit_bound_output_filter_fs(+OutputRegs, +NOuts, +Indent)
+%  Drop native results that conflict with already-bound output registers.
+emit_bound_output_filter_fs(OutputRegs, NOuts, Indent) :-
+    format('~wlet results =~n', [Indent]),
+    format('~w    results~n', [Indent]),
+    format('~w    |> List.filter (fun ', [Indent]),
+    emit_tuple_pattern_fs(NOuts),
+    format(' ->~n', []),
+    emit_bound_output_filter_body_fs(OutputRegs, 1, Indent),
+    format('~w       )~n', [Indent]).
+
+%% Single-output: a bare match expression. Multi-output: &&-chain of matches.
+emit_bound_output_filter_body_fs([output(RegN, Type)], I, Indent) :- !,
+    format('~w        match outReg_~w with~n', [Indent, RegN]),
+    format('~w        | Unbound _ -> true~n', [Indent]),
+    emit_bound_output_type_match_fs(Type, I, Indent),
+    format('~w        | _ -> false~n', [Indent]).
+emit_bound_output_filter_body_fs(OutputRegs, I, Indent) :-
+    format('~w        (~n', [Indent]),
+    emit_bound_output_filter_conds_fs(OutputRegs, I, Indent),
+    emit_output_alias_filter_conds_fs(OutputRegs, Indent),
+    format('~w        )~n', [Indent]).
+
+emit_bound_output_filter_conds_fs([], _, Indent) :-
+    format('~w         true~n', [Indent]).
+emit_bound_output_filter_conds_fs([output(RegN, Type)|Rest], I, Indent) :-
+    format('~w         (match outReg_~w with~n', [Indent, RegN]),
+    format('~w          | Unbound _ -> true~n', [Indent]),
+    % Multi-output matches are nested two spaces deeper than the
+    % single-output form. Keep every case at the same offside column.
+    atom_concat(Indent, '  ', NestedIndent),
+    emit_bound_output_type_match_fs(Type, I, NestedIndent),
+    format('~w          | _ -> false)~n', [Indent]),
+    (   Rest = []
+    ->  true
+    ;   format('~w         &&~n', [Indent]),
+        I1 is I + 1,
+        emit_bound_output_filter_conds_fs(Rest, I1, Indent)
+    ).
+
+%% Aliased output registers must still obey ordinary Prolog unification.
+%  The native tuple components are ground, so pairwise equality of their
+%  wrapped WAM Values is sufficient. Without this guard td(+S,X,X) could
+%  write an Atom to A2 and an Integer to A3 while adding the same variable id
+%  twice to WsBindings. Filtering once here also makes every FFIStreamRetry
+%  tuple safe for the existing direct retry binder.
+emit_output_alias_filter_conds_fs(OutputRegs, Indent) :-
+    index_output_regs_fs(OutputRegs, 1, Indexed),
+    emit_output_alias_pairs_fs(Indexed, Indent).
+
+index_output_regs_fs([], _, []).
+index_output_regs_fs([output(RegN, Type)|Rest], I,
+                     [indexed_output(I, RegN, Type)|IndexedRest]) :-
+    I1 is I + 1,
+    index_output_regs_fs(Rest, I1, IndexedRest).
+
+emit_output_alias_pairs_fs([], _).
+emit_output_alias_pairs_fs([Left|Rest], Indent) :-
+    emit_output_alias_pairs_with_fs(Left, Rest, Indent),
+    emit_output_alias_pairs_fs(Rest, Indent).
+
+emit_output_alias_pairs_with_fs(_, [], _).
+emit_output_alias_pairs_with_fs(indexed_output(I, RegN, Type),
+                                [indexed_output(J, OtherRegN, OtherType)|Rest],
+                                Indent) :-
+    fsharp_wam_result_wrap_rv(Type, I, LeftValue),
+    fsharp_wam_result_wrap_rv(OtherType, J, RightValue),
+    format('~w         &&~n', [Indent]),
+    format('~w         (match outReg_~w, outReg_~w with~n',
+           [Indent, RegN, OtherRegN]),
+    format('~w          | Unbound leftVar, Unbound rightVar when leftVar = rightVar ->~n',
+           [Indent]),
+    format('~w              (~w) = (~w)~n', [Indent, LeftValue, RightValue]),
+    format('~w          | _ -> true)~n', [Indent]),
+    emit_output_alias_pairs_with_fs(indexed_output(I, RegN, Type),
+                                    Rest, Indent).
+
+emit_bound_output_type_match_fs(atom, I, Indent) :- !,
+    format('~w        | Atom t ->~n', [Indent]),
+    format('~w            match Map.tryFind t ctx.WcAtomIntern with~n', [Indent]),
+    format('~w            | Some id -> id = rv_~w~n', [Indent, I]),
+    format('~w            | None -> false~n', [Indent]).
+emit_bound_output_type_match_fs(integer, I, Indent) :- !,
+    format('~w        | Integer i -> i = rv_~w~n', [Indent, I]).
+emit_bound_output_type_match_fs(float, I, Indent) :- !,
+    format('~w        | Float f -> f = rv_~w~n', [Indent, I]).
+emit_bound_output_type_match_fs(_, _, _Indent).
 
 emit_multi_out_derefs_fs([], _).
 emit_multi_out_derefs_fs([output(RegN, _)|Rest], Indent) :-
     format('~wlet outReg_~w = s.WsRegs.[~w] |> derefVar s.WsBindings~n',
            [Indent, RegN, RegN]),
     emit_multi_out_derefs_fs(Rest, Indent).
+
+emit_outreg_values_list_fs([], _).
+emit_outreg_values_list_fs([output(RegN, _)|Rest], I) :-
+    (   I =:= 1 -> true ; format('; ', []) ),
+    format('outReg_~w', [RegN]),
+    I1 is I + 1,
+    emit_outreg_values_list_fs(Rest, I1).
 
 emit_tuple_pattern_fs(1) :- format('rv_1', []).
 emit_tuple_pattern_fs(N) :-
@@ -3854,7 +4046,10 @@ emit_multi_outvars_fs(OutputRegs, Indent) :-
 emit_outvars_list_fs([], _).
 emit_outvars_list_fs([output(RegN, _)|Rest], I) :-
     (   I =:= 1 -> true ; format('; ', []) ),
-    format('match outReg_~w with | Unbound v -> v | _ -> -1', [RegN]),
+    % Parenthesize each match: bare `match ... | _ -> -1; match ...`
+    % is parsed as one list element (`;` sequences inside the last arm),
+    % which breaks List.fold2/iter2 in FFIStreamRetry for multi-output.
+    format('(match outReg_~w with | Unbound v -> v | _ -> -1)', [RegN]),
     I1 is I + 1,
     emit_outvars_list_fs(Rest, I1).
 
@@ -4963,7 +5158,11 @@ write_wam_fsharp_project(Predicates, Options0, ProjectDir) :-
         % signals support bidirectional, the selector auto-selects.
         recurrence_inputs:build_workload_signals(Options, ResWorkload),
         maplist(wam_fsharp_apply_strategy_selector(ResWorkload, Options),
-                DetectedKernels0, DetectedKernels),
+                DetectedKernels0, SelectedKernels),
+        % Strategy selection may replace a detected kernel kind. Recheck the
+        % emitted kind so an unsupported upgrade can never reintroduce an
+        % undefined nativeKernel_* call after the initial capability gate.
+        filter_supported_kernel_pairs_fs(SelectedKernels, DetectedKernels),
         (   DetectedKernels \= []
         ->  pairs_keys(DetectedKernels, DetectedKeys),
             format(user_error, '[WAM-FSharp] detected kernels: ~w~n', [DetectedKeys])
@@ -5100,6 +5299,10 @@ compile_predicates_to_fsharp(Predicates, Options, DetectedKernels, BasePCMap, Co
     % Build merged code list and label map
     maplist(pred_func_name_fs, WamPredicates, FuncNames),
     emit_merged_code_build_fs(FuncNames, MergedCodeBuild),
+    % WSP3: materialize relation-keyed weighted adjacency from declared
+    % inline edge facts so generated projects do not leave WcFfiWeightedFacts
+    % empty when a native weighted_shortest_path3 handler is present.
+    emit_weighted_ffi_facts_fs(DetectedKernels, Options, WeightedBlock),
     format(string(Code),
 'module Predicates
 
@@ -5109,7 +5312,122 @@ open WamRuntime
 ~w
 
 ~w
-', [AllPredCode, MergedCodeBuild]).
+~w
+', [AllPredCode, MergedCodeBuild, WeightedBlock]).
+
+%% emit_weighted_ffi_facts_fs(+DetectedKernels, +Options, -Code)
+%  Emit declaredWeightedEdgeFacts / buildWeightedFfiFacts helpers into
+%  Predicates.fs. External weighted fact-source options (when present) are
+%  merged on top of inline triples so existing external wiring is preserved.
+emit_weighted_ffi_facts_fs(DetectedKernels, Options, Code) :-
+    findall(Rel-Triples,
+            ( (   member(_-recursive_kernel(weighted_shortest_path3, _, ConfigOps),
+                         DetectedKernels),
+                  member(edge_pred(EdgePred/3), ConfigOps)
+              ;   member(_-recursive_kernel(astar_shortest_path4, _, ConfigOps),
+                         DetectedKernels),
+                  (   member(edge_pred(EdgePred/3), ConfigOps)
+                  ;   member(direct_dist_pred(EdgePred/3), ConfigOps)
+                  ;   member(direct_dist_pred(EdgePred), ConfigOps),
+                      atom(EdgePred)
+                  )
+              ),
+              atom(EdgePred),
+              collect_weighted_edge_triples_fs(EdgePred, Triples0),
+              Rel = EdgePred,
+              Triples = Triples0
+            ),
+            InlineRaw),
+    sort(InlineRaw, InlineSorted),
+    (   option(external_weighted_facts(External), Options)
+    ->  true
+    ;   External = []
+    ),
+    append(InlineSorted, External, Combined0),
+    keysort(Combined0, Combined1),
+    group_pairs_by_key(Combined1, Grouped),
+    maplist(merge_weighted_rel_group_fs, Grouped, RelEntries),
+    emit_weighted_ffi_facts_block_fs(RelEntries, Code).
+
+merge_weighted_rel_group_fs(Rel-Lists, Rel-Triples) :-
+    append(Lists, Flat),
+    sort(Flat, Triples).
+
+collect_weighted_edge_triples_fs(EdgePred, Triples) :-
+    functor(Head, EdgePred, 3),
+    findall(row(From, To, W),
+            (   clause(user:Head, true),
+                Head =.. [EdgePred, From, To, W]
+            ),
+            Rows),
+    validate_weighted_rows_fs(EdgePred, Rows, Triples).
+
+validate_weighted_rows_fs(_, [], []).
+validate_weighted_rows_fs(EdgePred, [row(From, To, W0)|Rows], Triples) :-
+    (   atom(From)
+    ->  (   atom(To), number(W0)
+        ->  W is float(W0),
+            Triples = [triple(From, To, W)|Rest]
+        ;   Fact =.. [EdgePred, From, To, W0],
+            format(atom(Message),
+                   'native weighted relation ~w requires atom/atom/number rows',
+                   [EdgePred]),
+            throw(error(domain_error(weighted_kernel_fact, Fact),
+                        context(wam_fsharp_target:emit_weighted_ffi_facts_fs/3,
+                                Message)))
+        )
+    ;   % Non-atom sources cannot be reached from the atom-keyed native ABI.
+        Triples = Rest
+    ),
+    validate_weighted_rows_fs(EdgePred, Rows, Rest).
+
+emit_weighted_ffi_facts_block_fs(RelEntries, Code) :-
+    maplist(emit_weighted_rel_entry_fs, RelEntries, EntryAtoms),
+    (   EntryAtoms = []
+    ->  EntriesStr = ''
+    ;   atomic_list_concat(EntryAtoms, ';\n      ', EntriesJoined),
+        format(atom(EntriesStr), '~n      ~w~n    ', [EntriesJoined])
+    ),
+    format(string(Code),
+'
+/// Relation-keyed weighted edge facts declared inline (and any
+/// option(external_weighted_facts/1) triples). Used to populate
+/// WcFfiWeightedFacts for weighted_shortest_path3 / A* kernels.
+let declaredWeightedEdgeFacts : Map<string, (string * string * float) list> =
+    Map.ofList [~w]
+
+let declaredWeightedAtoms : string list =
+    declaredWeightedEdgeFacts
+    |> Map.toList
+    |> List.collect (fun (_, triples) ->
+        triples |> List.collect (fun (f, t, _) -> [f; t]))
+    |> List.distinct
+
+/// Build interned adjacency Map<rel, Map<from, (to * weight) list>>.
+let buildWeightedFfiFacts (intern: Map<string, int>)
+    : Map<string, Map<int, (int * float) list>> =
+    declaredWeightedEdgeFacts
+    |> Map.map (fun _ triples ->
+        triples
+        |> List.choose (fun (f, t, w) ->
+            match Map.tryFind f intern, Map.tryFind t intern with
+            | Some fi, Some ti -> Some (fi, (ti, w))
+            | _ -> None)
+        |> List.groupBy fst
+        |> List.map (fun (k, vs) -> k, vs |> List.map snd)
+        |> Map.ofList)
+', [EntriesStr]).
+
+emit_weighted_rel_entry_fs(Rel-Triples, Atom) :-
+    maplist(emit_weighted_triple_literal_fs, Triples, TripleAtoms),
+    (   TripleAtoms = []
+    ->  TriplesStr = ''
+    ;   atomic_list_concat(TripleAtoms, '; ', TriplesStr)
+    ),
+    format(atom(Atom), '("~w", [~w])', [Rel, TriplesStr]).
+
+emit_weighted_triple_literal_fs(triple(From, To, W), Atom) :-
+    format(atom(Atom), '("~w", "~w", ~w)', [From, To, W]).
 
 compile_one_predicate_fs(Options, BasePCMap, IsoConfig, PredIndicator, Code) :-
     %% Shape check: must be Module:Name/Arity or Name/Arity.  The
@@ -5237,6 +5555,10 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
     ->  KernelKind = FirstKernelKind
     ;   KernelKind = unknown
     ),
+    %% Additive conformance driver (CONF-FSHARP): when true, Program.fs
+    %% prints true/false for argv[0]=pred/arity via tryRun. Default
+    %% benchmark driver (human-facing TSV/LMDB timing) is unchanged.
+    option(conformance_main(ConfMain), Options, false),
     Dict = [
         foreign_preds = ForeignPredsStr,
         lookup_sources_expr = LookupSourcesExpr,
@@ -5248,7 +5570,8 @@ generate_program_fs(_Predicates, DetectedKernels, Options, Code) :-
         branch_factor = BranchFactor,
         dimensionality = Dimensionality,
         materialisation = Materialisation,
-        l2_capacity = L2CapStr
+        l2_capacity = L2CapStr,
+        conformance_main = ConfMain
     ],
     fsharp_program_template_source(Template),
     render_template(Template, Dict, Code).

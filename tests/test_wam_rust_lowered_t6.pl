@@ -130,7 +130,7 @@ fn call(setup: &dyn Fn(&mut WamState), f: fn(&mut WamState) -> bool) -> bool {
     f(&mut vm)
 }
 fn i(n: i64) -> Value { Value::Integer(n) }
-fn a(s: &str) -> Value { Value::Atom(s.to_string()) }
+fn a(s: &str) -> Value { Value::Atom(s.into()) }
 
 #[test]
 fn t6_parity() {

@@ -1,17 +1,29 @@
--- | Native transitive closure for binary edge relations.
+-- | Native transitive closure for binary edge relations (strict R+).
 -- Auto-generated from kernel detection. Edge predicate: {{edge_pred}}.
--- Given a source node, returns all transitively reachable target nodes.
--- Atoms are interned at the FFI boundary so the traversal uses IntMap
--- and IntSet for O(log n) lookups without hashing.
+--
+-- Contract: docs/design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md
+-- Target is emitted iff a ≥1-edge path reaches it. Source is emitted only
+-- for a self-loop or nonempty cycle back to Source. Visited tracks nodes
+-- discovered via an outgoing edge (not seeded with Source) — same pattern
+-- as Rust/Scala/F#.
+--
+-- Organization: Mustache kept (non-trivial handler; F# TC2 mirrors this
+-- file). Atoms are interned at the FFI boundary so traversal uses IntMap
+-- / IntSet.
 nativeKernel_transitive_closure :: EdgeLookup -> Int -> [Int]
 nativeKernel_transitive_closure edges source =
   go [source] IS.empty []
   where
     go [] _ acc = acc
-    go (node:queue) visited acc
-      | IS.member node visited = go queue visited acc
-      | otherwise =
-          let visited' = IS.insert node visited
-              neighbors = edges node
-              newTargets = filter (\n -> not (IS.member n visited')) neighbors
-          in go (queue ++ newTargets) visited' (if node == source then acc else acc ++ [node])
+    go (node:queue) visited acc =
+      let (visited', newTargetsRev) =
+            foldl' discover (visited, []) (edges node)
+          newTargets = reverse newTargetsRev
+      in go (queue ++ newTargets) visited' (acc ++ newTargets)
+
+    -- Update the seen set for each neighbor, rather than filtering the
+    -- whole adjacency list against the old set. This keeps only the first
+    -- occurrence of duplicate edges while preserving discovery order.
+    discover (seen, foundRev) target
+      | IS.member target seen = (seen, foundRev)
+      | otherwise = (IS.insert target seen, target : foundRev)

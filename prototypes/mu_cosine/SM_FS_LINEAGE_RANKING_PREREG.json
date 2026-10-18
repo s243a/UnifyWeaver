@@ -1,0 +1,255 @@
+{
+  "schema": "unifyweaver.sm-fs-lineage-ranking-prereg.v1",
+  "protocol_path": "PROTOCOL_sm_fs_lineage_ranking.md",
+  "protocol_sha256": "25bac71a67b317700f6a5123af238f01e9b57225bf4deaf71a6470486bd194f3",
+  "evidence_status": "prospective-exploratory-catalog-transductive",
+  "prior_pilot": {
+    "decision_eligible": false,
+    "ranking_evidence": false,
+    "transfer_evidence": false,
+    "reproduced_tuned_row_correlation": 0.82,
+    "reproduced_current_warm_start_row_correlation": -0.112,
+    "reported_warm_start_0.37_is_content_bound": false,
+    "validation_rows": 384,
+    "validation_rows_with_train_ancestor": 356,
+    "validation_rows_with_same_train_ancestor_target": 299,
+    "ancestor_mean_baseline_correlation": 0.63
+  },
+  "source_bundle": {
+    "schema": "unifyweaver.sm-fs-training-bundle.v1",
+    "privacy_policy": "public-only",
+    "process_expression": "lineage(fs,decay=0.85)",
+    "manifest_file_sha256": "466adfcf2e7c5914dad27b548c3f009804fec12e633498e187b0b4df71a98d61",
+    "manifest_internal_sha256": "e36164b7fef0569acfaeafb667628062cf37ced7ad04df0f34543c899086efe2",
+    "ledger_sha256": "b45ff8ded88f2e5d5ded78664b2d381a017a5722464f956f6b44d660f5060b40",
+    "targets_sha256": "c3b298d5335ee901111f4985bbf5f7c5feb017c503a8c81db60dba1b947ac051",
+    "e5_revision": "ffb93f3bd4047442299a41ebb6fa998a38507c52",
+    "constructor_input": "verified-target-projection-only",
+    "ledger_catalog_authorized": false,
+    "reserve_rows_authorized": false,
+    "cross_lineage_rows_authorized": false
+  },
+  "construction": {
+    "schema": "unifyweaver.sm-fs-lineage-ranking-bundle.v1",
+    "catalog": "sorted-union-of-explore-positive-ancestor-paths",
+    "candidate_enumeration": "exhaustive",
+    "target_kind": "graded-graph-judge",
+    "negative_means_semantically_unsuitable": false,
+    "counts": {
+      "queries": 361,
+      "candidates": 359,
+      "pairs": 129599,
+      "positives": 2792,
+      "nonancestors": 126807,
+      "hard_nonancestors": 1819,
+      "medium_nonancestors": 7814,
+      "easy_nonancestors": 117174
+    },
+    "graph_target": {
+      "decay": 0.85,
+      "floor": 0.02,
+      "formula": "max(floor,decay^distance*depth(lca)/depth(destination))",
+      "positive_representation": "certified-six-decimal-ascii-parsed-to-binary64",
+      "negative_representation": "exact-reduced-rational-then-correctly-rounded-binary64",
+      "different_root_lca_fraction": 0.0,
+      "rounding_record": "reduced-rational-plus-float.hex"
+    },
+    "relations": {
+      "descendant": "destination-is-strict-prefix-of-candidate",
+      "sibling": "same-immediate-parent-and-equal-depth",
+      "near_branch": "shared-root-not-descendant-or-sibling-and-distance-at-most-4",
+      "same_root_far": "shared-root-not-descendant-or-sibling-and-distance-at-least-5",
+      "cross_root": "longest-common-prefix-length-zero"
+    },
+    "hardness": {
+      "hard": "reachable-distance-1-or-2",
+      "medium": "reachable-distance-3-or-4",
+      "easy": "reachable-distance-at-least-5-or-cross-root"
+    },
+    "query_mass": {
+      "positive": 0.5,
+      "nonancestor": 0.5,
+      "negative_bucket_ratio": {
+        "hard": 3,
+        "medium": 2,
+        "easy": 1
+      },
+      "empty_bucket_topup": false
+    }
+  },
+  "split": {
+    "kind": "adaptive-depth-3-lineage-blocked-five-fold",
+    "folds": 5,
+    "cap": 28,
+    "deepened_prefixes": 14,
+    "blocks": 82,
+    "fold_map_counts": [
+      73,
+      72,
+      72,
+      72,
+      72
+    ],
+    "fold_block_counts": [
+      16,
+      16,
+      16,
+      17,
+      17
+    ],
+    "assignment": "descending-count-then-sha256-salted-block-then-utf8-greedy-lightest-fold",
+    "assignment_sha256": "b5439b1acdfb5020ecb7fb4fad437fd183242408d09056e1ed7ec90d33335f37",
+    "block_split_authorized": false,
+    "evidence_scope": "map-near-lineage-blocked-catalog-transductive"
+  },
+  "training": {
+    "seeds": [
+      3997001,
+      3997002,
+      3997003
+    ],
+    "steps": 800,
+    "batch_size": 48,
+    "learning_rate": 0.0005,
+    "anchor_weight": 1.0,
+    "gradient_clip_norm": 1.0,
+    "early_stopping": false,
+    "matched_initialization_budget_query_schedule_common_positive_batches_and_augmentation": true,
+    "sampler": {
+      "kind": "paired-query-two-slot-sha256-rejection-v1",
+      "sampler_id": "sm-fs-ranking-sampler-v1",
+      "key_schema": "unifyweaver.sm-fs-ranking-sampler-key.v1",
+      "serialization": "canonical-json-utf8-sorted-keys-compact-separators-terminal-lf",
+      "indexing": "fold-step-draw-retry-zero-based",
+      "query_draws_per_step": 24,
+      "rows_per_step": 48,
+      "with_replacement": true,
+      "query_population": "canonical-utf8-sorted-training-query-list",
+      "domain_separated_roles": [
+        "query",
+        "common-positive",
+        "contrast-positive",
+        "negative-bucket",
+        "negative-candidate"
+      ],
+      "common_slot": "uniform-positive-both-arms",
+      "contrast_slot_positive_only": "independent-uniform-positive",
+      "contrast_slot_graded_negative": "renormalized-3-2-1-bucket-then-uniform-candidate",
+      "bucket_order": [
+        "hard",
+        "medium",
+        "easy"
+      ],
+      "batch_loss": "unweighted-mean-squared-error-over-sampled-rows",
+      "stored_objective_weight_multiplied_again": false,
+      "anchor_rows": "common-positive-slots-only-identical-across-arms",
+      "anchor_training_augmentation": false,
+      "known_answer_vectors": [
+        {
+          "bucket": "",
+          "digest": "12ccc6d6211021a2e2c210bee949e06048b08b573b80cd5274465d9acd489939",
+          "draw": 0,
+          "fold": 0,
+          "index": 103,
+          "n": 361,
+          "query_id": "",
+          "retry": 0,
+          "role": "query",
+          "seed": 3997001,
+          "step": 0
+        },
+        {
+          "bucket": "",
+          "digest": "e21acfa34e9408b60e1c4922b904821e060ed009b0a141e7a986556d82aba5d8",
+          "draw": 5,
+          "fold": 2,
+          "index": 2,
+          "n": 7,
+          "query_id": "Q",
+          "retry": 0,
+          "role": "common-positive",
+          "seed": 3997002,
+          "step": 17
+        },
+        {
+          "bucket": "",
+          "digest": "4dd9521b16106af60d590b85a66c65d2ade1a9b30e5954f5bc2d27f651eb2d32",
+          "draw": 23,
+          "fold": 4,
+          "index": 2,
+          "n": 6,
+          "query_id": "Q",
+          "retry": 0,
+          "role": "negative-bucket",
+          "seed": 3997003,
+          "step": 799
+        },
+        {
+          "bucket": "easy",
+          "digest": "819de87884b0fe635fea21a70f88aacd7c713cd72672af901e799f34e4ec6a4f",
+          "draw": 11,
+          "fold": 1,
+          "index": 98,
+          "n": 113,
+          "query_id": "Q",
+          "retry": 0,
+          "role": "negative-candidate",
+          "seed": 3997001,
+          "step": 41
+        }
+      ]
+    },
+    "decision_arms": [
+      "positive_only",
+      "graded_negative"
+    ],
+    "descriptive_arms": [
+      "unchanged_warm_start",
+      "binary_zero_negative",
+      "e5_title_cosine"
+    ],
+    "lineage_rank_softmax_authorized": false,
+    "embedding_text": "certified-map-title-and-candidate-leaf-title-only",
+    "path_components_in_embedding_text": false
+  },
+  "primary": {
+    "metric": "exact-destination-mrr",
+    "contrast": "graded-negative-minus-positive-only",
+    "seed_aggregation": "mean-per-query-before-contrast",
+    "minimum_point_gain": 0.01,
+    "interval_lower_strictly_greater_than": 0.0,
+    "bootstrap": {
+      "unit": "adaptive-lineage-block",
+      "resamples": 9999,
+      "seed": 3997999,
+      "confidence": 0.95,
+      "minimum_blocks_for_decision": 20
+    },
+    "interval_scope": "fixed-fit-conditional-on-frozen-corpus-folds-and-three-seeds",
+    "passing_authorizes": "new-reserve-preregistration-only"
+  },
+  "reserve": {
+    "reported_count": 1481,
+    "opened_by_constructor": false,
+    "opened_by_trainer": false,
+    "scored_by_protocol": false
+  },
+  "privacy": {
+    "local_only": true,
+    "directory_mode": "0700",
+    "file_mode": "0600",
+    "atomic_no_replace": true,
+    "provider_calls_with_source_content": false,
+    "checkpoint_release_authorized": false
+  },
+  "constructor_implementation_authorized": true,
+  "model_fitting_authorized": false,
+  "fitting_blocked_on": [
+    "content-bound-initialized-checkpoint-and-growth",
+    "content-bound-tokenizer-and-text-table",
+    "content-bound-training-code-and-plan",
+    "optimizer-trainable-parameter-anchor-and-augmentation-lock",
+    "numeric-environment-and-determinism-lock"
+  ],
+  "prereg_id": "0235521270c565a413d69feaa01a6e101fb533261942451a43ddf963e409aca2"
+}

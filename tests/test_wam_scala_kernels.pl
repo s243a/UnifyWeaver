@@ -39,6 +39,12 @@ user:kedge(b, c).
 user:kedge(c, d).
 user:kedge(a, e).
 user:kedge(e, f).
+% Deliberate mixed-domain path. Native TD3/TPD4 Source guards reject the
+% integer key, and TPD4 must also ignore the integer destination reached from
+% atom a rather than emit it or continue through it.
+user:kedge(a, 7).
+user:kedge(7, integer_target_child).
+user:kedge(1, integer_key_target).
 
 user:ktc(X, Y) :- kedge(X, Y).
 user:ktc(X, Y) :- kedge(X, Z), ktc(Z, Y).
@@ -189,6 +195,12 @@ test(distance_kernel_emits_handler_and_stub) :-
             Dir),
         kprogram_source(Dir, 'kd.core', Src),
         assertion(sub_string(Src, _, _, _, "CallForeign(\"ktd\", 3)")),
+        sub_string(Src, GuardAt, _, _, "args(0) match"),
+        sub_string(Src, QueueAt, _, _,
+                   "Queue[(WamTerm, Int)]((source, 0))"),
+        assertion(GuardAt < QueueAt),
+        assertion(sub_string(Src, _, _, _, "case source @ Atom(_) =>")),
+        assertion(sub_string(Src, _, _, _, "case _ => ForeignFail")),
         assertion(sub_string(Src, _, _, _, "3 -> IntTerm")),
         assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
         delete_directory_and_contents(Dir)
@@ -206,6 +218,8 @@ test(parent_distance_kernel_emits_handler_and_stub) :-
             Dir),
         kprogram_source(Dir, 'kp.core', Src),
         assertion(sub_string(Src, _, _, _, "CallForeign(\"kpd\", 4)")),
+        assertion(sub_string(Src, _, _, _,
+                   "vs.map(_._2).collect { case atom @ Atom(_) => atom }")),
         assertion(sub_string(Src, _, _, _, "4 -> IntTerm")),
         assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
         delete_directory_and_contents(Dir)
@@ -223,6 +237,10 @@ test(step_parent_distance_kernel_emits_handler_and_stub) :-
             Dir),
         kprogram_source(Dir, 'ks.core', Src),
         assertion(sub_string(Src, _, _, _, "CallForeign(\"ksp\", 5)")),
+        assertion(sub_string(Src, _, _, _,
+                   "vs.map(_._2).collect { case atom @ Atom(_) => atom }")),
+        assertion(sub_string(Src, _, _, _, "case source @ Atom(_) =>")),
+        assertion(sub_string(Src, _, _, _, "case _ => ForeignFail")),
         assertion(sub_string(Src, _, _, _, "5 -> IntTerm")),
         assertion(sub_string(Src, _, _, _, "\"kedge/2\" ->")),
         delete_directory_and_contents(Dir)
@@ -337,6 +355,15 @@ test(transitive_distance_parity,
     ksame(Run, 'ktd/3', [a,d,'2'], "false"),
     ksame(Run, 'ktd/3', [a,c,'3'], "false").
 
+test(transitive_distance_rejects_non_atom_source,
+     [setup(kbuild_both([user:ktd/3, user:kedge/2], 'gen.ktd_source_gate', Run)),
+      cleanup(kcleanup(Run))]) :-
+    % Run the native build directly: generic recursive Prolog accepts the
+    % integer-key edge, while the strict TD3 native contract requires Atom.
+    Run = run(_ItDir, KnDir, _ItPkg, KnPkg),
+    krun(KnDir, KnPkg, 'ktd/3', ['1',integer_key_target,'1'], Out),
+    assertion(Out == "false").
+
 % transitive_parent_distance4: (target, immediate-parent, distance).
 test(transitive_parent_distance_parity,
      [setup(kbuild_both([user:kpd/4, user:kedge/2], 'gen.kpd', Run)),
@@ -349,6 +376,19 @@ test(transitive_parent_distance_parity,
     ksame(Run, 'kpd/4', [a,d,b,'3'], "false"),
     ksame(Run, 'kpd/4', [a,c,a,'2'], "false").
 
+test(transitive_parent_distance_rejects_non_atom_nodes,
+     [setup(kbuild_both([user:kpd/4, user:kedge/2],
+                        'gen.kpd_atom_nodes', Run)),
+      cleanup(kcleanup(Run))]) :-
+    % Run the native build directly: the generic recursive Prolog relation is
+    % term-polymorphic, while the fleet TPD4 contract is atom-node-only.
+    Run = run(_ItDir, KnDir, _ItPkg, KnPkg),
+    krun(KnDir, KnPkg, 'kpd/4', [a,'7',a,'1'], IntegerTarget),
+    assertion(IntegerTarget == "false"),
+    krun(KnDir, KnPkg, 'kpd/4',
+         [a,integer_target_child,'7','2'], IntegerParent),
+    assertion(IntegerParent == "false").
+
 % transitive_step_parent_distance5: (target, first-hop, parent, distance).
 test(transitive_step_parent_distance_parity,
      [setup(kbuild_both([user:ksp/5, user:kedge/2], 'gen.ksp', Run)),
@@ -360,6 +400,24 @@ test(transitive_step_parent_distance_parity,
     ksame(Run, 'ksp/5', [b,d,c,c,'2'], "true"),
     ksame(Run, 'ksp/5', [a,d,e,c,'3'], "false"),
     ksame(Run, 'ksp/5', [a,d,b,b,'3'], "false").
+
+test(transitive_step_parent_distance_rejects_non_atom_nodes,
+     [setup(kbuild_both([user:ksp/5, user:kedge/2],
+                        'gen.ksp_atom_nodes', Run)),
+      cleanup(kcleanup(Run))]) :-
+    % The generic recursive relation is term-polymorphic; the native TSPD5
+    % contract is not. Neither an integer Source/Target nor a path bridged by
+    % an integer node may reach the atom-only result stream.
+    Run = run(_ItDir, KnDir, _ItPkg, KnPkg),
+    krun(KnDir, KnPkg, 'ksp/5',
+         ['7',integer_target_child,integer_target_child,'7','1'],
+         IntegerSource),
+    assertion(IntegerSource == "false"),
+    krun(KnDir, KnPkg, 'ksp/5', [a,'7','7',a,'1'], IntegerTarget),
+    assertion(IntegerTarget == "false"),
+    krun(KnDir, KnPkg, 'ksp/5',
+         [a,integer_target_child,'7','7','2'], IntegerBridge),
+    assertion(IntegerBridge == "false").
 
 % category_ancestor: depth-bounded ancestor search. The recursive clause
 % reads max_depth/1 at runtime, so max_depth/1 is included in the predicate
@@ -415,7 +473,8 @@ collect_clauses(Pred, Arity, Clauses) :-
 
 kscala_available :-
     (   getenv('SCALA_SMOKE_TESTS', "1") -> true
-    ;   catch(process_create(path(scalac), ['--version'],
+    ;   % Scala 2.11 accepts -version; --version is a hard error.
+        catch(process_create(path(scalac), ['-version'],
                   [stdout(null), stderr(null), process(Pid)]), _, fail),
         process_wait(Pid, exit(0))
     ).
@@ -464,15 +523,53 @@ kcompile(Dir) :-
     absolute_file_name(Dir, AbsDir),
     directory_file_path(AbsDir, 'classes', ClassDir),
     make_directory_path(ClassDir),
+    % Scala 2.11 lacks String#toIntOption used in generated WamRuntime.
+    forall(
+        ( directory_member(AbsDir, RelF, [extensions([scala]), recursive(true)]),
+          directory_file_path(AbsDir, RelF, F),
+          file_base_name(F, 'WamRuntime.scala')
+        ),
+        kmake_runtime_scalac_211_compatible(F)
+    ),
     findall(F,
         ( directory_member(AbsDir, RelF, [extensions([scala]), recursive(true)]),
           directory_file_path(AbsDir, RelF, F) ), Sources),
     Sources \= [],
-    process_create(path(scalac), ['-d', ClassDir | Sources],
+    (   kscala_211_toolchain
+    ->  CompilePrefix = ['-usejavacp']
+    ;   CompilePrefix = []
+    ),
+    append(CompilePrefix, ['-d', ClassDir | Sources], CompileArgs),
+    process_create(path(scalac), CompileArgs,
         [cwd(AbsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
     read_string(O, _, _), read_string(E, _, Err), close(O), close(E),
     process_wait(Pid, exit(Code)),
     ( Code =:= 0 -> true ; throw(error(scala_compile_failed(Dir, Code, Err), _)) ).
+
+kscala_211_toolchain :-
+    catch(
+        ( process_create(path(scalac), ['-version'],
+                         [stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
+          read_string(O, _, Out), read_string(E, _, Err),
+          close(O), close(E),
+          process_wait(Pid, exit(0)),
+          string_concat(Out, Err, Combined),
+          sub_string(Combined, _, _, _, "2.11")
+        ),
+        _, fail).
+
+kmake_runtime_scalac_211_compatible(RuntimePath) :-
+    read_file_to_string(RuntimePath, Source0, []),
+    atom_string(SourceAtom0, Source0),
+    Old = 'name.tail.toIntOption.getOrElse(0)',
+    New = 'scala.util.Try(name.tail.toInt).getOrElse(0)',
+    atomic_list_concat(Parts, Old, SourceAtom0),
+    atomic_list_concat(Parts, New, SourceAtom),
+    atom_string(SourceAtom, Source),
+    setup_call_cleanup(
+        open(RuntimePath, write, Stream, [encoding(utf8)]),
+        write(Stream, Source),
+        close(Stream)).
 
 krun(Dir, Package, PredKey, Args, Output) :-
     absolute_file_name(Dir, AbsDir),
@@ -480,7 +577,11 @@ krun(Dir, Package, PredKey, Args, Output) :-
     format(atom(Main), '~w.GeneratedProgram', [Package]),
     atom_string(PredKey, PredStr),
     maplist([A,S]>>atom_string(A,S), Args, ArgStrs),
-    append(['-classpath', ClassDir, Main, PredStr], ArgStrs, ProcArgs),
+    (   kscala_211_toolchain
+    ->  RunPrefix = ['-usejavacp']
+    ;   RunPrefix = []
+    ),
+    append(RunPrefix, ['-classpath', ClassDir, Main, PredStr|ArgStrs], ProcArgs),
     process_create(path(scala), ProcArgs,
         [cwd(AbsDir), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
     read_string(O, _, Out0), read_string(E, _, _), close(O), close(E),

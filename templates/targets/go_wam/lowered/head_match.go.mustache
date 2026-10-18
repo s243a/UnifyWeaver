@@ -1,0 +1,11 @@
+{{I}}// {{Comment}}
+{{I}}{
+{{I}}    _a := vm.deref(vm.Regs[{{Ai}}])
+{{I}}    if _, ok := _a.(*Unbound); ok {
+{{I}}        u := _a.(*Unbound)
+{{I}}        vm.trailBinding(u.Idx)
+{{I}}        vm.putReg(u.Idx, {{GoVal}})
+{{I}}    } else if !valueEquals(vm.deref(_a), {{GoVal}}) {
+{{I}}        return false
+{{I}}    }
+{{I}}}

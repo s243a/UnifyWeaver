@@ -106,6 +106,10 @@ They differ only in the `(AGGREGATE, COMBINE)` pair — i.e. in the **semiring**
   `max_depth`, so each node carries a tiny fixed-width vector and the whole
   computation is one pass, `O(edges × max_depth)`.
 
+For the related symmetric circuit construction in which independent semantic
+embeddings modulate edge resistance and every node can leak to a common bath,
+see [LEAKY_GRAPH_DIFFUSION.md](LEAKY_GRAPH_DIFFUSION.md).
+
 Seeing all three as the same skeleton over different semirings is what lets a
 single recognition rule + a single lowering template cover them.
 

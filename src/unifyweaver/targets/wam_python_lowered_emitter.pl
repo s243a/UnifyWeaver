@@ -640,7 +640,7 @@ single_match_condition_py(get_list(AiStr), Cond) :-
 single_match_condition_py(get_value(XnStr, AiStr), Cond) :-
 	reg_int_py(XnStr, Xn), reg_int_py(AiStr, Ai),
 	format(string(Cond),
-		'unify(deref(state.regs[~w], state), deref(state.regs[~w], state), state)',
+		'unify(deref(get_reg(state, ~w), state), deref(get_reg(state, ~w), state), state)',
 		[Ai, Xn]).
 % Default fallback for unknown match instructions
 single_match_condition_py(_, "True").
@@ -659,7 +659,7 @@ single_match_binding_py(get_constant(C, AiStr), Indent, Lines) :-
 	constant_term_py(C, Term),
 	Indent1 is Indent + 4,
 	indent_str(Indent1, Pad),
-	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(DerefLine), "~w_a~w = deref(get_reg(state, ~w), state)", [Pad, Ai, Ai]),
 	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, ~w, state)",
 		[Pad, Ai, Ai, Term]),
 	Lines = [DerefLine, BindLine].
@@ -667,7 +667,7 @@ single_match_binding_py(get_integer(NStr, AiStr), Indent, Lines) :-
 	reg_int_py(AiStr, Ai),
 	Indent1 is Indent + 4,
 	indent_str(Indent1, Pad),
-	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(DerefLine), "~w_a~w = deref(get_reg(state, ~w), state)", [Pad, Ai, Ai]),
 	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Int(~w), state)",
 		[Pad, Ai, Ai, NStr]),
 	Lines = [DerefLine, BindLine].
@@ -675,7 +675,7 @@ single_match_binding_py(get_float(FStr, AiStr), Indent, Lines) :-
 	reg_int_py(AiStr, Ai),
 	Indent1 is Indent + 4,
 	indent_str(Indent1, Pad),
-	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(DerefLine), "~w_a~w = deref(get_reg(state, ~w), state)", [Pad, Ai, Ai]),
 	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Float(~w), state)",
 		[Pad, Ai, Ai, FStr]),
 	Lines = [DerefLine, BindLine].
@@ -683,7 +683,7 @@ single_match_binding_py(get_nil(AiStr), Indent, Lines) :-
 	reg_int_py(AiStr, Ai),
 	Indent1 is Indent + 4,
 	indent_str(Indent1, Pad),
-	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(DerefLine), "~w_a~w = deref(get_reg(state, ~w), state)", [Pad, Ai, Ai]),
 	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Atom(\"[]\"), state)",
 		[Pad, Ai, Ai]),
 	Lines = [DerefLine, BindLine].
@@ -692,7 +692,7 @@ single_match_binding_py(get_structure(FStr, AiStr), Indent, Lines) :-
 	runtime_functor_py(FStr, FuncName, Arity),
 	Indent1 is Indent + 4,
 	indent_str(Indent1, Pad),
-	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(DerefLine), "~w_a~w = deref(get_reg(state, ~w), state)", [Pad, Ai, Ai]),
 	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Compound(\"~w\", [None]*~w), state)",
 		[Pad, Ai, Ai, FuncName, Arity]),
 	Lines = [DerefLine, BindLine].
@@ -700,7 +700,7 @@ single_match_binding_py(get_list(AiStr), Indent, Lines) :-
 	reg_int_py(AiStr, Ai),
 	Indent1 is Indent + 4,
 	indent_str(Indent1, Pad),
-	format(string(DerefLine), "~w_a~w = deref(state.regs[~w], state)", [Pad, Ai, Ai]),
+	format(string(DerefLine), "~w_a~w = deref(get_reg(state, ~w), state)", [Pad, Ai, Ai]),
 	format(string(BindLine), "~wif isinstance(_a~w, Var): bind(_a~w, Compound(\".\", [None, None]), state)",
 		[Pad, Ai, Ai]),
 	Lines = [DerefLine, BindLine].
@@ -724,7 +724,7 @@ body_instrs_to_code_py([execute(PStr)], Indent, [Line]) :-
 	pred_to_func_name_py(PStr, FN),
 	Indent1 is Indent + 4,
 	indent_str(Indent1, Pad),
-	format(string(Line), "~wreturn ~w(state)", [Pad, FN]).
+	format(string(Line), "~wstate.temp_y_regs = None~n~wreturn ~w(state)", [Pad, Pad, FN]).
 body_instrs_to_code_py([Instr|Rest], Indent, [Line|Lines]) :-
 	Instr \= proceed,
 	Instr \= fail,
@@ -820,7 +820,7 @@ emit_instr_py(get_constant(C, AiStr), Code) :-
 	format(string(VarExpr), "_a~w", [Ai]),
 	constant_match_condition_py(C, VarExpr, Cond),
 	format(string(Code),
-'    _a~w = deref(state.regs[~w], state)
+'    _a~w = deref(get_reg(state, ~w), state)
     if isinstance(_a~w, Var): bind(_a~w, ~w, state)
     elif not (~w): return False',
 		[Ai, Ai, Ai, Ai, Term, Cond]).
@@ -828,18 +828,18 @@ emit_instr_py(get_constant(C, AiStr), Code) :-
 emit_instr_py(get_variable(XnStr, AiStr), Code) :-
 	reg_int_py(XnStr, Xn), reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    state.regs[~w] = state.regs[~w]', [Xn, Ai]).
+'    set_reg(state, ~w, get_reg(state, ~w))', [Xn, Ai]).
 
 emit_instr_py(get_value(XnStr, AiStr), Code) :-
 	reg_int_py(XnStr, Xn), reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    if not unify(deref(state.regs[~w], state), deref(state.regs[~w], state), state): return False',
+'    if not unify(deref(get_reg(state, ~w), state), deref(get_reg(state, ~w), state), state): return False',
 		[Ai, Xn]).
 
 emit_instr_py(get_nil(AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    _a~w = deref(state.regs[~w], state)
+'    _a~w = deref(get_reg(state, ~w), state)
     if isinstance(_a~w, Var): bind(_a~w, Atom("[]"), state)
     elif not (isinstance(_a~w, Atom) and _a~w.name == "[]"): return False',
 		[Ai, Ai, Ai, Ai, Ai, Ai]).
@@ -847,7 +847,7 @@ emit_instr_py(get_nil(AiStr), Code) :-
 emit_instr_py(get_integer(NStr, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    _a~w = deref(state.regs[~w], state)
+'    _a~w = deref(get_reg(state, ~w), state)
     if isinstance(_a~w, Var): bind(_a~w, Int(~w), state)
     elif not (isinstance(_a~w, Int) and _a~w.n == ~w): return False',
 		[Ai, Ai, Ai, Ai, NStr, Ai, Ai, NStr]).
@@ -855,7 +855,7 @@ emit_instr_py(get_integer(NStr, AiStr), Code) :-
 emit_instr_py(get_float(FStr, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    _a~w = deref(state.regs[~w], state)
+'    _a~w = deref(get_reg(state, ~w), state)
     if isinstance(_a~w, Var): bind(_a~w, Float(~w), state)
     elif not (isinstance(_a~w, Float) and _a~w.f == ~w): return False',
 		[Ai, Ai, Ai, Ai, FStr, Ai, Ai, FStr]).
@@ -864,7 +864,7 @@ emit_instr_py(get_structure(FStr, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	runtime_functor_py(FStr, RTName, Arity),
 	format(string(Code),
-'    _a~w = deref(state.regs[~w], state)
+'    _a~w = deref(get_reg(state, ~w), state)
     if isinstance(_a~w, Var):
         _c = Compound("~w", [None]*~w)
         _addr = heap_put(state, _c)
@@ -887,7 +887,7 @@ emit_instr_py(get_structure(FStr, AiStr), Code) :-
 emit_instr_py(get_list(AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    _a~w = deref(state.regs[~w], state)
+'    _a~w = deref(get_reg(state, ~w), state)
     if isinstance(_a~w, Var):
         _c = Compound(".", [None, None])
         _addr = heap_put(state, _c)
@@ -912,45 +912,45 @@ emit_instr_py(put_variable(XnStr, AiStr), Code) :-
 	format(string(Code),
 '    _v = state.fresh_var()
     heap_put(state, _v)
-    state.regs[~w] = _v; state.regs[~w] = _v', [Xn, Ai]).
+    set_reg(state, ~w, _v); set_reg(state, ~w, _v)', [Xn, Ai]).
 
 emit_instr_py(put_value(XnStr, AiStr), Code) :-
 	reg_int_py(XnStr, Xn), reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    state.regs[~w] = state.regs[~w]', [Ai, Xn]).
+'    set_reg(state, ~w, get_reg(state, ~w))', [Ai, Xn]).
 
 emit_instr_py(put_unsafe_value(YnStr, AiStr), Code) :-
 	reg_int_py(YnStr, Yn), reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    _d = deref(state.regs[~w], state)
+'    _d = deref(get_reg(state, ~w), state)
     if isinstance(_d, Var):
         _nv = state.fresh_var()
         heap_put(state, _nv)
         bind(_d, _nv, state)
-        state.regs[~w] = _nv
+        set_reg(state, ~w, _nv)
     else:
-        state.regs[~w] = _d', [Yn, Ai, Ai]).
+        set_reg(state, ~w, _d)', [Yn, Ai, Ai]).
 
 emit_instr_py(put_constant(C, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	constant_term_py(C, Term),
 	format(string(Code),
-'    state.regs[~w] = ~w', [Ai, Term]).
+'    set_reg(state, ~w, ~w)', [Ai, Term]).
 
 emit_instr_py(put_nil(AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    state.regs[~w] = Atom("[]")', [Ai]).
+'    set_reg(state, ~w, Atom("[]"))', [Ai]).
 
 emit_instr_py(put_integer(NStr, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    state.regs[~w] = Int(~w)', [Ai, NStr]).
+'    set_reg(state, ~w, Int(~w))', [Ai, NStr]).
 
 emit_instr_py(put_float(FStr, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
 	format(string(Code),
-'    state.regs[~w] = Float(~w)', [Ai, FStr]).
+'    set_reg(state, ~w, Float(~w))', [Ai, FStr]).
 
 emit_instr_py(put_structure(FStr, AiStr), Code) :-
 	reg_int_py(AiStr, Ai),
@@ -959,7 +959,7 @@ emit_instr_py(put_structure(FStr, AiStr), Code) :-
 	format(string(Code),
 '    _c = Compound("~w", [None]*~w)
     _addr = heap_put(state, _c)
-~w    state.regs[~w] = Ref(_addr)
+~w    set_reg(state, ~w, Ref(_addr))
     state.s = _addr
     _begin_write_ctx(state, _c)', [RTName, Arity, BindLine, Ai]).
 
@@ -969,7 +969,7 @@ emit_instr_py(put_list(AiStr), Code) :-
 	format(string(Code),
 '    _c = Compound(".", [None, None])
     _addr = heap_put(state, _c)
-~w    state.regs[~w] = Ref(_addr)
+~w    set_reg(state, ~w, Ref(_addr))
     state.s = _addr
     _begin_write_ctx(state, _c)', [BindLine, Ai]).
 
@@ -979,11 +979,11 @@ emit_instr_py(unify_variable(XnStr), Code) :-
 	reg_int_py(XnStr, Xn),
 	format(string(Code),
 '    if state.mode == "read":
-        state.regs[~w] = _read_ctx_get(state)
+        set_reg(state, ~w, _read_ctx_get(state))
     else:
         _v = state.fresh_var()
         heap_put(state, _v)
-        state.regs[~w] = _v
+        set_reg(state, ~w, _v)
         _write_ctx_put(state, _v)', [Xn, Xn]).
 
 emit_instr_py(unify_value(XnStr), Code) :-
@@ -991,9 +991,9 @@ emit_instr_py(unify_value(XnStr), Code) :-
 	format(string(Code),
 '    if state.mode == "read":
         _h = _read_ctx_get(state)
-        if not unify(state.regs[~w], deref(_h, state), state): return False
+        if not unify(get_reg(state, ~w), deref(_h, state), state): return False
     else:
-        _write_ctx_put(state, state.regs[~w])', [Xn, Xn]).
+        _write_ctx_put(state, get_reg(state, ~w))', [Xn, Xn]).
 
 emit_instr_py(unify_constant(C), Code) :-
 	constant_term_py(C, Term),
@@ -1029,17 +1029,17 @@ emit_instr_py(set_variable(XnStr), Code) :-
 	format(string(Code),
 '    _v = state.fresh_var()
     _write_ctx_put(state, _v)
-    state.regs[~w] = _v', [Xn]).
+    set_reg(state, ~w, _v)', [Xn]).
 
 emit_instr_py(set_value(XnStr), Code) :-
 	reg_int_py(XnStr, Xn),
 	format(string(Code),
-'    _write_ctx_put(state, state.regs[~w])', [Xn]).
+'    _write_ctx_put(state, get_reg(state, ~w))', [Xn]).
 
 emit_instr_py(set_local_value(XnStr), Code) :-
 	reg_int_py(XnStr, Xn),
 	format(string(Code),
-'    _write_ctx_put(state, deref(state.regs[~w], state))', [Xn]).
+'    _write_ctx_put(state, deref(get_reg(state, ~w), state))', [Xn]).
 
 emit_instr_py(set_constant(C), Code) :-
 	constant_term_py(C, Term),
@@ -1064,13 +1064,20 @@ emit_instr_py(call(PStr, _NStr), Code) :-
 	pred_to_func_name_py(PStr, FN),
 	format(string(Code),
 '    _saved_cp = state.cp
-    if not ~w(state): return False
-    state.cp = _saved_cp', [FN]).
+    _saved_e = state.e
+    _saved_temp_y_regs = state.temp_y_regs
+    state.temp_y_regs = None
+    _call_ok = ~w(state)
+    state.cp = _saved_cp
+    state.e = _saved_e
+    state.temp_y_regs = _saved_temp_y_regs
+    if not _call_ok: return False', [FN]).
 
 emit_instr_py(execute(PStr), Code) :-
 	pred_to_func_name_py(PStr, FN),
 	format(string(Code),
-'    return ~w(state)', [FN]).
+'    state.temp_y_regs = None
+    return ~w(state)', [FN]).
 
 emit_instr_py(proceed, Code) :-
 	Code = '    return True'.
@@ -1095,10 +1102,10 @@ emit_instr_py(is(TargetStr, ExprStr), Code) :-
 	reg_int_py(TargetStr, Target),
 	reg_int_py(ExprStr, Expr),
 	format(string(Code),
-'    _expr = deref(state.regs[~w], state)
+'    _expr = deref(get_reg(state, ~w), state)
     _result = eval_arith(_expr, state)
     _rv = Int(_result) if isinstance(_result, int) else Float(_result)
-    if not unify(state.regs[~w], _rv, state): return False', [Expr, Target]).
+    if not unify(get_reg(state, ~w), _rv, state): return False', [Expr, Target]).
 
 % --- Built-in calls ---
 
@@ -1120,27 +1127,27 @@ emit_instr_py(builtin_call(OpStr, ArStr), Code) :-
 emit_instr_py(call_foreign(PredStr, ArStr), Code) :-
 	escape_py(PredStr, EP),
 	format(string(Code),
-'    _args = [deref(state.regs[i+1], state) for i in range(~w)]
+'    _args = [deref(get_reg(state, i+1), state) for i in range(~w)]
     if not execute_foreign("~w", ~w, _args, state): return False',
 		[ArStr, EP, ArStr]).
 
 emit_instr_py(call_indexed_atom_fact2(PredStr), Code) :-
 	escape_py(PredStr, EP),
 	format(string(Code),
-'    _key = deref(state.regs[1], state)
+'    _key = deref(get_reg(state, 1), state)
     if not isinstance(_key, Atom): return False
     _values = state.indexed_atom_fact2.get("~w", {}).get(_key.name, [])
     if not _values: return False
-    if not unify(state.regs[2], Atom(_values[0]), state): return False', [EP]).
+    if not unify(get_reg(state, 2), Atom(_values[0]), state): return False', [EP]).
 
 emit_instr_py(base_category_ancestor(CatRegStr, TargetRegStr, VisitedRegStr), Code) :-
 	reg_int_py(CatRegStr, CatReg),
 	reg_int_py(TargetRegStr, TargetReg),
 	reg_int_py(VisitedRegStr, VisitedReg),
 	format(string(Code),
-'    _cat = deref(state.regs[~w], state)
-    _target = deref(state.regs[~w], state)
-    _visited = deref(state.regs[~w], state)
+'    _cat = deref(get_reg(state, ~w), state)
+    _target = deref(get_reg(state, ~w), state)
+    _visited = deref(get_reg(state, ~w), state)
     if not isinstance(_cat, Atom) or not isinstance(_target, Atom): return False
     if _atom_in_cons_list(_target, _visited, state): return False
     if _target.name not in state.indexed_atom_fact2.get("category_parent/2", {}).get(_cat.name, []): return False
@@ -1153,13 +1160,13 @@ emit_instr_py(base_category_ancestor_bind(CatRegStr, TargetRegStr, HopsRegStr, V
 	reg_int_py(HopsRegStr, HopsReg),
 	reg_int_py(VisitedRegStr, VisitedReg),
 	format(string(Code),
-'    _cat = deref(state.regs[~w], state)
-    _target = deref(state.regs[~w], state)
-    _visited = deref(state.regs[~w], state)
+'    _cat = deref(get_reg(state, ~w), state)
+    _target = deref(get_reg(state, ~w), state)
+    _visited = deref(get_reg(state, ~w), state)
     if not isinstance(_cat, Atom) or not isinstance(_target, Atom): return False
     if _atom_in_cons_list(_target, _visited, state): return False
     if _target.name not in state.indexed_atom_fact2.get("category_parent/2", {}).get(_cat.name, []): return False
-    if not unify(state.regs[~w], Int(1), state): return False
+    if not unify(get_reg(state, ~w), Int(1), state): return False
     pop_environment(state)
     return True', [CatReg, TargetReg, VisitedReg, HopsReg]).
 
@@ -1170,22 +1177,30 @@ emit_instr_py(recurse_category_ancestor(MidRegStr, RootRegStr, ChildHopsRegStr, 
 	reg_int_py(VisitedRegStr, VisitedReg),
 	pred_to_func_name_py(PredStr, FN),
 	format(string(Code),
-'    _mid = deref(state.regs[~w], state)
-    _root = deref(state.regs[~w], state)
-    _visited = deref(state.regs[~w], state)
+'    _mid = deref(get_reg(state, ~w), state)
+    _root = deref(get_reg(state, ~w), state)
+    _visited = deref(get_reg(state, ~w), state)
     _child_hops = state.fresh_var()
-    state.regs[~w] = _child_hops
-    state.regs[1] = _mid
-    state.regs[2] = _root
-    state.regs[3] = _child_hops
-    state.regs[4] = Compound(".", [_mid, _visited])
-    if not ~w(state): return False', [MidReg, RootReg, VisitedReg, ChildHopsReg, FN]).
+    set_reg(state, ~w, _child_hops)
+    set_reg(state, 1, _mid)
+    set_reg(state, 2, _root)
+    set_reg(state, 3, _child_hops)
+    set_reg(state, 4, Compound(".", [_mid, _visited]))
+    _saved_cp = state.cp
+    _saved_e = state.e
+    _saved_temp_y_regs = state.temp_y_regs
+    state.temp_y_regs = None
+    _call_ok = ~w(state)
+    state.cp = _saved_cp
+    state.e = _saved_e
+    state.temp_y_regs = _saved_temp_y_regs
+    if not _call_ok: return False', [MidReg, RootReg, VisitedReg, ChildHopsReg, FN]).
 
 emit_instr_py(return_add1(OutRegStr, InRegStr), Code) :-
 	reg_int_py(OutRegStr, OutReg),
 	reg_int_py(InRegStr, InReg),
 	format(string(Code),
-'    _in = deref(state.regs[~w], state)
+'    _in = deref(get_reg(state, ~w), state)
     if isinstance(_in, Int):
         _result = Int(_in.n + 1)
     elif isinstance(_in, Float):
@@ -1199,7 +1214,7 @@ emit_instr_py(return_add1(OutRegStr, InRegStr), Code) :-
             return False
     else:
         return False
-    if not unify(state.regs[~w], _result, state): return False
+    if not unify(get_reg(state, ~w), _result, state): return False
     pop_environment(state)
     return True', [InReg, OutReg]).
 
@@ -1211,12 +1226,12 @@ emit_instr_py(neck_cut, Code) :-
 emit_instr_py(get_level(YnStr), Code) :-
 	reg_int_py(YnStr, Yn),
 	format(string(Code),
-'    state.regs[~w] = state.b', [Yn]).
+'    set_reg(state, ~w, state.b)', [Yn]).
 
 emit_instr_py(cut(YnStr), Code) :-
 	reg_int_py(YnStr, Yn),
 	format(string(Code),
-'    state.b = state.regs[~w]', [Yn]).
+'    state.b = get_reg(state, ~w)', [Yn]).
 
 % ============================================================================
 % Helpers
@@ -1233,8 +1248,8 @@ reg_int_py(RegStr, Int) :-
 		sub_atom(RegA, 1, _, 0, NumA),
 		atom_number(NumA, Num),
 		(   Prefix == 'A' -> Int = Num
-		;   Prefix == 'X' -> Int is Num + 100
-		;   Prefix == 'Y' -> Int is Num + 200
+		;   Prefix == 'X' -> Int is Num + 128
+		;   Prefix == 'Y' -> Int is Num + 300
 		;   Int = 0
 		)
 	).
@@ -1276,7 +1291,7 @@ cons_functor_py(FStr) :- FStr == "[|]/2".
 put_struct_bind_py(Ai, BindLine) :-
 	(   Ai > 128
 	->  format(string(BindLine),
-		"    _old = deref(state.regs[~w], state)\n    if isinstance(_old, Var): bind(_old, Ref(_addr), state)\n",
+		"    _old = deref(get_reg(state, ~w), state)\n    if isinstance(_old, Var): bind(_old, Ref(_addr), state)\n",
 		[Ai])
 	;   BindLine = ""
 	).

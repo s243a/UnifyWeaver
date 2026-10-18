@@ -1,0 +1,210 @@
+{{match instr}}
+Go bodies for the head-unification instructions of Step(). One case per Go instruction type.
+The Prolog assembler (go_step_case_order/1 in wam_go_templates.pl) owns
+the switch ORDER and the `case *Type:` line. This preamble is discarded
+by the {{match}} engine.
+{{case GetConstant}}
+        val := vm.Regs[i.Ai]
+        if val == nil { return false }
+        // Dereference before inspecting: the register may hold a *Ref or a
+        // bound *Unbound (bound via the Bindings table), e.g. the tail of a
+        // partial list carried through a recursive call. Without the deref,
+        // isUnbound() sees the raw *Unbound as unbound and rebinds it to the
+        // constant -- silently corrupting an already-bound value (get_constant
+        // [] would overwrite a bound [H|T] tail with []). Mirrors the deref
+        // GetStructure / GetList already do.
+        val = vm.deref(val)
+        if isUnbound(val) {
+            u := val.(*Unbound)
+            vm.bindUnbound(u, i.C)
+            vm.PC++
+            return true
+        }
+        if valueEquals(val, i.C) {
+            vm.PC++
+            return true
+        }
+        return false
+{{case GetVariable}}
+        val := vm.Regs[i.Ai]
+        if val == nil { return false }
+        vm.trailBinding(i.Xn)
+        vm.putReg(i.Xn, val)
+        vm.PC++
+        return true
+{{case GetValue}}
+        valA := vm.Regs[i.Ai]
+        valX := vm.getReg(i.Xn)
+        if valA == nil { return false }
+        if vm.Unify(valA, valX) {
+            vm.PC++
+            return true
+        }
+        return false
+{{case GetStructure}}
+        val := vm.Regs[i.Ai]
+        if val == nil { return false }
+        // Dereference before deciding read vs write mode. The register
+        // can hold a *Ref, or an *Unbound that is already bound through
+        // the Bindings table -- which is exactly what unify_variable
+        // leaves behind when it reads a nested term out of an enclosing
+        // one. Testing isUnbound on the raw value made get_structure
+        // take the *write* branch for an already-bound argument and
+        // build a fresh structure over the top of it, so a head like
+        // `p([tk(N)|R], N, R)` bound N to a new empty cell instead of
+        // the incoming value. GetList and GetConstant already deref
+        // first; this mirrors them.
+        val = vm.deref(val)
+        if isUnbound(val) {
+            addr := vm.heapPush(nil)
+            arity := parseFunctorArity(i.Functor)
+            s := &Structure{Functor: i.Functor, Arity: arity, Args: make([]Value, arity)}
+            vm.Heap[addr] = s
+            vm.CurrentStruct = s
+            vm.CurrentList = nil
+            vm.bindUnbound(val.(*Unbound), &Ref{Addr: addr})
+            vm.Stack = append(vm.Stack, &WriteCtx{N: arity, Struct: s})
+            vm.PC++
+            return true
+        }
+        if s, ok := val.(*Structure); ok {
+            if s.Functor == i.Functor {
+                vm.Stack = append(vm.Stack, &UnifyCtx{Args: s.Args})
+                vm.PC++
+                return true
+            }
+        }
+        return false
+{{case GetList}}
+        val := vm.Regs[i.Ai]
+        if val == nil { return false }
+        val = vm.deref(val)
+        if isUnbound(val) {
+            addr := vm.heapPush(nil)
+            l := &List{Elements: make([]Value, 2)}
+            vm.Heap[addr] = l
+            vm.CurrentList = l
+            vm.CurrentStruct = nil
+            vm.bindUnbound(val.(*Unbound), &Ref{Addr: addr})
+            vm.Stack = append(vm.Stack, &WriteCtx{N: 2, List: l})
+            vm.PC++
+            return true
+        }
+        // get_list reads a term as a *cons cell*: exactly two slots,
+        // head and tail. Push those, not the raw Elements slice.
+        //
+        // *List is used for two different things in this runtime: a
+        // cons pair built by put_list (Elements = [head, tail]) and a
+        // flat list returned by a Go builtin such as reverse/2,
+        // findall/3, sort/2 or append/3 (Elements = the items). Pushing
+        // Elements directly conflated them — a flat one-element list
+        // offered a single slot, so the following unify_* for the cons
+        // tail found an empty context and the clause failed; a flat
+        // three-element list offered three slots and bound the tail to
+        // the second *item*. That is why heads like
+        // `p([tk_atom(N)|R], ...)` matched a literal list but not one
+        // that had been through reverse/2.
+        //
+        // valueListHeadTail normalises both representations (and the
+        // heap-linked Compound/Structure cons form), so it is the one
+        // place that knows how to split a list value.
+        if h, t, ok := vm.valueListHeadTail(val); ok {
+            vm.Stack = append(vm.Stack, &UnifyCtx{Args: []Value{h, t}})
+            vm.PC++
+            return true
+        }
+        if h, t, ok := consHeadTail(val); ok {
+            vm.Stack = append(vm.Stack, &UnifyCtx{Args: []Value{h, t}})
+            vm.PC++
+            return true
+        }
+        return false
+{{case UnifyVariable}}
+        if ctx := vm.peekUnifyCtx(); ctx != nil && len(ctx.Args) > 0 {
+            arg := ctx.Args[0]
+            ctx.Args = ctx.Args[1:]
+            if len(ctx.Args) == 0 { vm.popStack() }
+            vm.trailBinding(i.Xn)
+            vm.putReg(i.Xn, arg)
+            vm.PC++
+            return true
+        }
+        if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
+            addr := vm.HeapLen
+            v := &Unbound{Name: fmt.Sprintf("_H%d", addr), Idx: vm.allocVarId()}
+            vm.heapPush(v)
+            if vm.CurrentStruct != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = v
+            } else if vm.CurrentList != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = v
+            }
+            wctx.N--
+            if wctx.N == 0 {
+                vm.popStackRestoringWriteTarget()
+            }
+            vm.putReg(i.Xn, v)
+            vm.PC++
+            return true
+        }
+        return false
+{{case UnifyValue}}
+        if ctx := vm.peekUnifyCtx(); ctx != nil && len(ctx.Args) > 0 {
+            expected := ctx.Args[0]
+            ctx.Args = ctx.Args[1:]
+            if len(ctx.Args) == 0 { vm.popStack() }
+            actual := vm.getReg(i.Xn)
+            if vm.Unify(expected, actual) {
+                vm.PC++
+                return true
+            }
+            return false
+        }
+        if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
+            val := vm.getReg(i.Xn)
+            vm.heapPush(val)
+            if vm.CurrentStruct != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = val
+            } else if vm.CurrentList != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = val
+            }
+            wctx.N--
+            if wctx.N == 0 {
+                vm.popStackRestoringWriteTarget()
+            }
+            vm.PC++
+            return true
+        }
+        return false
+{{case UnifyConstant}}
+        if ctx := vm.peekUnifyCtx(); ctx != nil && len(ctx.Args) > 0 {
+            expected := ctx.Args[0]
+            ctx.Args = ctx.Args[1:]
+            if len(ctx.Args) == 0 { vm.popStack() }
+            if valueEquals(vm.deref(expected), i.C) {
+                vm.PC++
+                return true
+            }
+            return false
+        }
+        if wctx := vm.peekWriteCtx(); wctx != nil && wctx.N > 0 {
+            vm.heapPush(i.C)
+            if vm.CurrentStruct != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = i.C
+            } else if vm.CurrentList != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = i.C
+            }
+            wctx.N--
+            if wctx.N == 0 {
+                vm.popStackRestoringWriteTarget()
+            }
+            vm.PC++
+            return true
+        }
+        return false
+{{/match}}

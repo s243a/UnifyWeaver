@@ -1,0 +1,149 @@
+{{match instr}}
+Go bodies for the body-construction instructions of Step(). One case per Go instruction type.
+The Prolog assembler (go_step_case_order/1 in wam_go_templates.pl) owns
+the switch ORDER and the `case *Type:` line. This preamble is discarded
+by the {{match}} engine.
+{{case PutConstant}}
+        vm.putReg(i.Ai, i.C)
+        vm.PC++
+        return true
+{{case PutVariable}}
+        // Allocate a globally-unique Idx for the new logical variable.
+        // The earlier strategy reused i.Xn (the X-register slot index)
+        // as the Idx, which collided across activations: an outer
+        // activation's X207 (Idx=207) and an inner activation's X207
+        // (also Idx=207) would share Bindings[207] and clobber each
+        // other. The first attempt at a fix `delete(Bindings, i.Xn)`
+        // worked for 2-hop recursion but broke at 3+ hops because the
+        // delete could erase an outer activation's still-live binding.
+        // Allocating a fresh Idx via allocVarId/0 sidesteps the
+        // collision entirely.
+        v := &Unbound{Name: fmt.Sprintf("_R%d", i.Xn), Idx: vm.allocVarId()}
+        vm.putReg(i.Xn, v)
+        vm.putReg(i.Ai, v)
+        vm.PC++
+        return true
+{{case PutValue}}
+        val := vm.getReg(i.Xn)
+        vm.putReg(i.Ai, val)
+        vm.PC++
+        return true
+{{case PutStructure}}
+        addr := vm.heapPush(nil)
+        arity := parseFunctorArity(i.Functor)
+        s := &Structure{Functor: i.Functor, Arity: arity, Args: make([]Value, arity)}
+        vm.Heap[addr] = s
+        vm.CurrentStruct = s
+        vm.CurrentList = nil
+        ref := &Ref{Addr: addr}
+        // If this register holds an unbound placeholder (one a prior
+        // set_variable embedded into an enclosing structure/list arg), bind
+        // it to the new structure so the embedded copy resolves here. The
+        // compiler builds nested terms outer-first — e.g. +(+(A,B),C) or a
+        // list tail cell [|]/2 — leaving a placeholder in the arg slot that
+        // a later put_structure into the same register must fill. Trailing
+        // via bindUnbound keeps it backtrack-safe.
+        //
+        // A-REGISTER EXCEPTION (M139/M140 bind-through class): A registers
+        // (index < 100) are argument STAGING — their old occupant is an
+        // unrelated variable (often a clause-head argument), and binding it
+        // to the new cell creates a cyclic term (X = f(X)), making a later
+        // X = 1 wrong-fail. Top-down chaining placeholders only ever live
+        // in X/Y registers (set_variable Xn), so the bind-through is
+        // conditioned on the register class — the same fix the Rust and
+        // LLVM targets carry.
+        if i.Ai >= 100 {
+            if cur := vm.Regs[i.Ai]; cur != nil {
+                if u, ok := vm.deref(cur).(*Unbound); ok {
+                    vm.bindUnbound(u, ref)
+                }
+            }
+        }
+        vm.putReg(i.Ai, ref)
+        vm.Stack = append(vm.Stack, &WriteCtx{N: arity, Struct: s})
+        vm.PC++
+        return true
+{{case PutList}}
+        addr := vm.heapPush(nil)
+        l := &List{Elements: make([]Value, 2)}
+        vm.Heap[addr] = l
+        vm.CurrentList = l
+        vm.CurrentStruct = nil
+        vm.putReg(i.Ai, &Ref{Addr: addr})
+        vm.Stack = append(vm.Stack, &WriteCtx{N: 2, List: l})
+        vm.PC++
+        return true
+{{case SetVariable}}
+        addr := vm.HeapLen
+        v := &Unbound{Name: fmt.Sprintf("_H%d", addr), Idx: vm.allocVarId()}
+        vm.heapPush(v)
+        if vm.CurrentStruct != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = v
+                wctx.N--
+                if wctx.N == 0 {
+                    vm.popStackRestoringWriteTarget()
+                }
+            }
+        } else if vm.CurrentList != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = v
+                wctx.N--
+                if wctx.N == 0 {
+                    vm.popStackRestoringWriteTarget()
+                }
+            }
+        }
+        vm.putReg(i.Xn, v)
+        vm.PC++
+        return true
+{{case SetValue}}
+        val := vm.getReg(i.Xn)
+        vm.heapPush(val)
+        if vm.CurrentStruct != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = val
+                wctx.N--
+                if wctx.N == 0 {
+                    vm.popStackRestoringWriteTarget()
+                }
+            }
+        } else if vm.CurrentList != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = val
+                wctx.N--
+                if wctx.N == 0 {
+                    vm.popStackRestoringWriteTarget()
+                }
+            }
+        }
+        vm.PC++
+        return true
+{{case SetConstant}}
+        vm.heapPush(i.C)
+        if vm.CurrentStruct != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := vm.CurrentStruct.Arity - wctx.N
+                vm.CurrentStruct.Args[idx] = i.C
+                wctx.N--
+                if wctx.N == 0 {
+                    vm.popStackRestoringWriteTarget()
+                }
+            }
+        } else if vm.CurrentList != nil {
+            if wctx := vm.peekWriteCtx(); wctx != nil {
+                idx := 2 - wctx.N
+                vm.CurrentList.Elements[idx] = i.C
+                wctx.N--
+                if wctx.N == 0 {
+                    vm.popStackRestoringWriteTarget()
+                }
+            }
+        }
+        vm.PC++
+        return true
+{{/match}}

@@ -250,11 +250,14 @@ take_digits([C|R], [], [C|R])    :- \+ digit_code(C).
 % Quoted atom body. ' ends the literal; \ acts as a one-char escape so '\''
 % and '\\' both round-trip.
 take_quoted([39|R], Cs, Cs, R) :- !.
-take_quoted([92, C | R], Acc, Out, Rest) :-
+take_quoted([92|R], Acc, Out, Rest) :-
     !,
+    take_quoted_escape(R, Acc, Out, Rest).
+take_quoted([C|R], Acc, Out, Rest) :-
     append(Acc, [C], Acc1),
     take_quoted(R, Acc1, Out, Rest).
-take_quoted([C|R], Acc, Out, Rest) :-
+
+take_quoted_escape([C|R], Acc, Out, Rest) :-
     append(Acc, [C], Acc1),
     take_quoted(R, Acc1, Out, Rest).
 

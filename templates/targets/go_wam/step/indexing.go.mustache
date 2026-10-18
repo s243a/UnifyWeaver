@@ -1,0 +1,140 @@
+{{match instr}}
+Go bodies for the indexing instructions of Step(). One case per Go instruction type.
+The Prolog assembler (go_step_case_order/1 in wam_go_templates.pl) owns
+the switch ORDER and the `case *Type:` line. This preamble is discarded
+by the {{match}} engine.
+{{case SwitchOnConstant}}
+        if val := vm.Regs[0]; val != nil && !isUnbound(val) {
+            targets := make([]int, 0)
+            for _, c := range i.Cases {
+                if !valueEquals(c.Val, val) {
+                    continue
+                }
+                // "default" is the try/retry chain immediately after the
+                // switch. Several clauses can share that key (pick_need
+                // classic/1 and classic/2). Skipping TryMeElse via
+                // indexedClauseBodyStart kept only the first body, so the
+                // provider clause was never tried.
+                if c.Label == "default" {
+                    vm.PC++
+                    return true
+                }
+                if pc, ok := vm.Ctx.Labels[c.Label]; ok {
+                    targets = append(targets, vm.indexedClauseBodyStart(pc))
+                }
+            }
+            if len(targets) > 0 {
+                return vm.enterIndexedAlternatives(targets)
+            }
+        }
+        vm.PC++
+        return true
+{{case SwitchOnConstantPc}}
+        if val := vm.Regs[0]; val != nil && !isUnbound(val) {
+            n := len(i.Cases)
+            idx := sort.Search(n, func(j int) bool {
+                return compareValues(i.Cases[j].Val, val) >= 0
+            })
+            targets := make([]int, 0)
+            for idx < n && valueEquals(i.Cases[idx].Val, val) {
+                if vm.isChoiceChainHead(i.Cases[idx].TargetPC) {
+                    vm.PC = i.Cases[idx].TargetPC
+                    return true
+                }
+                targets = append(targets, vm.indexedClauseBodyStart(i.Cases[idx].TargetPC))
+                idx++
+            }
+            if len(targets) > 0 {
+                return vm.enterIndexedAlternatives(targets)
+            }
+        }
+        vm.PC++
+        return true
+{{case SwitchOnStructure}}
+        if val := vm.Regs[0]; val != nil {
+            if f, args := decompose(val); f != "" {
+                key := fmt.Sprintf("%s/%d", f, len(args))
+                targets := make([]int, 0)
+                for _, c := range i.Cases {
+                    if c.Functor != key {
+                        continue
+                    }
+                    if c.Label == "default" {
+                        vm.PC++
+                        return true
+                    }
+                    if pc, ok := vm.Ctx.Labels[c.Label]; ok {
+                        targets = append(targets, vm.indexedClauseBodyStart(pc))
+                    }
+                }
+                if len(targets) > 0 {
+                    return vm.enterIndexedAlternatives(targets)
+                }
+            }
+        }
+        vm.PC++
+        return true
+{{case SwitchOnStructurePc}}
+        if val := vm.Regs[0]; val != nil {
+            if f, args := decompose(val); f != "" {
+                key := fmt.Sprintf("%s/%d", f, len(args))
+                targets := make([]int, 0)
+                for _, c := range i.Cases {
+                    if c.Functor == key {
+                        if vm.isChoiceChainHead(c.TargetPC) {
+                            vm.PC = c.TargetPC
+                            return true
+                        }
+                        targets = append(targets, vm.indexedClauseBodyStart(c.TargetPC))
+                    }
+                }
+                if len(targets) > 0 {
+                    return vm.enterIndexedAlternatives(targets)
+                }
+            }
+        }
+        vm.PC++
+        return true
+{{case SwitchOnConstantA2}}
+        if val := vm.Regs[1]; val != nil && !isUnbound(val) {
+            targets := make([]int, 0)
+            for _, c := range i.Cases {
+                if !valueEquals(c.Val, val) {
+                    continue
+                }
+                if c.Label == "default" {
+                    vm.PC++
+                    return true
+                }
+                if pc, ok := vm.Ctx.Labels[c.Label]; ok {
+                    targets = append(targets, vm.indexedClauseBodyStart(pc))
+                }
+            }
+            if len(targets) > 0 {
+                return vm.enterIndexedAlternatives(targets)
+            }
+        }
+        vm.PC++
+        return true
+{{case SwitchOnConstantA2Pc}}
+        if val := vm.Regs[1]; val != nil && !isUnbound(val) {
+            n := len(i.Cases)
+            idx := sort.Search(n, func(j int) bool {
+                return compareValues(i.Cases[j].Val, val) >= 0
+            })
+            targets := make([]int, 0)
+            for idx < n && valueEquals(i.Cases[idx].Val, val) {
+                if vm.isChoiceChainHead(i.Cases[idx].TargetPC) {
+                    vm.PC = i.Cases[idx].TargetPC
+                    return true
+                }
+                targets = append(targets, vm.indexedClauseBodyStart(i.Cases[idx].TargetPC))
+                idx++
+            }
+            if len(targets) > 0 {
+                return vm.enterIndexedAlternatives(targets)
+            }
+        }
+        vm.PC++
+        return true
+{{/match}}

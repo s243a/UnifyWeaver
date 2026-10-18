@@ -76,12 +76,15 @@ class FederatedInferenceEngine:
 
     def __init__(self, model_path: Path, embedder_name: str = "nomic-ai/nomic-embed-text-v1.5",
                  data_path: Optional[Path] = None,
-                 routing_method: Literal["weighted", "rotational", "rotational-fast"] = "weighted",
-                 rotation_planes: Optional[int] = None):
+                 routing_method: Literal["weighted", "rotational", "rotational-fast", "mu"] = "weighted",
+                 rotation_planes: Optional[int] = None,
+                 mu_ckpt: Optional[Union[str, Path]] = None):
         self.model_path = Path(model_path)
         self.embedder_name = embedder_name
         self.routing_method = routing_method
         self.rotation_planes = rotation_planes  # None = use all planes
+        self.mu_ckpt = mu_ckpt                  # mu_cosine checkpoint for the "mu" routing alternative
+        self.mu_ranker = None                   # lazily built at the end of __init__ if routing_method == "mu"
 
         # Load model metadata
         logger.info(f"Loading model from {model_path}...")
@@ -187,6 +190,17 @@ class FederatedInferenceEngine:
         # Pre-compute orthogonal decomposition if using rotational-fast
         if self.routing_method == "rotational-fast":
             self._precompute_plane_angles()
+
+        # Build the mu_cosine ranker for the "mu" routing alternative (heavy imports paid only here)
+        if self.routing_method == "mu":
+            if not self.mu_ckpt:
+                raise ValueError("routing_method='mu' requires --mu-ckpt (a mu_cosine checkpoint, e.g. "
+                                 "prototypes/mu_cosine/model_prod.pt)")
+            from mu_filer_ranker import MuRanker
+            cache = str(self.model_path) + ".mu_folder_e5_%d.pt" % len(self.global_target_titles)
+            logger.info(f"Building mu ranker over {len(self.global_target_titles)} folders (e5 embed, cached at {cache})...")
+            self.mu_ranker = MuRanker(self.mu_ckpt, self.global_target_titles, self.global_target_ids,
+                                      device="cpu", cache_path=cache)
 
     def _precompute_plane_angles(self):
         """
@@ -405,22 +419,21 @@ class FederatedInferenceEngine:
         Returns:
             List of Candidate objects with scores
         """
-        # Embed query
-        q_emb = self.embed_query(query)
-
-        # Project using federated model
-        q_proj = self.project_query(q_emb, top_k_routing)
-
-        # Normalize
-        q_proj_norm = q_proj / (np.linalg.norm(q_proj) + 1e-8)
-
-        # Compare to all targets
-        if self.target_embeddings is not None:
-            A_norm = self.target_embeddings / (np.linalg.norm(self.target_embeddings, axis=1, keepdims=True) + 1e-8)
-            scores = q_proj_norm @ A_norm.T
+        if self.routing_method == "mu":
+            # NEW approach: mu_cosine μ-ranker (e5 + max(μ-elem,μ-hier,μ-sym)) over the folder titles.
+            # Returns a per-target score aligned with global_target_* order, so the rest of search() is unchanged.
+            scores = self.mu_ranker.score(query)
         else:
-            # Fall back to cluster centroids
-            scores = q_proj_norm @ self.cluster_centroids.T
+            # Rotational/weighted approach: embed (nomic) → project via W matrices → cosine to targets.
+            q_emb = self.embed_query(query)
+            q_proj = self.project_query(q_emb, top_k_routing)
+            q_proj_norm = q_proj / (np.linalg.norm(q_proj) + 1e-8)
+            if self.target_embeddings is not None:
+                A_norm = self.target_embeddings / (np.linalg.norm(self.target_embeddings, axis=1, keepdims=True) + 1e-8)
+                scores = q_proj_norm @ A_norm.T
+            else:
+                # Fall back to cluster centroids
+                scores = q_proj_norm @ self.cluster_centroids.T
 
         # Get sorted indices (fetch more if filtering by account)
         # Need larger multiplier since filtered accounts may be sparse in top results
@@ -941,9 +954,12 @@ def main():
     parser.add_argument("--top-k-routing", type=int, default=10,
                        help="Number of training queries for routing")
     parser.add_argument("--routing-method", type=str, default="weighted",
-                       choices=["weighted", "rotational", "rotational-fast"],
+                       choices=["weighted", "rotational", "rotational-fast", "mu"],
                        help="Routing method: weighted (fast), rotational (accurate via bivector), "
-                            "rotational-fast (orthogonal decomposition, O(K×d))")
+                            "rotational-fast (orthogonal decomposition, O(K×d)), "
+                            "mu (mu_cosine μ-ranker e5+max(μ-elem,μ-hier,μ-sym); needs --mu-ckpt)")
+    parser.add_argument("--mu-ckpt", type=str, default=None,
+                       help="mu_cosine checkpoint for --routing-method mu (e.g. prototypes/mu_cosine/model_prod.pt)")
     parser.add_argument("--rotation-planes", type=int, default=None,
                        help="Number of rotation planes for rotational-fast (default: all d/2 planes). "
                             "With Matryoshka embeddings, 64-128 planes often suffice.")
@@ -1095,7 +1111,8 @@ def main():
     rotation_planes = getattr(args, 'rotation_planes', None)
     engine = FederatedInferenceEngine(model_path, embedder, data_path=data_path,
                                        routing_method=routing_method,
-                                       rotation_planes=rotation_planes)
+                                       rotation_planes=rotation_planes,
+                                       mu_ckpt=getattr(args, 'mu_ckpt', None))
 
     # Load data if tree mode requested
     # Build tree_id -> entry mapping from multiple sources (first match wins)

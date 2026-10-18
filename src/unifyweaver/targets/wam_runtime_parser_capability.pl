@@ -35,8 +35,10 @@ wam_target_runtime_parser(Target, Options, Mode) :-
 parser_dependent_builtin(read/1).
 parser_dependent_builtin(read/2).
 parser_dependent_builtin(read_term/1).
+parser_dependent_builtin(read_term/2).
 parser_dependent_builtin(read_term_from_atom/2).
 parser_dependent_builtin(read_term_from_atom/3).
+parser_dependent_builtin(atom_to_term/3).
 parser_dependent_builtin(term_to_atom/2).
 
 %% parser_dependent_goal(+Goal, -Builtin)
@@ -135,6 +137,30 @@ target_runtime_parser_default(wam_cpp, native(parse_term)).
 target_runtime_parser_default(wam_fsharp, none).
 target_runtime_parser_default(wam_haskell, none).
 target_runtime_parser_default(wam_rust, none).
+% Go has no native runtime parser; it compiles the portable parser
+% through WAM, and that path now executes end-to-end (see
+% tests/test_wam_go_parser_smoke.pl, which builds the generated Go and
+% parses a battery of inputs including operator precedence and
+% associativity, lists, partial lists, parens and prefix operators).
+%
+% Getting there took a series of WAM-Go runtime/codegen fixes, each of
+% which also affected ordinary programs:
+%   - `execute <builtin>` dropped the implied proceed;
+%   - Go identifiers collided when one predicate name had two arities;
+%   - nested write contexts clobbered the enclosing term, so a head like
+%     `p([tk(C)|A], ...)` never filled the cons tail;
+%   - get_structure tested isUnbound before dereferencing, taking the
+%     write branch over an already-bound argument;
+%   - get_list pushed a flat *List's elements instead of head/tail;
+%   - A-registers above A8 were outside the choicepoint snapshot;
+%   - interned atoms were registered from init(), losing the map slot to
+%     package-level var initialisers and producing two "[]" atoms.
+%
+% Default stays `none` so existing Go projects don't silently pull in
+% the parser predicates; `runtime_parser(compiled)` is opt-in. Same
+% stance as F#/Haskell/Rust. See docs/WAM_RUNTIME_PARSER_STATUS.md.
+target_runtime_parser_default(wam_go, none).
+target_runtime_parser_default(wam_javascript, native(parse_term)).
 
 target_runtime_parser_mode_(wam_r, native(parse_term)).
 target_runtime_parser_mode_(wam_r, compiled(prolog_term_parser)).
@@ -144,6 +170,8 @@ target_runtime_parser_mode_(wam_python, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_fsharp, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_haskell, compiled(prolog_term_parser)).
 target_runtime_parser_mode_(wam_rust, compiled(prolog_term_parser)).
+target_runtime_parser_mode_(wam_go, compiled(prolog_term_parser)).
+target_runtime_parser_mode_(wam_javascript, native(parse_term)).
 
 normalize_runtime_parser_target(r, wam_r) :- !.
 normalize_runtime_parser_target(wam_r, wam_r) :- !.
@@ -155,6 +183,10 @@ normalize_runtime_parser_target(haskell, wam_haskell) :- !.
 normalize_runtime_parser_target(wam_haskell, wam_haskell) :- !.
 normalize_runtime_parser_target(rust, wam_rust) :- !.
 normalize_runtime_parser_target(wam_rust, wam_rust) :- !.
+normalize_runtime_parser_target(go, wam_go) :- !.
+normalize_runtime_parser_target(javascript, wam_javascript) :- !.
+normalize_runtime_parser_target(wam_javascript, wam_javascript) :- !.
+normalize_runtime_parser_target(wam_go, wam_go) :- !.
 normalize_runtime_parser_target(Target, Target).
 
 strip_module_qualifier(Module:Goal, Stripped) :-

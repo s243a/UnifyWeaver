@@ -164,137 +164,9 @@ class FilingResult:
     model: str
 
 
-def call_claude_cli(prompt: str, model: str = "sonnet", timeout: int = 60) -> Optional[str]:
-    """Call Claude CLI with the given prompt."""
-    try:
-        result = subprocess.run(
-            ["claude", "-p", "--model", model, prompt],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(Path.cwd())
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-        else:
-            print(f"  Claude CLI error: {result.stderr[:200]}", file=sys.stderr)
-            return None
-    except subprocess.TimeoutExpired:
-        print(f"  Timeout after {timeout}s", file=sys.stderr)
-        return None
-    except FileNotFoundError:
-        print("  Claude CLI not found. Install with: npm install -g @anthropics/claude-code", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"  Exception: {e}", file=sys.stderr)
-        return None
-
-
-def call_gemini_cli(prompt: str, model: str = "gemini-2.0-flash", timeout: int = 120) -> Optional[str]:
-    """Call Gemini CLI with the given prompt."""
-    try:
-        result = subprocess.run(
-            ["gemini", "-p", prompt, "-m", model, "--output-format", "text"],
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=str(Path.cwd())
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-        else:
-            print(f"  Gemini CLI error: {result.stderr[:200]}", file=sys.stderr)
-            return None
-    except subprocess.TimeoutExpired:
-        print(f"  Timeout after {timeout}s", file=sys.stderr)
-        return None
-    except FileNotFoundError:
-        print("  Gemini CLI not found. Install with: npm install -g @anthropics/gemini", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"  Exception: {e}", file=sys.stderr)
-        return None
-
-
-def call_openai_api(prompt: str, model: str = "gpt-4o-mini", timeout: int = 60) -> Optional[str]:
-    """Call OpenAI API."""
-    try:
-        import openai
-        client = openai.OpenAI()
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.1,
-            timeout=timeout
-        )
-        return response.choices[0].message.content.strip()
-    except ImportError:
-        print("  OpenAI package not installed. Run: pip install openai", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"  OpenAI API error: {e}", file=sys.stderr)
-        return None
-
-
-def call_anthropic_api(prompt: str, model: str = "claude-3-5-sonnet-20241022", timeout: int = 60) -> Optional[str]:
-    """Call Anthropic API directly."""
-    try:
-        import anthropic
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=model,
-            max_tokens=500,
-            messages=[{"role": "user", "content": prompt}]
-        )
-        return response.content[0].text.strip()
-    except ImportError:
-        print("  Anthropic package not installed. Run: pip install anthropic", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"  Anthropic API error: {e}", file=sys.stderr)
-        return None
-
-
-def call_ollama(prompt: str, model: str = "llama3.1", timeout: int = 120) -> Optional[str]:
-    """Call local Ollama model."""
-    try:
-        result = subprocess.run(
-            ["ollama", "run", model, prompt],
-            capture_output=True,
-            text=True,
-            timeout=timeout
-        )
-        if result.returncode == 0:
-            return result.stdout.strip()
-        else:
-            print(f"  Ollama error: {result.stderr[:200]}", file=sys.stderr)
-            return None
-    except subprocess.TimeoutExpired:
-        print(f"  Timeout after {timeout}s", file=sys.stderr)
-        return None
-    except FileNotFoundError:
-        print("  Ollama not found. Install from: https://ollama.ai", file=sys.stderr)
-        return None
-    except Exception as e:
-        print(f"  Exception: {e}", file=sys.stderr)
-        return None
-
-
-def call_llm(prompt: str, provider: str, model: str, timeout: int = 60) -> Optional[str]:
-    """Route to appropriate LLM provider."""
-    if provider == "claude":
-        return call_claude_cli(prompt, model, timeout)
-    elif provider == "gemini":
-        return call_gemini_cli(prompt, model, timeout)
-    elif provider == "openai":
-        return call_openai_api(prompt, model, timeout)
-    elif provider == "anthropic":
-        return call_anthropic_api(prompt, model, timeout)
-    elif provider == "ollama":
-        return call_ollama(prompt, model, timeout)
-    else:
-        print(f"  Unknown provider: {provider}", file=sys.stderr)
-        return None
+# LLM backends → shared llm_cli (single source of truth; also used by llm_reranker.py).
+from llm_cli import (call_llm, call_claude_cli, call_gemini_cli, call_agy_cli, call_codex_cli,
+                     call_openai_api, call_anthropic_api, call_ollama)
 
 
 def get_semantic_candidates(
@@ -302,33 +174,38 @@ def get_semantic_candidates(
     model_path: Path,
     top_k: int = 10,
     tree_mode: bool = True,
-    data_path: Optional[Path] = None
+    data_path: Optional[Path] = None,
+    routing_method: str = "weighted",
+    mu_ckpt: Optional[str] = None
 ) -> Tuple[str, List[dict]]:
-    """Get semantic candidates using the federated model."""
-    
+    """Get semantic candidates using the federated model (routing_method='mu' uses the mu_cosine μ-ranker)."""
+    routing_args = ["--routing-method", routing_method]
+    if routing_method == "mu" and mu_ckpt:
+        routing_args += ["--mu-ckpt", str(mu_ckpt)]
+
     cmd = [
         sys.executable,
         str(Path(__file__).parent / "infer_pearltrees_federated.py"),
         "--model", str(model_path),
         "--query", bookmark_title,
         "--top-k", str(top_k),
-    ]
-    
+    ] + routing_args
+
     if tree_mode:
         cmd.append("--tree")
         if data_path:
             cmd.extend(["--data", str(data_path)])
     else:
         cmd.append("--json")
-    
+
     result = subprocess.run(cmd, capture_output=True, text=True)
-    
+
     if result.returncode != 0:
         print(f"Inference error: {result.stderr}", file=sys.stderr)
         return "", []
-    
+
     output = result.stdout.strip()
-    
+
     # Also get JSON version for metadata
     cmd_json = [
         sys.executable,
@@ -337,7 +214,7 @@ def get_semantic_candidates(
         "--query", bookmark_title,
         "--top-k", str(top_k),
         "--json"
-    ]
+    ] + routing_args
     
     result_json = subprocess.run(cmd_json, capture_output=True, text=True)
     candidates = []
@@ -615,7 +492,9 @@ def file_bookmark(
     boost_and: Optional[str] = None,
     boost_or: Optional[str] = None,
     filters: Optional[List[str]] = None,
-    blend_alpha: float = 0.7
+    blend_alpha: float = 0.7,
+    routing_method: str = "weighted",
+    mu_ckpt: Optional[str] = None
 ) -> Optional[FilingResult]:
     """
     Get LLM recommendation for where to file a bookmark.
@@ -643,7 +522,7 @@ def file_bookmark(
     print(f"Getting semantic candidates for: {bookmark_title[:50]}...")
     tree_output, candidates = get_semantic_candidates(
         bookmark_title, model_path, top_k * 2 if (boost_and or boost_or) else top_k,
-        tree_mode=True, data_path=data_path
+        tree_mode=True, data_path=data_path, routing_method=routing_method, mu_ckpt=mu_ckpt
     )
 
     if not tree_output or not candidates:
@@ -855,10 +734,18 @@ def main():
                        default=None,
                        help="Path to SQLite DB with existing pearls (enables showing folder contents)")
     parser.add_argument("--provider", type=str, default="claude",
-                       choices=["claude", "gemini", "openai", "anthropic", "ollama"],
-                       help="LLM provider")
-    parser.add_argument("--llm-model", type=str, default="sonnet",
-                       help="Model for the provider (e.g., sonnet, gpt-4o, llama3.1)")
+                       choices=["claude", "gemini", "agy", "codex", "openai", "anthropic", "ollama"],
+                       help="LLM provider (claude=Haiku via claude -p [default]; agy=Antigravity/Gemini-backed; "
+                            "codex=OpenAI codex CLI)")
+    parser.add_argument("--llm-model", type=str, default="haiku",
+                       help="Model for the provider (default haiku; e.g. sonnet, opus; empty '' = the CLI's own "
+                            "default, useful for agy/codex)")
+    parser.add_argument("--routing-method", type=str, default="weighted",
+                       choices=["weighted", "rotational", "rotational-fast", "mu"],
+                       help="Candidate-ranking method passed to the federated model (mu = mu_cosine μ-ranker; "
+                            "needs --mu-ckpt)")
+    parser.add_argument("--mu-ckpt", type=str, default=None,
+                       help="mu_cosine checkpoint for --routing-method mu (e.g. prototypes/mu_cosine/model_prod.pt)")
     parser.add_argument("--top-k", type=int, default=10,
                        help="Number of semantic candidates")
     parser.add_argument("--timeout", type=int, default=60,
@@ -902,9 +789,11 @@ def main():
             boost_and=args.boost_and,
             boost_or=args.boost_or,
             filters=args.filters,
-            blend_alpha=args.blend_alpha
+            blend_alpha=args.blend_alpha,
+            routing_method=args.routing_method,
+            mu_ckpt=args.mu_ckpt
         )
-        
+
         if result:
             if args.json:
                 print(json.dumps({

@@ -11,6 +11,8 @@ Copyright (c) 2026 John William Creighton (s243a)
 
 > **Companion docs:** [Philosophy](PLAWK_PHILOSOPHY.md) ·
 > [Specification](PLAWK_SPECIFICATION.md) ·
+> [Execution Architecture](PLAWK_EXECUTION_ARCHITECTURE.md) ·
+> [DCG Binary Readers](PLAWK_DCG_BINARY_READERS.md) ·
 > [Submodule README](../../examples/plawk/README.md)
 
 ---
@@ -189,11 +191,17 @@ The first WAM/LLVM probes now live under `examples/plawk/probes/`.
 **Success:** a native binary that reads stdin, counts records, prints matching
 lines — identical behaviour to Phase 0, running as compiled LLVM.
 
-**Current boundary:** the compiled and native stream smokes still read from file
-paths rather than stdin. WAM/LLVM exposes general stream helpers
-(`@wam_stream_open_value`, `@wam_stream_read_line_value`, and
-`@wam_stream_close_value`) that native LLVM code can call directly, alongside
-the existing `stream_open/2`, `read_line/2`, and `stream_close/1` builtins.
+**Current boundary:** WAM/LLVM exposes general stream helpers
+(`@wam_stream_open_value`, `@wam_stream_read_line_value`,
+`@wam_stream_close_value`, and `@wam_stream_open_fd_value` for wrapping an
+already-open descriptor such as stdin) that native LLVM code can call
+directly, alongside the existing `stream_open/2`, `read_line/2`, and
+`stream_close/1` builtins. `llvm_emit_stream_driver_ir/3` accepts either a
+concrete compile-time path or the `stdin_or_argv` sentinel; the sentinel
+emits a `main(argc, argv)` that opens `argv[1]` at runtime, treats `-` as
+stdin, and defaults to stdin when no argument is given, so compiled PLAWK
+binaries work as awk-style pipeline filters
+(`tests/test_plawk_surface_stdin_input.pl`).
 The `tests/test_plawk_native_stream_loop_driver.pl` smoke proves a native LLVM
 loop can open a runtime file path, read lines until `end_of_file`, call a
 compiled PLAWK handler once per record, and thread PLAWK state through WAM.
@@ -266,10 +274,15 @@ the allocation-free `@wam_atom_field_subslice_value` helper, and native
 `index($N, "literal")` through the shared `@wam_atom_field_index_value` helper.
 Explicit print-side numeric coercions such as `int($N)` lower through the shared
 `@wam_atom_field_i64_value` parse helper and print zero when the field is
-missing or not a strict signed decimal. The first composed arithmetic forms add
-or subtract a non-negative integer constant from native `i64` primaries such as
-`NR`, `NF`, `length($N)`, `int($N)`, and `index($N, "literal")`; each lowers
-through the shared primary emitter followed by a shared binary `i64` operation.
+missing or not a strict signed decimal. Arithmetic expressions support general
+`+`, `-`, `*`, `/`, and `%` with awk precedence and parentheses over `i64`
+operands: integer literals, `NR`, `NF`, `length($N)`, `int($N)`,
+`index($N, "literal")`, and bare numeric fields (`$3 + $4` coerces like
+`int/1`; a bare `$N` alone still prints as a slice). Each binary node lowers
+recursively through the shared `plawk_i64_expr_ir` emitter with `_lhs`/`_rhs`
+name suffixes; `/` and `%` emit branch-free guards so a zero divisor yields
+`0` and `INT64_MIN / -1` wraps instead of trapping. Scalar `+=`/`=` updates
+and `printf` arguments accept the same expression grammar.
 Print-only `tolower($N)` and `toupper($N)` lower through shared
 `@wam_print_ascii_lower_slice` and `@wam_print_ascii_upper_slice` helpers, so
 case mapping streams bytes without allocating a transformed atom.
@@ -280,6 +293,19 @@ pointer pairs.
 Numeric field guards such as `$3 > 100` lower through the shared
 `@wam_atom_field_i64_cmp_value` helper, which parses the projected field slice
 as a strict signed decimal `i64` and compares with numeric op codes.
+Patterns compose with `&&`, `||`, and `!` (awk precedence, parentheses
+group) in both rule guards and `if` conditions. The base guards are
+side-effect-free straight-line native checks, so combined guards lower to
+bitwise `i1` `and`/`or`/`xor` over per-subpattern `_l`/`_r`/`_n` suffixed
+names, keeping the whole guard a single block with no extra branches.
+POSIX ERE matching (`$N ~ /re/`, `$N !~ /re/`, and bare `/re/` with
+metacharacters, AST `field_match(Index, Regex)`) lowers through the
+`@wam_regex_field_match` runtime helper: each match site owns a string
+global plus a cache slot holding a lazily `regcomp`ed (`REG_EXTENDED`)
+`regex_t`; field slices are copied into a growable NUL-terminated scratch
+buffer for `regexec`, and `$0` matches use the atom's C string directly.
+Metacharacter-free bare patterns keep the prefix/contains fast paths, so
+existing programs lower unchanged.
 The parser itself is factored as `@wam_atom_field_i64_value`, returning a value
 plus success flag, so the same machinery also feeds scalar expressions such as
 `bytes += $3` and `last = $3`; PLAWK uses zero for failed numeric coercions in
@@ -287,6 +313,35 @@ those scalar arithmetic contexts. That coercion is emitted through the
 target-side `llvm_emit_atom_field_i64_or_default/7` helper so future native
 numeric consumers can share the parse-plus-default lowering instead of
 rebuilding it in PLAWK-specific code.
+Double-typed expressions are available in prints and printf arguments:
+an expression containing a float literal (`float_const(Mantissa, 10^k)`,
+emitted as an exact `fdiv` ratio so LLVM's exact-decimal-FP rule is
+satisfied and rounding matches strtod) or a `float($N)` strtod coercion
+(`@wam_atom_field_f64_value`) lowers through a parallel `plawk_f64_expr_ir`
+emitter with `fadd/fsub/fmul/fdiv/frem` and `sitofp` promotion of `i64`
+subtrees. Output is `%g` for `print` and `%f`/`%g`/`%e` (optional
+precision) for `printf`. Typed double scalar slots are in:
+state-plan slots carry an inferred type (`scalar_counter(Name)` = i64,
+`scalar_double(Name)` = double), computed by a fixpoint over update
+expressions — a scalar is double when any update assigns it a
+float-typed expression or reads an already-double scalar. Every phi
+emitter (loop head, rule input, next, break, final, if-join) formats the
+slot's LLVM type; double updates lower the RHS through
+`plawk_f64_expr_ir` (substituted double reads arrive as `ssa_f64/1`
+leaves, i64 operands promote via `sitofp`) into `fadd`, and END prints
+of double slots use `%g`. `{ sum += $2 * 1.5 }` and
+`{ sum += float($2) }` now accumulate natively in both text and binary
+record modes; END *arithmetic* composes too:
+an END expression that reads a double slot or contains a float literal
+promotes wholesale to double (`END { print sum / NR }` is an IEEE
+`fdiv` with a `%g` print; i64 END expressions keep guarded `sdiv`).
+Scalar variables are readable inside rule-body update expressions and END
+prints: codegen substitutes `var(Name)` leaves with the current SSA slot
+value (an `ssa/1` leaf the shared emitters print verbatim) before emission,
+so `{ avg = $2 / 2; total += avg }` folds in source order with no extra
+state. END expressions substitute final slot values and map `NR` to
+`%plawk_nr`, the loop-head record phi (which dominates `end_print`), so
+`END { print sum / NR }` averages lower natively with guarded division.
 The scalar counter
 path threads a native `i64` loop variable and prints it from the `END` action. Multiple scalar counters
 become parallel `i64` phi slots in the native streaming loop.
@@ -304,7 +359,11 @@ emits per-slot phis at the branch join, and can run field-key associative
 increments or selected-field/string-literal `print` as branch-local side effects. Scalar,
 mixed, and assoc-only branch bodies now share the same rule-body action walker;
 branch phis use each branch's actual exit block, including assoc side-effect
-`_done` blocks. Branch-local `print` uses prefixed SSA names so multiple branch
+`_done` blocks. `else` is optional (an absent else lowers as an empty branch
+whose join phis pass the incoming slot values through), and `else if` chains
+nest as a single-element else branch containing the next if; the sequence
+walker lowers nested ifs recursively with prefix-derived label names.
+Branch-local `print` uses prefixed SSA names so multiple branch
 prints do not collide; branch-local `NR` printing uses the same native record
 counter threaded through the stream loop as top-level `print NR`. Print
 expression lowering now shares one context-aware path for top-level and
@@ -338,6 +397,14 @@ needed per record for those count updates.
 Guarded associative-count rules now reuse the same native guard emitters and
 rule-chain structure as scalar counters, so the loop can run field/prefix checks
 and table increments without per-record WAM dispatch for the supported surface.
+`END` supports the canonical for-in report idiom,
+`END { for (k in counts) print k, counts[k] }`: the WAM/LLVM assoc runtime
+gained `wam_assoc_i64_iter_next`/`wam_assoc_i64_key_at`/`wam_assoc_i64_value_at`
+slot-walking helpers, and PLAWK lowers the loop to a native table walk that
+resolves key text through `wam_atom_to_string`, reads same-array values
+directly from the visited slot, and looks up other arrays (and string
+literals) per key with awk's missing-key-prints-0 behaviour. Iteration order
+is hash-slot order, unspecified as in awk.
 Mixed scalar/associative programs use a combined native state plan: scalar
 counters remain `i64` phi slots, assoc arrays remain runtime table pointers, and
 `END` printing can interleave scalar variables with associative lookups.
@@ -354,6 +421,36 @@ separator used by comma-separated `print` fields in `BEGIN`, rule, and `END`
 actions. Native separator emission uses direct byte output rather than
 passing the separator through `printf` as a format string.
 
+PLAWK programs can now call compiled Prolog predicates in the same binary:
+`prolog_guard` patterns (`pred(args...)` as a rule guard or `if` condition,
+match = success) and `prolog_call` i64 expressions (`pred(args...)` with a
+trailing output register, integer result, `0` on failure). Call sites
+marshal field atoms / string atoms / integers and invoke per-predicate
+wrapper functions around a lazily created shared `%WamState`; wrappers save
+and restore the VM heap top and rewind the arena via `@wam_cleanup`, so
+foreign calls run in constant memory (~5µs/call, bytecode-interpreted).
+`plawk_program_native_driver_ir/4` takes `wam_vm(InstrCount, LabelCount)`
+for the `wam_state_new` geps. Soak-testing this feature exposed that
+`read_line`'s per-line `wam_intern_atom` was a linear scan over the atom
+tables, so streams with many unique lines paid O(n^2) interning — fixed:
+`wam_intern_atom` now goes through an FNV-1a hash index over the static +
+dynamic atom tables (slots hold atom id + 1, built lazily on first intern,
+grown at 50% load), making interning O(1) amortized. Measured on a
+200k-unique-line stream: 2m8s before, 0.1s after, ~4x of mawk on the same
+program. Follow-up landed: the plawk surface
+drivers now read records with `wam_stream_read_line_transient_value`, which
+builds each line in a shared reusable buffer behind the reserved transient
+atom id 2^62 (special-cased in `wam_atom_to_string`, never entered into the
+intern hash or dynamic table). No malloc, hash, or atom-table append per
+record, and memory is constant on unbounded unique-line streams (verified:
+500k unique ~100-byte lines under a 60 MB ulimit). Contract: the line Value
+is valid until the next read; anything persisted past the record interns
+explicitly -- field-slice assoc keys already did, and $0 foreign-call
+arguments now intern the current line so Prolog-side atom identity is
+preserved. Measured: 200k short records 0.098s -> 0.029s (mawk parity);
+long-line streams remain ~4x behind mawk on the reader's byte-at-a-time
+copy loop, which binary records bypass entirely.
+
 **Success:** a user-written awk-style program parses, lowers, compiles, and
 produces correct output on standard awk test cases.
 
@@ -362,6 +459,73 @@ produces correct output on standard awk test cases.
 ## Phase 3: Binary data structures and DCG reader
 
 **Goal:** replace text records with binary structures; add DCG-based readers.
+
+**First slice landed:** `BEGIN { BINFMT = "i64 i64 f64" }` selects
+fixed-layout binary records: one 8-byte native-endian field per type,
+`$1..$N`, record size 8*N. The runtime gained
+`@wam_stream_read_record(handle, size, dst)` (1 = record, 0 = clean EOF at
+a record boundary, -1 = error or trailing partial record) and the target a
+binary sibling of the stream driver skeleton
+(`llvm_emit_binary_stream_driver_ir/4`, same block labels so loop phis are
+unchanged, both concrete-path and stdin_or_argv). Codegen threads a record
+descriptor through the existing `FieldSeparator` position — `binfmt(Types)`
+clauses ahead of the text clauses lower `$N` guards/arithmetic/prints to a
+typed load at a compile-time offset, `NF` to a constant, and `float($N)` to
+a double load; a whitelist validator rejects text-shaped programs in binary
+mode instead of letting them reach text emitters. Measured on 2M records
+(`$1 > 100 { sum += $2 }`): binary 0.040s vs mawk-on-text 0.225s (5.6x)
+vs plawk text mode 0.156s — the no-parsing thesis, demonstrated.
+**Third slice landed (fixed-width string fields):** `BINFMT = "s8 i64"`
+declares an 8-byte string field; offsets and record size are computed
+from per-type widths (`plawk_binfmt_type_width/2`), so layouts mix
+freely. `print $N` on an `sN` field emits a strnlen-bounded `%.*s`
+straight from the record buffer, and `$N == "key"` lowers to memcmp
+plus a NUL check at the key length (elided for full-width keys;
+oversized keys fold to constant false). String fields are
+print/equality-only; arithmetic, `float()`, numeric compares, and assoc
+keys on them are rejected. **Fourth slice landed (binary writers):** `BEGIN { OUTFMT = "..." }`
+plus the `writebin expr, ...` action write fixed-layout binary records
+to stdout: a resolve pre-pass stamps each writebin with the layout
+types (failing on missing OUTFMT, arity mismatch, or sN output), the
+entry block allocates one reused record buffer, each argument lowers
+through the i64/f64 expression emitters into a typed store at its
+layout offset, and a buffered `fwrite(buf, size, 1, stdout)` emits the
+record (libc flushes on normal main return). Works from both text and
+binary inputs, so plawk-to-plawk binary pipelines (converter |
+aggregator) run with no text serialization between stages. The END
+for-in loop composes with writebin: `for (k in counts) writebin k,
+counts[k]` iterates the group table and emits one binary record per
+group (binary input mode only -- text keys are atom ids). OUTFMT
+accepts `sN` string slots: literals, `sM` input fields (`M <= N`), and
+text-mode slices clamped to the width lower to memset + memcpy against
+the record buffer, so string-carrying binary pipelines work in both
+directions. **Fifth
+slice landed (varlen records / first DCG-reader slice):** `lpsN`
+length-prefixed string fields make records variable-length on the wire
+while keeping the fixed access layout in memory -- the design document
+[PLAWK_DCG_BINARY_READERS.md](PLAWK_DCG_BINARY_READERS.md) fixes the
+general approach (Tier 1: LL(1)-over-fields grammars with compile-time
+caps compile to native field-by-field read sequences; Tier 2: native
+framing + WAM-bytecode payload parsing via the foreign bridge; Tier 3:
+full DCG fallback, the Phase 5 JIT target). Landed since: varlen
+writers (lpsN in OUTFMT), tagged unions (case-block surface, native
+tag switch), and bounded repetition (repK(...) + foreach, compile-time
+unrolled); Tier-2 composition sugar remains. Remaining Phase 3
+items below (richer ABIs) are otherwise unchanged.
+
+**Second slice landed (typed associative arrays):** in binary mode
+`{ counts[$1]++ }` keys the existing `%WamAssocI64Table` runtime with the
+raw i64 field value — the record loop performs zero interning (the only
+`wam_intern_atom` call left is the one-shot input-path atom in the entry
+block). `END { for (k in counts) print k, counts[k] }` prints keys
+numerically straight from `wam_assoc_i64_key_at`, and END lookups accept
+signed integer literals (`print counts[5], counts[-3]`). A
+binary-mode validator (`plawk_assoc_record_program_ok/3`) requires counted
+keys to be i64 fields and END lookup keys to be integers; text mode
+rejects integer keys outright since raw integers would collide with atom
+ids in the shared i64 table. This delivers the associative-array note
+below for the group-by shape: a fully native, allocation-free aggregation
+loop over binary records.
 
 1. Binary record ABI: struct layout, alignment, (de)serialisation convention.
 2. DCG grammar for parsing binary records into terms.

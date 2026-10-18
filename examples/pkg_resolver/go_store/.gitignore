@@ -1,0 +1,18 @@
+# Regenerated harness artifacts and the local binary at this directory.
+.corpus_out/
+.diff_out/
+.scale_out/
+/uwresolvestore
+*.exe
+
+# Generated WAM Go project (written by build.sh / build.pl). These bake the
+# absolute store path into setupSharedForeignPredicates, so they are per-build
+# artifacts, not committed sources. build.sh regenerates them.
+/go.mod
+/atoms.go
+/instructions.go
+/lib.go
+/lowered.go
+/runtime.go
+/state.go
+/value.go

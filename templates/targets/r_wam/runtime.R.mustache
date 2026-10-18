@@ -390,12 +390,23 @@ WamRuntime$reset_state <- function(s) {
 # the write-mode branch of GetStructure/GetList (when matching against
 # an unbound variable). Nested PutStructure (arithmetic, list cons,
 # etc.) just push more frames; finalization cascades up the stack.
-WamRuntime$begin_build <- function(state, fid, arity, target_reg) {
+# `bind_through` separates the two families that both open a build frame.
+# PutStructure/PutList (FALSE) stage a BODY argument: the A register is
+# being overwritten and binding its previous occupant aliases an
+# unrelated live variable (the M139/M140 class). GetStructure/GetList in
+# write mode (TRUE) match a clause HEAD: the A register holds the
+# CALLER's output variable, and binding it is the whole point. Gating on
+# register class alone conflated the two, so a clause head that builds an
+# output argument never handed it back -- cbuild_one(X, [tk(X)|[]]) left
+# the caller with an unbound L.
+WamRuntime$begin_build <- function(state, fid, arity, target_reg,
+                                   bind_through = FALSE) {
   state$mode <- "write"
-  frame <- list(target_reg = as.integer(target_reg),
-                fid        = as.integer(fid),
-                arity      = as.integer(arity),
-                args       = list())
+  frame <- list(target_reg   = as.integer(target_reg),
+                fid          = as.integer(fid),
+                arity        = as.integer(arity),
+                bind_through = isTRUE(bind_through),
+                args         = list())
   state$build_stack <- c(state$build_stack, list(frame))
   invisible(NULL)
 }
@@ -433,7 +444,7 @@ WamRuntime$append_build_arg <- function(state, val) {
     # `p(X) :- q(g(7)), var(X)` wrong-failed). Build placeholders only
     # ever live in X/Y registers, so the bind is additionally gated on
     # the register class -- the same fix the other targets carry.
-    if (top$target_reg >= 101L &&
+    if ((isTRUE(top$bind_through) || top$target_reg >= 101L) &&
         !is.null(cur) && is.list(cur) && !is.null(cur$tag) && cur$tag == "unbound") {
       # Skip the bind if cur appears anywhere inside new_struct -- the
       # bind would create a self-cycle. This happens when the WAM
@@ -1653,6 +1664,12 @@ WamRuntime$step <- function(program, state, instr) {
     # are exhausted, backtrack reaches the aggregate frame and
     # finalizes -- binding the bag register to the accumulated list.
     "BeginAggregate" = {
+      # Capability-gated scalar aggregate region (PERF-R-AGGREGATE-LOWER):
+      # when the body is a single Call/Execute to a bulk_collect-capable
+      # predicate plus straight-line is_lax arithmetic, accumulate without
+      # per-solution EndAggregate/backtrack. Unsupported shapes fall through.
+      handled <- WamRuntime$try_scalar_aggregate_fastpath(program, state, instr)
+      if (!is.null(handled)) return(handled)
       # Pre-compute the matching end_aggregate's PC so the aggregate
       # frame has a valid continuation even when the goal has zero
       # solutions (and thus EndAggregate never fires). We scan from
@@ -1697,10 +1714,12 @@ WamRuntime$step <- function(program, state, instr) {
       # if it did).
       n <- length(state$cps)
       agg_idx <- 0L
-      for (i in seq.int(n, 1L, by = -1L)) {
-        cpi <- state$cps[[i]]
-        if (!is.null(cpi$kind) && cpi$kind == "aggregate") {
-          agg_idx <- i; break
+      if (n > 0L) {
+        for (i in seq.int(n, 1L, by = -1L)) {
+          cpi <- state$cps[[i]]
+          if (!is.null(cpi$kind) && cpi$kind == "aggregate") {
+            agg_idx <- i; break
+          }
         }
       }
       if (agg_idx == 0L) return(FALSE)
@@ -1768,7 +1787,8 @@ WamRuntime$step <- function(program, state, instr) {
           # scaffold; the codegen can be tightened to emit arity later.
           arity <- WamRuntime$count_following_unify(program, state$pc)
         }
-        WamRuntime$begin_build(state, instr$fid, arity, instr$ai)
+        WamRuntime$begin_build(state, instr$fid, arity, instr$ai,
+                               bind_through = TRUE)
       } else if (v$tag == "struct" && identical(v$fid, as.integer(instr$fid))) {
         WamRuntime$begin_read(state, v$args)
       } else {
@@ -1780,7 +1800,8 @@ WamRuntime$step <- function(program, state, instr) {
       v <- WamRuntime$deref(state, WamRuntime$get_reg(state, instr$ai))
       if (is.null(v)) return(FALSE)
       if (v$tag == "unbound") {
-        WamRuntime$begin_build(state, instr$fid, 2L, instr$ai)
+        WamRuntime$begin_build(state, instr$fid, 2L, instr$ai,
+                               bind_through = TRUE)
       } else if (v$tag == "struct" && identical(v$fid, as.integer(instr$fid))
                  && length(v$args) == 2L) {
         WamRuntime$begin_read(state, v$args)
@@ -1974,6 +1995,325 @@ WamRuntime$eval_arith <- function(state, term, table) {
     }
   }
   NULL
+}
+
+# ----------------------------------------------------------
+# ISO-R-0: structured error helpers + is_iso / is_lax
+# ----------------------------------------------------------
+# Shared by interpreter BuiltinCall and Execute/Call library fallback.
+# Classify order for is_iso: unbound → zero_divisor → non-evaluable.
+
+WamRuntime$make_instantiation_error <- function(table) {
+  Atom(WamRuntime$intern(table, "instantiation_error"))
+}
+
+WamRuntime$make_type_error <- function(table, expected, culprit) {
+  StructTerm(WamRuntime$intern(table, "type_error"),
+             list(Atom(WamRuntime$intern(table, expected)), culprit))
+}
+
+WamRuntime$make_evaluation_error <- function(table, kind) {
+  StructTerm(WamRuntime$intern(table, "evaluation_error"),
+             list(Atom(WamRuntime$intern(table, kind))))
+}
+
+WamRuntime$make_domain_error <- function(table, domain, culprit) {
+  StructTerm(WamRuntime$intern(table, "domain_error"),
+             list(Atom(WamRuntime$intern(table, domain)), culprit))
+}
+
+WamRuntime$throw_iso_error <- function(state, table, err_term) {
+  ctx <- Unbound(paste0("V", state$var_counter))
+  state$var_counter <- state$var_counter + 1L
+  wrapped <- StructTerm(WamRuntime$intern(table, "error"), list(err_term, ctx))
+  cond <- structure(
+    list(message = "prolog_throw", error_term = wrapped),
+    class = c("prolog_throw", "condition")
+  )
+  stop(cond)
+}
+
+WamRuntime$iso_term_contains_unbound <- function(state, term) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag)) return(FALSE)
+  if (v$tag == "unbound") return(TRUE)
+  if (v$tag == "struct") {
+    for (a in v$args) {
+      if (WamRuntime$iso_term_contains_unbound(state, a)) return(TRUE)
+    }
+  }
+  FALSE
+}
+
+WamRuntime$iso_term_has_zero_divide_t <- function(state, term, table) {
+  v <- WamRuntime$deref(state, term)
+  if (is.null(v) || is.null(v$tag) || v$tag != "struct") return(FALSE)
+  op <- WamRuntime$string_of(table, v$fid)
+  if (op %in% c("/", "//", "mod", "rem") && length(v$args) == 2L) {
+    rhs <- WamRuntime$deref(state, v$args[[2]])
+    if (!is.null(rhs) && !is.null(rhs$tag)) {
+      if (rhs$tag == "int" && rhs$val == 0L) return(TRUE)
+      if (rhs$tag == "float" && rhs$val == 0) return(TRUE)
+    }
+  }
+  for (a in v$args) {
+    if (WamRuntime$iso_term_has_zero_divide_t(state, a, table)) return(TRUE)
+  }
+  FALSE
+}
+
+WamRuntime$iso_arith_culprit <- function(state, term, table) {
+  v <- WamRuntime$deref(state, term)
+  if (!is.null(v) && !is.null(v$tag) && v$tag == "atom") {
+    return(StructTerm(WamRuntime$intern(table, "/"),
+                      list(v, IntTerm(0L))))
+  }
+  if (!is.null(v) && !is.null(v$tag) && v$tag == "struct") {
+    name <- WamRuntime$string_of(table, v$fid)
+    return(StructTerm(WamRuntime$intern(table, "/"),
+                      list(Atom(WamRuntime$intern(table, name)),
+                           IntTerm(as.integer(length(v$args))))))
+  }
+  StructTerm(WamRuntime$intern(table, "/"),
+             list(Atom(WamRuntime$intern(table, "unknown")), IntTerm(0L)))
+}
+
+# Lax is/2 body (also powers is_lax/2). Fail silently on bad eval.
+# PERF-R-WAM-STEP: keep the int+int +,-,*,//,mod IntTerm path, and also
+# short-circuit **/^ (often float results) plus unary - so power-sum
+# aggregation does not fall through to recursive eval_arith per solution.
+# Functor ids are memoized per intern table: atom ids are program-local.
+WamRuntime$builtin_is_lax <- function(program, state) {
+  table <- program$intern_table
+  target <- WamRuntime$get_reg(state, 1L)
+  expr   <- WamRuntime$get_reg(state, 2L)
+  expr_d <- WamRuntime$deref(state, expr)
+  if (!is.null(expr_d) && is.list(expr_d) && !is.null(expr_d$tag) &&
+      expr_d$tag == "struct") {
+    nargs <- length(expr_d$args)
+    fid <- as.integer(expr_d$fid)
+    if (is.null(table$is_lax_fids)) {
+      table$is_lax_fids <- list(
+        pow = as.integer(WamRuntime$intern(table, "**")),
+        hat = as.integer(WamRuntime$intern(table, "^")),
+        plus = as.integer(WamRuntime$intern(table, "+")),
+        minus = as.integer(WamRuntime$intern(table, "-"))
+      )
+    }
+    fids <- table$is_lax_fids
+    if (nargs == 2L) {
+      a_d <- WamRuntime$deref(state, expr_d$args[[1L]])
+      b_d <- WamRuntime$deref(state, expr_d$args[[2L]])
+      if (!is.null(a_d) && !is.null(b_d) &&
+          !is.null(a_d$tag) && !is.null(b_d$tag) &&
+          a_d$tag == "int" && b_d$tag == "int") {
+        res <- NULL
+        if (identical(fid, fids$pow) || identical(fid, fids$hat)) {
+          # (Hops+1) ** (-N) yields a float; match eval_arith via arith_to_term.
+          res <- WamRuntime$arith_to_term(a_d$val ^ b_d$val)
+        } else if (identical(fid, fids$plus)) {
+          res <- IntTerm(as.integer(a_d$val + b_d$val))
+        } else if (identical(fid, fids$minus)) {
+          res <- IntTerm(as.integer(a_d$val - b_d$val))
+        } else {
+          op <- WamRuntime$string_of(table, fid)
+          fast_val <- switch(op,
+            "*"   = a_d$val * b_d$val,
+            "//"  = a_d$val %/% b_d$val,
+            "mod" = a_d$val %% b_d$val,
+            NULL)
+          if (!is.null(fast_val)) res <- IntTerm(as.integer(fast_val))
+        }
+        if (!is.null(res)) {
+          target_d <- WamRuntime$deref(state, target)
+          if (!is.null(target_d) && !is.null(target_d$tag) &&
+              target_d$tag == "unbound") {
+            WamRuntime$bind(state, target_d$name, res)
+            return(TRUE)
+          }
+          return(WamRuntime$unify(state, target, res))
+        }
+      }
+    } else if (nargs == 1L && identical(fid, fids$minus)) {
+      a_d <- WamRuntime$deref(state, expr_d$args[[1L]])
+      if (!is.null(a_d) && !is.null(a_d$tag) &&
+          (a_d$tag == "int" || a_d$tag == "float")) {
+        res <- WamRuntime$arith_to_term(-a_d$val)
+        if (!is.null(res)) {
+          target_d <- WamRuntime$deref(state, target)
+          if (!is.null(target_d) && !is.null(target_d$tag) &&
+              target_d$tag == "unbound") {
+            WamRuntime$bind(state, target_d$name, res)
+            return(TRUE)
+          }
+          return(WamRuntime$unify(state, target, res))
+        }
+      }
+    }
+  }
+  n <- WamRuntime$eval_arith(state, expr, table)
+  if (is.null(n)) return(FALSE)
+  res <- WamRuntime$arith_to_term(n)
+  if (is.null(res)) return(FALSE)
+  WamRuntime$unify(state, target, res)
+}
+
+# ISO is/2: structured errors; classify unbound → zero_div → type_error.
+WamRuntime$eval_arith_iso_value <- function(program, state, expr) {
+  table <- program$intern_table
+  n <- WamRuntime$eval_arith(state, expr, table)
+  if (is.null(n)) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_type_error(table, "evaluable",
+        WamRuntime$iso_arith_culprit(state, expr, table)))
+  }
+  n
+}
+
+WamRuntime$eval_arith_iso <- function(program, state, expr) {
+  table <- program$intern_table
+  if (WamRuntime$iso_term_contains_unbound(state, expr)) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_instantiation_error(table))
+  }
+  if (WamRuntime$iso_term_has_zero_divide_t(state, expr, table)) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_evaluation_error(table, "zero_divisor"))
+  }
+  WamRuntime$eval_arith_iso_value(program, state, expr)
+}
+
+WamRuntime$builtin_is_iso <- function(program, state) {
+  target <- WamRuntime$get_reg(state, 1L)
+  expr   <- WamRuntime$get_reg(state, 2L)
+  n <- WamRuntime$eval_arith_iso(program, state, expr)
+  res <- WamRuntime$arith_to_term(n)
+  if (is.null(res)) return(FALSE)
+  WamRuntime$unify(state, target, res)
+}
+
+# ISO-R-2A: parameterized arithmetic comparisons (six families × three forms).
+WamRuntime$arith_compare_apply <- function(op, a, b) {
+  switch(op,
+    "<"   = a <  b,
+    ">"   = a >  b,
+    ">="  = a >= b,
+    "=<"  = a <= b,
+    "=:=" = a == b,
+    "=\\=" = a != b,
+    FALSE
+  )
+}
+
+# Map BuiltinCall / Execute keys → list(op, mode) where mode is lax|iso.
+WamRuntime$arith_compare_key_info <- function(pred) {
+  switch(pred,
+    "</2"        = list(op = "<",    mode = "lax"),
+    "<_lax/2"    = list(op = "<",    mode = "lax"),
+    "<_iso/2"    = list(op = "<",    mode = "iso"),
+    ">/2"        = list(op = ">",    mode = "lax"),
+    ">_lax/2"    = list(op = ">",    mode = "lax"),
+    ">_iso/2"    = list(op = ">",    mode = "iso"),
+    ">=/2"       = list(op = ">=",   mode = "lax"),
+    ">=_lax/2"   = list(op = ">=",   mode = "lax"),
+    ">=_iso/2"   = list(op = ">=",   mode = "iso"),
+    "=</2"       = list(op = "=<",   mode = "lax"),
+    "=<_lax/2"   = list(op = "=<",   mode = "lax"),
+    "=<_iso/2"   = list(op = "=<",   mode = "iso"),
+    "=:=/2"      = list(op = "=:=",  mode = "lax"),
+    "=:=_lax/2"  = list(op = "=:=",  mode = "lax"),
+    "=:=_iso/2"  = list(op = "=:=",  mode = "iso"),
+    "=\\=/2"     = list(op = "=\\=", mode = "lax"),
+    "=\\=_lax/2" = list(op = "=\\=", mode = "lax"),
+    "=\\=_iso/2" = list(op = "=\\=", mode = "iso"),
+    NULL
+  )
+}
+
+# Lax/default: silent fail on bad eval (prior R comparison behaviour).
+WamRuntime$builtin_arith_compare_lax <- function(program, state, op) {
+  table <- program$intern_table
+  a <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 1L), table)
+  b <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 2L), table)
+  if (is.null(a) || is.null(b)) return(FALSE)
+  isTRUE(WamRuntime$arith_compare_apply(op, a, b))
+}
+
+# ISO: scan both operands for the fleet-wide precedence before evaluating
+# either one: unbound → zero_divisor → first non-evaluable operand.
+WamRuntime$builtin_arith_compare_iso <- function(program, state, op) {
+  table <- program$intern_table
+  a_expr <- WamRuntime$get_reg(state, 1L)
+  b_expr <- WamRuntime$get_reg(state, 2L)
+  if (WamRuntime$iso_term_contains_unbound(state, a_expr) ||
+      WamRuntime$iso_term_contains_unbound(state, b_expr)) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_instantiation_error(table))
+  }
+  if (WamRuntime$iso_term_has_zero_divide_t(state, a_expr, table) ||
+      WamRuntime$iso_term_has_zero_divide_t(state, b_expr, table)) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_evaluation_error(table, "zero_divisor"))
+  }
+  a <- WamRuntime$eval_arith_iso_value(program, state, a_expr)
+  b <- WamRuntime$eval_arith_iso_value(program, state, b_expr)
+  isTRUE(WamRuntime$arith_compare_apply(op, a, b))
+}
+
+# ISO-R-2B: successor three-form. Shared bind/unify; lax vs ISO only
+# differ in error reporting. Mirrors Python _execute_succ_{lax,iso}.
+# Integer overflow follows existing R IntTerm arithmetic (NA on wrap).
+WamRuntime$succ_bind <- function(state, x_v, y_v) {
+  if (!is.null(x_v) && !is.null(x_v$tag) && x_v$tag == "int") {
+    if (x_v$val < 0L) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
+                            IntTerm(x_v$val + 1L)))
+  }
+  if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "int") {
+    if (y_v$val <= 0L) return(FALSE)
+    return(WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
+                            IntTerm(y_v$val - 1L)))
+  }
+  FALSE
+}
+
+WamRuntime$builtin_succ_lax <- function(program, state) {
+  x_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+  y_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+  WamRuntime$succ_bind(state, x_v, y_v)
+}
+
+# Classify: both-unbound → non-int X → non-int Y → X<0 type →
+# Y<=0 domain (reverse) → bind. Valid inconsistent pairs fail normally.
+WamRuntime$builtin_succ_iso <- function(program, state) {
+  table <- program$intern_table
+  x_raw <- WamRuntime$get_reg(state, 1L)
+  y_raw <- WamRuntime$get_reg(state, 2L)
+  x_v <- WamRuntime$deref(state, x_raw)
+  y_v <- WamRuntime$deref(state, y_raw)
+  x_unbound <- is.null(x_v) || is.null(x_v$tag) || x_v$tag == "unbound"
+  y_unbound <- is.null(y_v) || is.null(y_v$tag) || y_v$tag == "unbound"
+  if (x_unbound && y_unbound) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_instantiation_error(table))
+  }
+  if (!x_unbound && (is.null(x_v$tag) || x_v$tag != "int")) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_type_error(table, "integer", x_v))
+  }
+  if (!y_unbound && (is.null(y_v$tag) || y_v$tag != "int")) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_type_error(table, "integer", y_v))
+  }
+  if (!x_unbound && x_v$tag == "int" && x_v$val < 0L) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_type_error(table, "not_less_than_zero", x_v))
+  }
+  if (x_unbound && !y_unbound && y_v$tag == "int" && y_v$val <= 0L) {
+    WamRuntime$throw_iso_error(state, table,
+      WamRuntime$make_domain_error(table, "not_less_than_zero", y_v))
+  }
+  WamRuntime$succ_bind(state, x_v, y_v)
 }
 
 # Standard Euclidean GCD; both args coerced to non-negative integers.
@@ -2337,10 +2677,12 @@ WamRuntime$transitive_closure2 <- function(program, state, key, edge_pred,
   snap_build <- state$build_stack
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
+  # Strict R+ (docs/design/WAM_TRANSITIVE_CLOSURE2_CONTRACT.md): visited
+  # tracks nodes discovered via an outgoing edge — do not seed with Source.
+  # Source appears in `reached` only for a self-loop or nonempty cycle.
   visited <- new.env(parent = emptyenv())
   queue   <- list(src_v)
   reached <- list()
-  assign(as.character(src_v$id), TRUE, envir = visited)
 
   while (length(queue) > 0L) {
     cur <- queue[[1L]]
@@ -2390,13 +2732,13 @@ WamRuntime$transitive_closure2 <- function(program, state, key, edge_pred,
 # ----------------------------------------------------------
 # Recursive-kernel: transitive_distance3
 # ----------------------------------------------------------
-# BFS variant that yields (target, distance) pairs. Pattern:
+# dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md): BFS shortest
+# positive distance. Pattern:
 #   tdist(X, Y, 1) :- edge(X, Y).
 #   tdist(X, Y, D) :- edge(X, Z), tdist(Z, Y, D1), D is D1 + 1.
-# We BFS from the (ground) source and record the depth at which
-# each node is first reached. The source itself is *not* yielded
-# unless there's a self-loop, matching the SWI semantics of the
-# clauses above (one edge step is required).
+# Visited tracks nodes discovered via an outgoing edge — do NOT seed
+# with Source. Source appears only for a self-loop (distance 1) or the
+# shortest nonempty cycle back to Source.
 WamRuntime$transitive_distance3 <- function(program, state, key, edge_pred,
                                              edge_key, source, target, dist,
                                              resume_pc) {
@@ -2421,7 +2763,6 @@ WamRuntime$transitive_distance3 <- function(program, state, key, edge_pred,
   q_nodes  <- list(src_v)
   q_depths <- list(0L)
   reached  <- list()  # list of list(node, depth)
-  assign(as.character(src_v$id), TRUE, envir = visited)
 
   while (length(q_nodes) > 0L) {
     cur   <- q_nodes[[1L]]
@@ -2475,18 +2816,21 @@ WamRuntime$transitive_distance3 <- function(program, state, key, edge_pred,
 # ----------------------------------------------------------
 # Recursive-kernel: weighted_shortest_path3
 # ----------------------------------------------------------
+# Finite nonnegative Dijkstra
+# (docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md).
 # Dijkstra from a ground source over a weighted edge predicate of
-# arity 3 (edge(X, Y, W)). Yields (target, total-weight) pairs --
-# the SHORTEST total weight per reachable node, not all paths.
+# arity 3 (edge(X, Y, W)). Yields (target, FloatCost) pairs -- the
+# SHORTEST total weight per reachable non-Source node. Source is
+# never emitted (even via self-loop / cycle). Integral sums remain
+# FloatTerm. A reachable invalid row (non-atom dest, non-numeric /
+# NaN / Inf / negative weight) fails the complete kernel call.
 # Pattern detected:
 #   wsp(X, Y, W) :- edge(X, Y, W).
 #   wsp(X, Y, W) :- edge(X, Z, W1), wsp(Z, Y, RestW), W is RestW + W1.
 # Algorithm: keep a priority queue (R list sorted ascending by
 # weight via linear insert -- O(V^2) but fine for the hundreds-of-
 # nodes regime). Pop the min-weight unvisited node, mark visited,
-# yield it, then relax all outgoing edges. Source itself isn't
-# yielded unless reachable via a non-trivial path (matches the
-# "at least one edge step" semantics of the clauses above).
+# yield it (if not Source), then relax all outgoing edges.
 WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
                                                  edge_key, source, target,
                                                  weight, resume_pc) {
@@ -2511,8 +2855,9 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
   # kept sorted ascending by weight.
   pq <- list(list(weight = 0, node = src_v))
   reached <- list()  # list of list(node, second = pre-built term)
+  invalid_row <- FALSE
 
-  while (length(pq) > 0L) {
+  while (length(pq) > 0L && !invalid_row) {
     entry  <- pq[[1L]]
     pq     <- pq[-1L]
     cur    <- entry$node
@@ -2520,16 +2865,9 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
     k      <- as.character(cur$id)
     if (exists(k, envir = visited, inherits = FALSE)) next
     assign(k, TRUE, envir = visited)
-    if (!identical(cur, src_v) || cur_w > 0) {
-      # Pre-build the weight WAM term: keep ints as IntTerm where
-      # possible so downstream `==/2` round-trips cleanly.
-      wt <- if (is.finite(cur_w) && cur_w == as.integer(cur_w) &&
-                abs(cur_w) < .Machine$integer.max) {
-              IntTerm(as.integer(cur_w))
-            } else {
-              FloatTerm(as.numeric(cur_w))
-            }
-      reached <- c(reached, list(list(node = cur, second = wt)))
+    # Source excluded even through self-loop / positive cycle.
+    if (!identical(cur, src_v)) {
+      reached <- c(reached, list(list(node = cur, second = FloatTerm(as.numeric(cur_w)))))
     }
     # Relax neighbours via edge_pred(cur, Y, W).
     y_var <- Unbound(paste0("V_wsp_y_", state$var_counter))
@@ -2539,29 +2877,41 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
     edge_goal <- StructTerm(edge_atom_id, list(cur, y_var, w_var))
     captured_w <- cur_w
     WamRuntime$iterate_goal(program, state, edge_goal, function() {
+      if (invalid_row) return(FALSE)
       y_v <- WamRuntime$deref(state, y_var)
       w_v <- WamRuntime$deref(state, w_var)
-      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom" &&
-          !is.null(w_v) && !is.null(w_v$tag) &&
-          (w_v$tag == "int" || w_v$tag == "float")) {
-        nk <- as.character(y_v$id)
-        if (!exists(nk, envir = visited, inherits = FALSE)) {
-          new_w <- captured_w + w_v$val
-          # Sorted insert into pq (ascending weight).
-          if (length(pq) == 0L) {
-            pq <<- list(list(weight = new_w, node = y_v))
-          } else {
-            placed <- FALSE
-            for (i in seq_along(pq)) {
-              if (pq[[i]]$weight > new_w) {
-                pq <<- append(pq, list(list(weight = new_w, node = y_v)),
-                              after = i - 1L)
-                placed <- TRUE; break
-              }
+      # Reachable invalid row → fail complete kernel call.
+      if (is.null(y_v) || is.null(y_v$tag) || y_v$tag != "atom") {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      if (is.null(w_v) || is.null(w_v$tag) ||
+          !(w_v$tag == "int" || w_v$tag == "float")) {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      ew <- as.numeric(w_v$val)
+      if (!is.finite(ew) || ew < 0) {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      nk <- as.character(y_v$id)
+      if (!exists(nk, envir = visited, inherits = FALSE)) {
+        new_w <- captured_w + ew
+        # Sorted insert into pq (ascending weight).
+        if (length(pq) == 0L) {
+          pq <<- list(list(weight = new_w, node = y_v))
+        } else {
+          placed <- FALSE
+          for (i in seq_along(pq)) {
+            if (pq[[i]]$weight > new_w) {
+              pq <<- append(pq, list(list(weight = new_w, node = y_v)),
+                            after = i - 1L)
+              placed <- TRUE; break
             }
-            if (!placed) {
-              pq <<- c(pq, list(list(weight = new_w, node = y_v)))
-            }
+          }
+          if (!placed) {
+            pq <<- c(pq, list(list(weight = new_w, node = y_v)))
           }
         }
       }
@@ -2588,6 +2938,8 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
   state$mode        <- snap_mode
   state$build_stack <- snap_build
 
+  if (invalid_row) return(FALSE)
+
   WamRuntime$kernel_pair_iter(program, state, key, reached, target, weight,
                                1L, resume_pc)
 }
@@ -2595,16 +2947,16 @@ WamRuntime$weighted_shortest_path3 <- function(program, state, key, edge_pred,
 # ----------------------------------------------------------
 # Recursive-kernel: transitive_parent_distance4
 # ----------------------------------------------------------
-# BFS variant that tracks the immediate predecessor of each node
-# in the search tree, yielding (target, parent, distance) triples.
+# Shortest-positive parents
+# (docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md).
+# Finite BFS with parent sets: emit every distinct
+# (target, parent, distance) where distance is dist+ and parent is an
+# immediate predecessor on some shortest positive path. Equal-shortest
+# parents are all emitted. Do NOT seed Source into dist — Source appears
+# only for a self-loop (Source,Source,1) or the shortest nonempty cycle.
 # Pattern detected:
 #   pd(X, Y, X, 1) :- edge(X, Y).
 #   pd(X, Y, P, D) :- edge(X, Z), pd(Z, Y, P, D1), D is D1 + 1.
-# The `parent` slot is the node that immediately preceded `target`
-# in the BFS path from `source` (i.e. for direct neighbours it's
-# `source` itself; for two-hop reach it's the intermediate node).
-# Source itself is *not* yielded -- the recursion always takes at
-# least one edge step.
 WamRuntime$transitive_parent_distance4 <- function(program, state, key,
                                                      edge_pred, edge_key,
                                                      source, target, parent,
@@ -2625,21 +2977,17 @@ WamRuntime$transitive_parent_distance4 <- function(program, state, key,
   snap_build <- state$build_stack
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
-  visited <- new.env(parent = emptyenv())
-  # Parallel queues: nodes, parents (immediate predecessor), depth.
-  q_nodes   <- list(src_v)
-  q_parents <- list(NULL)   # source has no parent in the BFS tree
-  q_depths  <- list(0L)
-  reached   <- list()       # (node, parent, distance) triples
-  assign(as.character(src_v$id), TRUE, envir = visited)
+  dist_env <- new.env(parent = emptyenv())
+  parents_env <- new.env(parent = emptyenv())
+  q_nodes  <- list(src_v)
+  q_depths <- list(0L)
+  reached  <- list()
 
   while (length(q_nodes) > 0L) {
-    cur     <- q_nodes[[1L]]
-    cur_par <- q_parents[[1L]]
-    depth   <- q_depths[[1L]]
-    q_nodes   <- q_nodes[-1L]
-    q_parents <- q_parents[-1L]
-    q_depths  <- q_depths[-1L]
+    cur   <- q_nodes[[1L]]
+    depth <- q_depths[[1L]]
+    q_nodes  <- q_nodes[-1L]
+    q_depths <- q_depths[-1L]
     next_depth <- depth + 1L
     captured_cur <- cur
     y_var <- Unbound(paste0("V_pd_", state$var_counter))
@@ -2649,15 +2997,25 @@ WamRuntime$transitive_parent_distance4 <- function(program, state, key,
       y_v <- WamRuntime$deref(state, y_var)
       if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
         k <- as.character(y_v$id)
-        if (!exists(k, envir = visited, inherits = FALSE)) {
-          assign(k, TRUE, envir = visited)
-          q_nodes   <<- c(q_nodes,   list(y_v))
-          q_parents <<- c(q_parents, list(captured_cur))
-          q_depths  <<- c(q_depths,  list(next_depth))
-          reached   <<- c(reached,
+        pred_id <- as.character(captured_cur$id)
+        if (!exists(k, envir = dist_env, inherits = FALSE)) {
+          assign(k, next_depth, envir = dist_env)
+          assign(k, pred_id, envir = parents_env)
+          q_nodes  <<- c(q_nodes,  list(y_v))
+          q_depths <<- c(q_depths, list(next_depth))
+          reached  <<- c(reached,
+                         list(list(node   = y_v,
+                                   second = captured_cur,
+                                   third  = IntTerm(next_depth))))
+        } else if (get(k, envir = dist_env, inherits = FALSE) == next_depth) {
+          ps <- get(k, envir = parents_env, inherits = FALSE)
+          if (!(pred_id %in% ps)) {
+            assign(k, c(ps, pred_id), envir = parents_env)
+            reached <<- c(reached,
                           list(list(node   = y_v,
                                     second = captured_cur,
                                     third  = IntTerm(next_depth))))
+          }
         }
       }
       TRUE
@@ -2689,17 +3047,11 @@ WamRuntime$transitive_parent_distance4 <- function(program, state, key,
 # ----------------------------------------------------------
 # Recursive-kernel: transitive_step_parent_distance5
 # ----------------------------------------------------------
-# BFS that records, for each reachable node Y from source X:
-#   * step:   the FIRST hop neighbour of source on the path X -> ... -> Y
-#             (the immediate next node after source)
-#   * parent: the immediate predecessor of Y in the path
-#   * dist:   path length
-# Pattern detected:
-#   tspd(X, Y, Y, X, 1) :- edge(X, Y).
-#   tspd(X, Y, S, P, D) :- edge(X, M), tspd(M, Y, _, P, D1), D is D1 + 1.
-# When BFS visits N from frontier F: if F == source, then step[N] = N
-# (this IS the first hop); else step[N] = step[F] (inherits).
-# Yields (target, step, parent, distance) quads via kernel_quad_iter.
+# Shortest-positive correlated step/parent
+# (docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md).
+# Level-synchronous BFS stores correlated (Step, Parent) pairs per
+# Target — never an independent Step×Parent cross-product.
+# Do NOT seed Source into dist. Yields quads via kernel_quad_iter.
 WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
                                                           edge_pred, edge_key,
                                                           source, target, step,
@@ -2721,26 +3073,19 @@ WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
   snap_build <- state$build_stack
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
-  visited <- new.env(parent = emptyenv())
-  q_nodes   <- list(src_v)
-  q_steps   <- list(NULL)   # source has no first-hop yet
-  q_parents <- list(NULL)
-  q_depths  <- list(0L)
-  reached   <- list()
-  assign(as.character(src_v$id), TRUE, envir = visited)
+  dist_env  <- new.env(parent = emptyenv())
+  pairs_env <- new.env(parent = emptyenv())
+  q_nodes  <- list(src_v)
+  q_depths <- list(0L)
+  reached  <- list()
 
   while (length(q_nodes) > 0L) {
-    cur     <- q_nodes[[1L]]
-    cur_step <- q_steps[[1L]]
-    cur_par <- q_parents[[1L]]
-    depth   <- q_depths[[1L]]
-    q_nodes   <- q_nodes[-1L]
-    q_steps   <- q_steps[-1L]
-    q_parents <- q_parents[-1L]
-    q_depths  <- q_depths[-1L]
+    cur   <- q_nodes[[1L]]
+    depth <- q_depths[[1L]]
+    q_nodes  <- q_nodes[-1L]
+    q_depths <- q_depths[-1L]
     next_depth <- depth + 1L
-    captured_cur     <- cur
-    captured_curstep <- cur_step
+    captured_cur <- cur
     is_source <- identical(cur, src_v)
     y_var <- Unbound(paste0("V_tspd_", state$var_counter))
     state$var_counter <- state$var_counter + 1L
@@ -2749,20 +3094,48 @@ WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
       y_v <- WamRuntime$deref(state, y_var)
       if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
         k <- as.character(y_v$id)
-        if (!exists(k, envir = visited, inherits = FALSE)) {
-          assign(k, TRUE, envir = visited)
-          # If we're enumerating from source, this neighbour IS the
-          # first-hop step. Otherwise inherit the frontier's step.
-          new_step <- if (is_source) y_v else captured_curstep
-          q_nodes   <<- c(q_nodes,   list(y_v))
-          q_steps   <<- c(q_steps,   list(new_step))
-          q_parents <<- c(q_parents, list(captured_cur))
-          q_depths  <<- c(q_depths,  list(next_depth))
-          reached   <<- c(reached,
+        if (is_source) {
+          cands <- list(list(step = y_v, parent = src_v))
+        } else {
+          cur_k <- as.character(captured_cur$id)
+          old <- if (exists(cur_k, envir = pairs_env, inherits = FALSE))
+                   get(cur_k, envir = pairs_env, inherits = FALSE)
+                 else list()
+          step_ids <- unique(vapply(old, function(p) as.character(p$step$id),
+                                    character(1)))
+          cands <- lapply(old[match(step_ids, vapply(old, function(p)
+            as.character(p$step$id), character(1)))], function(p)
+              list(step = p$step, parent = captured_cur))
+        }
+        if (!exists(k, envir = dist_env, inherits = FALSE)) {
+          assign(k, next_depth, envir = dist_env)
+          assign(k, cands, envir = pairs_env)
+          q_nodes  <<- c(q_nodes,  list(y_v))
+          q_depths <<- c(q_depths, list(next_depth))
+          for (c in cands) {
+            reached <<- c(reached,
                           list(list(node   = y_v,
-                                    second = new_step,
-                                    third  = captured_cur,
+                                    second = c$step,
+                                    third  = c$parent,
                                     fourth = IntTerm(next_depth))))
+          }
+        } else if (get(k, envir = dist_env, inherits = FALSE) == next_depth) {
+          oldp <- get(k, envir = pairs_env, inherits = FALSE)
+          for (c in cands) {
+            dup <- any(vapply(oldp, function(p)
+              identical(p$step$id, c$step$id) &&
+                identical(p$parent$id, c$parent$id),
+              logical(1)))
+            if (!dup) {
+              oldp <- c(oldp, list(c))
+              reached <<- c(reached,
+                            list(list(node   = y_v,
+                                      second = c$step,
+                                      third  = c$parent,
+                                      fourth = IntTerm(next_depth))))
+            }
+          }
+          assign(k, oldp, envir = pairs_env)
         }
       }
       TRUE
@@ -2794,29 +3167,267 @@ WamRuntime$transitive_step_parent_distance5 <- function(program, state, key,
 # ----------------------------------------------------------
 # Recursive-kernel: category_ancestor
 # ----------------------------------------------------------
-# Hierarchical BFS with explicit depth cap and visited-set cycle
-# detection. Pattern detected:
-#   ca(Cat, Anc, Visited, Hops) :-
-#       \+ member(Cat, Visited),
-#       edge(Cat, Anc).
-#   ca(Cat, Anc, Visited, Hops) :-
-#       \+ member(Cat, Visited),
-#       edge(Cat, Mid),
-#       ca(Mid, Anc, [Cat | Visited], Hops0),
-#       Hops is Hops0 + 1.
-# The user provides `max_depth/1` at codegen time; the detector
-# embeds it in the kernel config so we know the cap. Result layout
-# is tuple(1) -- yield each reached ancestor; the Visited and Hops
-# slots in the user-side call are inputs / discarded outputs that
-# the native impl doesn't touch.
+# Fleet-shared register layout (recursive_kernel_detection.pl):
+#   category_ancestor(+Cat, +Root, -Hops, +Visited)
+# Streams one integer hop count per path from Cat to Root, walking
+# the edge predicate (typically category_parent/2 FactSource) with
+# depth-bounded DFS and visited-set cycle detection. Matches Go/Rust/
+# F# native-kernel semantics so power_sum / effective_distance helpers
+# can consume hops. The user provides max_depth/1 at codegen time; the
+# detector embeds it in the kernel config.
+WamRuntime$category_ancestor_collect_parents <- function(program, state,
+                                                          edge_atom_id, cur) {
+  parents <- list()
+  y_var <- Unbound(paste0("V_ca_p_", state$var_counter))
+  state$var_counter <- state$var_counter + 1L
+  edge_goal <- StructTerm(edge_atom_id, list(cur, y_var))
+  WamRuntime$iterate_goal(program, state, edge_goal, function() {
+    y_v <- WamRuntime$deref(state, y_var)
+    if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
+      parents <<- c(parents, list(y_v))
+    }
+    TRUE
+  })
+  parents
+}
+
+# TermValue / iterate_goal DFS (PERF-R-CA-DIRECT fallback path).
+# Upward hop rewrite preserved for sources without lookup_ids.
+WamRuntime$category_ancestor_hops_rec <- function(program, state, edge_atom_id,
+                                                   parent_lookup,
+                                                   cat, root_id, visited_env,
+                                                   visited_len, max_depth, out) {
+  root_seen <- exists(as.character(root_id), envir = visited_env, inherits = FALSE)
+  parents <- if (!is.null(parent_lookup)) {
+    parent_lookup(cat)
+  } else {
+    WamRuntime$category_ancestor_collect_parents(
+      program, state, edge_atom_id, cat)
+  }
+  if (!root_seen) {
+    for (p in parents) {
+      if (identical(p$id, root_id)) {
+        out$hops <- c(out$hops, list(IntTerm(1L)))
+        break
+      }
+    }
+  }
+  if (visited_len >= max_depth) return(invisible(NULL))
+  for (parent in parents) {
+    pk <- as.character(parent$id)
+    if (exists(pk, envir = visited_env, inherits = FALSE)) next
+    assign(pk, TRUE, envir = visited_env)
+    before <- length(out$hops)
+    WamRuntime$category_ancestor_hops_rec(
+      program, state, edge_atom_id, parent_lookup, parent, root_id,
+      visited_env, visited_len + 1L, max_depth, out)
+    if (length(out$hops) > before) {
+      for (i in seq.int(before + 1L, length(out$hops))) {
+        out$hops[[i]] <- IntTerm(as.integer(out$hops[[i]]$val + 1L))
+      }
+    }
+    rm(list = pk, envir = visited_env)
+  }
+  invisible(NULL)
+}
+
+# PERF-R-NATIVE-HOPS-0: optional .Call hop kernel (CSR over dense id_table).
+# ../src/uw_ca_hops.so is built at generate time when R CMD SHLIB works;
+# otherwise hops_ids stays on the pure-R path. Overflow id_tables fall back.
+WamRuntime$.native_ca_hops <- new.env(parent = emptyenv())
+WamRuntime$configure_native_ca_hops <- function(so_path) {
+  st <- WamRuntime$.native_ca_hops
+  st$so_path <- if (is.null(so_path) || !nzchar(so_path)) NULL
+               else as.character(so_path)[1]
+  st$loaded <- FALSE; st$dll <- NULL; st$sym <- NULL
+  st$ok <- FALSE; st$off <- NULL; st$flat <- NULL
+  st$dense_cap <- -1L; st$table_token <- NULL
+  invisible(NULL)
+}
+WamRuntime$try_native_ca_hops_ids <- function(start_id, root_id, visited, vlen0,
+                                               max_depth, out, id_table) {
+  st <- WamRuntime$.native_ca_hops
+  dcap <- as.integer(id_table$dense_cap)
+  ov <- id_table$overflow
+  # The overflow environment is unique to an immutable id_table and gives a
+  # constant-time identity token. Capacity alone cannot distinguish programs.
+  if (!is.environment(ov) || length(ls(ov, all.names = TRUE)) > 0L)
+    return(FALSE)
+  table_token <- ov
+  if (!(isTRUE(st$ok) && identical(st$dense_cap, dcap) &&
+        identical(st$table_token, table_token))) {
+    if (is.null(st$so_path) || !file.exists(st$so_path)) return(FALSE)
+    if (!isTRUE(st$loaded)) {
+      native <- tryCatch({
+        dll <- dyn.load(st$so_path)
+        sym <- getNativeSymbolInfo("uw_ca_hops_ids", PACKAGE = dll)
+        list(dll = dll, sym = sym)
+      }, error = function(e) NULL)
+      if (is.null(native)) return(FALSE)
+      st$dll <- native$dll; st$sym <- native$sym; st$loaded <- TRUE
+    }
+    dense <- id_table$dense
+    counts <- vapply(seq_len(dcap), function(i) {
+      hit <- dense[[i]]; if (is.null(hit)) 0L else length(hit)
+    }, integer(1))
+    off <- integer(dcap + 1L); off[[1L]] <- 0L
+    for (i in seq_len(dcap)) off[[i + 1L]] <- off[[i]] + counts[[i]]
+    flat <- integer(off[[dcap + 1L]])
+    for (i in seq_len(dcap)) {
+      hit <- dense[[i]]
+      if (!is.null(hit) && length(hit)) {
+        s <- off[[i]] + 1L
+        flat[s:(s + length(hit) - 1L)] <- as.integer(hit)
+      }
+    }
+    st$off <- off; st$flat <- flat; st$dense_cap <- dcap
+    st$table_token <- table_token; st$ok <- TRUE
+  }
+  if (is.null(st$sym)) return(FALSE)
+  hops <- tryCatch(
+    .Call(st$sym, st$off, st$flat, as.integer(start_id),
+          as.integer(root_id), as.integer(visited), as.integer(vlen0),
+          as.integer(max_depth)),
+    error = function(e) NULL)
+  if (is.null(hops) || !is.integer(hops)) return(FALSE)
+  n <- length(hops)
+  if (n > length(out$buf)) length(out$buf) <- as.integer(max(8L, n))
+  if (n > 0L) out$buf[seq_len(n)] <- hops
+  out$n <- as.integer(n)
+  TRUE
+}
+
+# Integer-ID DFS with downward depth (PERF-R-CA-IDDFS / STACK / IDTABLE).
+# Iterative frame stack avoids R recursive dispatch and copy-on-write of the
+# path vector on every descent. When an in-memory id_table capability is
+# present, parent vectors are read by list index (no per-node R closure).
+# Optional native .Call path (PERF-R-NATIVE-HOPS-0) replaces this body when
+# uw_ca_hops.so is loadable and the id_table is dense-only.
+# Semantics match the former recursive ID path: path-local cycle checks
+# (not a global visited set), emit depth+1 when root is among parents,
+# continue through root when the contract does, single hop buffer.
+WamRuntime$category_ancestor_hops_ids <- function(lookup_ids, start_id, root_id,
+                                                   visited, vlen0, max_depth,
+                                                   out, id_table = NULL) {
+  max_depth <- as.integer(max_depth)
+  vlen0 <- as.integer(vlen0)
+  root_id <- as.integer(root_id)
+  use_table <- !is.null(id_table)
+  if (use_table &&
+      WamRuntime$try_native_ca_hops_ids(start_id, root_id, visited, vlen0,
+                                          max_depth, out, id_table))
+    return(invisible(NULL))
+  dense <- if (use_table) id_table$dense else NULL
+  dense_cap <- if (use_table) as.integer(id_table$dense_cap) else 0L
+  overflow <- if (use_table) id_table$overflow else NULL
+  # Path slots up to max_depth (enter at vlen == max_depth - 1 may write +1).
+  need <- max(max_depth + 1L, vlen0, 8L)
+  if (length(visited) < need) length(visited) <- need
+
+  # Frame stack: remaining parent iteration after a descent.
+  # Sibling branches restore vlen so deeper path writes are ignored.
+  cap <- max_depth + 2L
+  st_parents <- vector("list", cap)
+  st_pos <- integer(cap)
+  st_depth <- integer(cap)
+  st_vlen <- integer(cap)
+  sp <- 0L
+
+  cat_id <- as.integer(start_id)
+  cur_vlen <- vlen0
+  cur_depth <- 0L
+  cur_parents <- integer(0)
+  cur_pos <- 1L
+  do_enter <- TRUE
+
+  repeat {
+    if (do_enter) {
+      root_seen <- cur_vlen > 0L &&
+        any(visited[seq_len(cur_vlen)] == root_id)
+      if (use_table) {
+        aid <- as.integer(cat_id)
+        if (!is.na(aid) && aid >= 0L && aid < dense_cap) {
+          hit <- dense[[aid + 1L]]
+          cur_parents <- if (is.null(hit)) integer(0) else hit
+        } else if (!is.na(aid)) {
+          ok <- as.character(aid)
+          cur_parents <- if (exists(ok, envir = overflow, inherits = FALSE))
+            get(ok, envir = overflow, inherits = FALSE) else integer(0)
+        } else {
+          cur_parents <- integer(0)
+        }
+      } else {
+        cur_parents <- lookup_ids(cat_id)
+      }
+      if (!root_seen && length(cur_parents) > 0L &&
+          any(cur_parents == root_id)) {
+        n <- out$n + 1L
+        if (n > length(out$buf)) {
+          length(out$buf) <- as.integer(max(8L, length(out$buf) * 2L))
+        }
+        out$buf[[n]] <- as.integer(cur_depth + 1L)
+        out$n <- n
+      }
+      cur_pos <- 1L
+      if (cur_vlen >= max_depth) cur_parents <- integer(0)
+      do_enter <- FALSE
+    }
+
+    npar <- length(cur_parents)
+    descended <- FALSE
+    while (cur_pos <= npar) {
+      pid <- as.integer(cur_parents[[cur_pos]])
+      cur_pos <- cur_pos + 1L
+      if (cur_vlen > 0L && any(visited[seq_len(cur_vlen)] == pid)) next
+      if (cur_pos <= npar) {
+        sp <- sp + 1L
+        if (sp > length(st_parents)) {
+          length(st_parents) <- sp + 8L
+          length(st_pos) <- sp + 8L
+          length(st_depth) <- sp + 8L
+          length(st_vlen) <- sp + 8L
+        }
+        st_parents[[sp]] <- cur_parents
+        st_pos[[sp]] <- cur_pos
+        st_depth[[sp]] <- cur_depth
+        st_vlen[[sp]] <- cur_vlen
+      }
+      visited[[cur_vlen + 1L]] <- pid
+      cat_id <- pid
+      cur_vlen <- cur_vlen + 1L
+      cur_depth <- cur_depth + 1L
+      do_enter <- TRUE
+      descended <- TRUE
+      break
+    }
+    if (descended) next
+
+    if (sp < 1L) break
+    cur_parents <- st_parents[[sp]]
+    cur_pos <- st_pos[[sp]]
+    cur_depth <- st_depth[[sp]]
+    cur_vlen <- st_vlen[[sp]]
+    # Single-bracket replacement clears without deleting/shifting the slot.
+    st_parents[sp] <- list(NULL)
+    sp <- sp - 1L
+    do_enter <- FALSE
+  }
+  invisible(NULL)
+}
+
 WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
                                             edge_key, max_depth, source,
-                                            ancestor, resume_pc) {
+                                            root, hops, visited, resume_pc) {
   table <- program$intern_table
   src_v <- WamRuntime$deref(state, source)
-  if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom") {
+  root_v <- WamRuntime$deref(state, root)
+  if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom" ||
+      is.null(root_v) || is.null(root_v$tag) || root_v$tag != "atom") {
     return(FALSE)
   }
+  visited_elems <- WamRuntime$wam_list_decompose(state, visited, table)
+  if (is.null(visited_elems)) return(FALSE)
+
   snap_cps   <- length(state$cps)
   snap_regs  <- state$regs2
   snap_trail <- length(state$trail)
@@ -2828,35 +3439,51 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   snap_build <- state$build_stack
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
-  visited <- new.env(parent = emptyenv())
-  q_nodes  <- list(src_v)
-  q_depths <- list(0L)
-  reached  <- list()
-  assign(as.character(src_v$id), TRUE, envir = visited)
+  cap <- WamRuntime$get_arg1_capability(program, edge_key)
+  lookup_ids <- if (!is.null(cap)) cap$lookup_ids else NULL
+  id_table <- if (!is.null(cap)) {
+    WamRuntime$resolve_arg1_parent_id_table(cap$id_table)
+  } else NULL
+  parent_lookup <- if (!is.null(cap)) cap$lookup else NULL
 
-  while (length(q_nodes) > 0L) {
-    cur   <- q_nodes[[1L]]
-    depth <- q_depths[[1L]]
-    q_nodes  <- q_nodes[-1L]
-    q_depths <- q_depths[-1L]
-    if (depth >= max_depth) next  # depth-cap pruning
-    next_depth <- depth + 1L
-    y_var <- Unbound(paste0("V_ca_", state$var_counter))
-    state$var_counter <- state$var_counter + 1L
-    edge_goal <- StructTerm(edge_atom_id, list(cur, y_var))
-    WamRuntime$iterate_goal(program, state, edge_goal, function() {
-      y_v <- WamRuntime$deref(state, y_var)
-      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom") {
-        k <- as.character(y_v$id)
-        if (!exists(k, envir = visited, inherits = FALSE)) {
-          assign(k, TRUE, envir = visited)
-          q_nodes  <<- c(q_nodes,  list(y_v))
-          q_depths <<- c(q_depths, list(next_depth))
-          reached  <<- c(reached,  list(y_v))
-        }
+  out_terms <- list()
+  if (!is.null(lookup_ids) || !is.null(id_table)) {
+    # ID-native path: convert Visited once, downward depth, integer buffer.
+    # Depth is the full Prolog list length, even though only atom entries
+    # participate in cycle membership. Keep non-atoms as the zero sentinel
+    # so this fast path has the same max_depth semantics as the TermValue
+    # and iterate_goal paths. Prefer id_table when present (PERF-R-CA-IDTABLE).
+    vlen0 <- length(visited_elems)
+    visited_ids <- integer(max(8L, vlen0))
+    for (i in seq_along(visited_elems)) {
+      elem <- visited_elems[[i]]
+      if (!is.null(elem) && !is.null(elem$tag) && elem$tag == "atom") {
+        visited_ids[[i]] <- as.integer(elem$id)
       }
-      TRUE
-    })
+    }
+    out <- new.env(parent = emptyenv())
+    out$buf <- integer(8L)
+    out$n <- 0L
+    WamRuntime$category_ancestor_hops_ids(
+      lookup_ids, as.integer(src_v$id), as.integer(root_v$id),
+      visited_ids, vlen0, as.integer(max_depth), out, id_table)
+    if (out$n > 0L) {
+      out_terms <- vector("list", out$n)
+      for (i in seq_len(out$n)) out_terms[[i]] <- IntTerm(out$buf[[i]])
+    }
+  } else {
+    visited_env <- new.env(parent = emptyenv())
+    for (elem in visited_elems) {
+      if (!is.null(elem) && !is.null(elem$tag) && elem$tag == "atom") {
+        assign(as.character(elem$id), TRUE, envir = visited_env)
+      }
+    }
+    out <- new.env(parent = emptyenv())
+    out$hops <- list()
+    WamRuntime$category_ancestor_hops_rec(
+      program, state, edge_atom_id, parent_lookup, src_v, root_v$id,
+      visited_env, length(visited_elems), as.integer(max_depth), out)
+    out_terms <- out$hops
   }
 
   if (length(state$cps) > snap_cps) {
@@ -2877,30 +3504,22 @@ WamRuntime$category_ancestor <- function(program, state, key, edge_pred,
   state$mode        <- snap_mode
   state$build_stack <- snap_build
 
-  WamRuntime$kernel_stream_iter(program, state, key, reached, ancestor,
+  if (length(out_terms) == 0L) return(FALSE)
+  WamRuntime$kernel_stream_iter(program, state, key, out_terms, hops,
                                   1L, resume_pc)
 }
 
 # ----------------------------------------------------------
 # Recursive-kernel: astar_shortest_path4
 # ----------------------------------------------------------
-# A* from a ground source to a ground target over a weighted edge
-# predicate of arity 3. Pattern detected:
+# Correctness-safe A* (docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md).
+# Pattern detected:
 #   astar(X, Y, _, W) :- edge(X, Y, W).
 #   astar(X, Y, D, W) :- edge(X, Z, W1), astar(Z, Y, D, W2), W is W1 + W2.
-# (the 3rd arg is a Dim passthrough that the native impl ignores).
-# The heuristic is queried via a user-configurable predicate of
-# arity 3: dist_pred(Node, Target, H) yields H. If the user didn't
-# set `direct_dist_pred/1`, the detector falls back to the edge
-# predicate -- which gives h=0 for nodes with no direct edge to
-# the goal (degenerating A* to Dijkstra) and h = direct-edge-cost
-# otherwise. Admissibility of the heuristic is the user's
-# responsibility; non-admissible heuristics may produce non-
-# optimal results.
-#
-# Result layout is tuple(1) -- the single shortest-path distance.
-# Mode: source and target both ground; dim ignored; dist unground
-# (output). Failure when no path exists.
+# Final FloatCost is always the finite Dijkstra minimum (settled by
+# g-cost). Missing h = 0.0. Source=Target → 0.0. Dim must be a
+# positive integer. Malformed reachable edge or relevant heuristic
+# fails the complete call. Always emits FloatTerm.
 WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
                                               edge_key, dist_pred, dist_key,
                                               source, target_node, dim, dist,
@@ -2908,9 +3527,17 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
   table <- program$intern_table
   src_v <- WamRuntime$deref(state, source)
   tgt_v <- WamRuntime$deref(state, target_node)
+  dim_v <- WamRuntime$deref(state, dim)
   if (is.null(src_v) || is.null(src_v$tag) || src_v$tag != "atom" ||
       is.null(tgt_v) || is.null(tgt_v$tag) || tgt_v$tag != "atom") {
     return(FALSE)
+  }
+  if (is.null(dim_v) || is.null(dim_v$tag) || dim_v$tag != "int" ||
+      is.null(dim_v$val) || dim_v$val <= 0) {
+    return(FALSE)
+  }
+  if (identical(src_v$id, tgt_v$id)) {
+    return(WamRuntime$unify(state, dist, FloatTerm(0)))
   }
   snap_cps   <- length(state$cps)
   snap_regs  <- state$regs2
@@ -2924,39 +3551,54 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
 
   edge_atom_id <- WamRuntime$intern(table, edge_pred)
   dist_atom_id <- WamRuntime$intern(table, dist_pred)
+  invalid_row <- FALSE
 
-  # Heuristic estimate: h(node, target). Returns 0 when the dist
-  # pred fails (no direct distance available -- safe / admissible).
+  # Relevant heuristic: min valid (node,target); missing → 0.0.
+  # Malformed relevant row fails the complete call.
   heuristic_at <- function(node) {
-    if (identical(node$id, tgt_v$id)) return(0)
+    if (invalid_row) return(0)
     h_var <- Unbound(paste0("V_astar_h_", state$var_counter))
     state$var_counter <- state$var_counter + 1L
     h_goal <- StructTerm(dist_atom_id, list(node, tgt_v, h_var))
-    h_val <- 0
+    best <- Inf
+    saw <- FALSE
     WamRuntime$iterate_goal(program, state, h_goal, function() {
+      if (invalid_row) return(FALSE)
       v <- WamRuntime$deref(state, h_var)
-      if (!is.null(v) && !is.null(v$tag) &&
-          (v$tag == "int" || v$tag == "float")) {
-        h_val <<- v$val
+      if (is.null(v) || is.null(v$tag) ||
+          !(v$tag == "int" || v$tag == "float")) {
+        invalid_row <<- TRUE
+        return(FALSE)
       }
-      FALSE  # one solution is enough
+      hv <- as.numeric(v$val)
+      if (!is.finite(hv) || hv < 0) {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      saw <<- TRUE
+      if (hv < best) best <<- hv
+      TRUE
     })
-    h_val
+    if (invalid_row) return(0)
+    if (saw) best else 0
   }
 
-  visited <- new.env(parent = emptyenv())
-  # PQ entry: list(f = priority, g = cost-so-far, node).
-  pq <- list(list(f = heuristic_at(src_v), g = 0, node = src_v))
+  # Dist map + PQ settled by g (Dijkstra). h/Dim secondary only.
+  dist_env <- new.env(parent = emptyenv())
+  assign(as.character(src_v$id), 0, envir = dist_env)
+  pq <- list(list(g = 0, f = heuristic_at(src_v), node = src_v))
   found_dist <- NULL
 
-  while (length(pq) > 0L) {
+  while (length(pq) > 0L && is.null(found_dist) && !invalid_row) {
     entry <- pq[[1L]]
     pq    <- pq[-1L]
     cur   <- entry$node
     g     <- entry$g
     k     <- as.character(cur$id)
-    if (exists(k, envir = visited, inherits = FALSE)) next
-    assign(k, TRUE, envir = visited)
+    best_g <- if (exists(k, envir = dist_env, inherits = FALSE))
+                get(k, envir = dist_env, inherits = FALSE) else Inf
+    if (g > best_g) next
+    # Settled by g-cost (Dijkstra). Safe even if h overestimates.
     if (identical(cur$id, tgt_v$id)) {
       found_dist <- g
       break
@@ -2968,29 +3610,47 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
     state$var_counter <- state$var_counter + 1L
     edge_goal <- StructTerm(edge_atom_id, list(cur, y_var, w_var))
     WamRuntime$iterate_goal(program, state, edge_goal, function() {
+      if (invalid_row) return(FALSE)
       y_v <- WamRuntime$deref(state, y_var)
       w_v <- WamRuntime$deref(state, w_var)
-      if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "atom" &&
-          !is.null(w_v) && !is.null(w_v$tag) &&
-          (w_v$tag == "int" || w_v$tag == "float")) {
-        nk <- as.character(y_v$id)
-        if (!exists(nk, envir = visited, inherits = FALSE)) {
-          new_g <- captured_g + w_v$val
-          new_f <- new_g + heuristic_at(y_v)
-          if (length(pq) == 0L) {
-            pq <<- list(list(f = new_f, g = new_g, node = y_v))
-          } else {
-            placed <- FALSE
-            for (i in seq_along(pq)) {
-              if (pq[[i]]$f > new_f) {
-                pq <<- append(pq, list(list(f = new_f, g = new_g, node = y_v)),
-                              after = i - 1L)
-                placed <- TRUE; break
-              }
+      if (is.null(y_v) || is.null(y_v$tag) || y_v$tag != "atom") {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      if (is.null(w_v) || is.null(w_v$tag) ||
+          !(w_v$tag == "int" || w_v$tag == "float")) {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      ew <- as.numeric(w_v$val)
+      if (!is.finite(ew) || ew < 0) {
+        invalid_row <<- TRUE
+        return(FALSE)
+      }
+      nk <- as.character(y_v$id)
+      new_g <- captured_g + ew
+      prev <- if (exists(nk, envir = dist_env, inherits = FALSE))
+                get(nk, envir = dist_env, inherits = FALSE) else Inf
+      if (new_g < prev) {
+        assign(nk, new_g, envir = dist_env)
+        h <- heuristic_at(y_v)
+        if (invalid_row) return(FALSE)
+        new_f <- new_g + h  # secondary scheduling only
+        if (length(pq) == 0L) {
+          pq <<- list(list(g = new_g, f = new_f, node = y_v))
+        } else {
+          placed <- FALSE
+          for (i in seq_along(pq)) {
+            # Primary: g. Secondary: f.
+            if (pq[[i]]$g > new_g ||
+                (pq[[i]]$g == new_g && pq[[i]]$f > new_f)) {
+              pq <<- append(pq, list(list(g = new_g, f = new_f, node = y_v)),
+                            after = i - 1L)
+              placed <- TRUE; break
             }
-            if (!placed) {
-              pq <<- c(pq, list(list(f = new_f, g = new_g, node = y_v)))
-            }
+          }
+          if (!placed) {
+            pq <<- c(pq, list(list(g = new_g, f = new_f, node = y_v)))
           }
         }
       }
@@ -3016,21 +3676,15 @@ WamRuntime$astar_shortest_path4 <- function(program, state, key, edge_pred,
   state$mode        <- snap_mode
   state$build_stack <- snap_build
 
-  if (is.null(found_dist)) return(FALSE)
-  dt <- if (is.finite(found_dist) && found_dist == as.integer(found_dist) &&
-            abs(found_dist) < .Machine$integer.max) {
-          IntTerm(as.integer(found_dist))
-        } else {
-          FloatTerm(as.numeric(found_dist))
-        }
-  WamRuntime$unify(state, dist, dt)
+  if (invalid_row || is.null(found_dist)) return(FALSE)
+  WamRuntime$unify(state, dist, FloatTerm(as.numeric(found_dist)))
 }
 
 # Iterate a precomputed list of result pairs, unifying each pair
 # with the (target, second) reg pair. Each entry is
 # `list(node = <WAM term>, second = <pre-built WAM term>)` so the
 # caller controls how the second slot is constructed -- distance
-# IntTerms for transitive_distance3, weight Int/FloatTerms for
+# IntTerms for transitive_distance3, FloatTerm costs for
 # weighted_shortest_path3, etc. iter-CP shape mirrors
 # kernel_stream_iter with two unify slots per result.
 WamRuntime$kernel_pair_iter <- function(program, state, key, results, target,
@@ -3183,6 +3837,572 @@ WamRuntime$kernel_quad_iter <- function(program, state, key, results, target,
     state$var_counter <- snap_vc
   }
   FALSE
+}
+
+# Finalize a BeginAggregate/EndAggregate collection according to kind.
+# Mirrors Lua/Go/Clojure: sum/count/min/max reduce numerically; collect/
+# bag/set build lists (set uniquifies). findall uses kind "collect".
+WamRuntime$aggregate_numeric_value <- function(term) {
+  if (is.null(term) || is.null(term$tag)) return(NULL)
+  if (identical(term$tag, "int")) return(as.numeric(term$val))
+  if (identical(term$tag, "float")) return(as.numeric(term$val))
+  NULL
+}
+
+WamRuntime$aggregate_result <- function(kind, collected, table) {
+  k <- if (is.null(kind) || !nzchar(kind)) "collect" else as.character(kind)
+  if (identical(k, "count")) {
+    return(IntTerm(as.integer(length(collected))))
+  }
+  if (identical(k, "sum")) {
+    total <- 0.0
+    saw_float <- FALSE
+    for (item in collected) {
+      n <- WamRuntime$aggregate_numeric_value(item)
+      if (is.null(n)) return(NULL)
+      total <- total + n
+      if (identical(item$tag, "float")) saw_float <- TRUE
+    }
+    # as.integer() returns NA outside R's signed-32-bit range. Guard the
+    # conversion explicitly so a valid large aggregate becomes a float
+    # term instead of crashing an `if` with an NA condition.
+    if (saw_float || !is.finite(total) ||
+        total > .Machine$integer.max || total < (-.Machine$integer.max - 1) ||
+        total != trunc(total)) return(FloatTerm(total))
+    return(IntTerm(as.integer(total)))
+  }
+  if (identical(k, "min") || identical(k, "max")) {
+    if (length(collected) == 0L) return(NULL)
+    best <- NULL
+    best_n <- NULL
+    for (item in collected) {
+      n <- WamRuntime$aggregate_numeric_value(item)
+      if (is.null(n)) return(NULL)
+      if (is.null(best_n) ||
+          (identical(k, "min") && n < best_n) ||
+          (identical(k, "max") && n > best_n)) {
+        best <- item
+        best_n <- n
+      }
+    }
+    return(best)
+  }
+  items <- collected
+  if (identical(k, "set") || identical(k, "setof")) {
+    seen <- new.env(parent = emptyenv())
+    uniq <- list()
+    for (item in collected) {
+      key <- wam_term_to_string(item, table)
+      if (!exists(key, envir = seen, inherits = FALSE)) {
+        assign(key, TRUE, envir = seen)
+        uniq <- c(uniq, list(item))
+      }
+    }
+    items <- uniq
+  }
+  if ((identical(k, "bagof") || identical(k, "setof")) && length(items) == 0L) {
+    return(NULL)
+  }
+  WamRuntime$wam_list_build(items, table)
+}
+
+# ------------------------------------------------------------------
+# PERF-R-AGGREGATE-LOWER / PERF-R-AGG-BATCH: capability-gated scalar
+# aggregate regions with optional typed numeric batch reduction.
+# ------------------------------------------------------------------
+# Kernels may register a bulk_collect(program, state) callback under
+# program$lowered_dispatch$__bulk_collect__. The callback may return:
+#   - list of list(reg=<Ai>, val=<numeric>) solution records (legacy), or
+#   - list(type="numeric_batch", reg=<Ai>, val=<numeric vector>).
+# BeginAggregate compiles a closed is_lax arithmetic template once and
+# reduces without EndAggregate/backtrack. Typed batches evaluate the
+# template on vectors (or reused scalar storage); legacy lists are
+# coerced to a batch when every value is a length-1 numeric on the
+# declared output register, otherwise the per-solution env path runs.
+# Anything outside the closed shape returns NULL from
+# try_scalar_aggregate_fastpath and uses the classic aggregate frame.
+WamRuntime$bulk_collect_env <- function(program) {
+  if (is.null(program$lowered_dispatch)) return(NULL)
+  if (!exists("__bulk_collect__", envir = program$lowered_dispatch,
+             inherits = FALSE)) {
+    assign("__bulk_collect__", new.env(parent = emptyenv()),
+           envir = program$lowered_dispatch)
+  }
+  get("__bulk_collect__", envir = program$lowered_dispatch, inherits = FALSE)
+}
+
+WamRuntime$register_bulk_collect <- function(program, key, fn, output_regs) {
+  be <- WamRuntime$bulk_collect_env(program)
+  if (is.null(be)) return(invisible(NULL))
+  assign(as.character(key),
+         list(fn = fn, output_regs = as.integer(output_regs)), envir = be)
+  invisible(NULL)
+}
+
+# Coerce bulk_collect results to a single-output numeric batch, or NULL
+# when the shape requires the per-solution record interpreter.
+WamRuntime$as_bulk_numeric_batch <- function(sols, output_regs) {
+  if (is.null(sols) || !is.numeric(output_regs) || length(output_regs) != 1L)
+    return(NULL)
+  oreg <- as.integer(output_regs[[1]])
+  if (!is.finite(oreg) || oreg < 1L) return(NULL)
+  if (is.list(sols) && identical(sols$type, "numeric_batch")) {
+    reg <- as.integer(sols$reg)[1]
+    val <- sols$val
+    if (!identical(reg, oreg) || !is.numeric(val)) return(NULL)
+    return(list(reg = oreg, val = as.numeric(val)))
+  }
+  if (!is.list(sols)) return(NULL)
+  n <- length(sols)
+  if (n == 0L) return(list(reg = oreg, val = numeric(0)))
+  # Reject typed-batch-shaped lists that are not proper record lists.
+  if (!is.null(sols$type)) return(NULL)
+  vals <- numeric(n)
+  for (i in seq_len(n)) {
+    sol <- sols[[i]]
+    if (!(is.list(sol) && !is.null(sol$reg) && !is.null(sol$val))) return(NULL)
+    if (!identical(as.integer(sol$reg)[1], oreg)) return(NULL)
+    v <- sol$val
+    if (!is.numeric(v) || length(v) != 1L) return(NULL)
+    vals[[i]] <- as.numeric(v)
+  }
+  list(reg = oreg, val = vals)
+}
+
+WamRuntime$compile_scalar_aggregate_arith <- function(
+    program, body, call_i, template_reg) {
+  if (call_i >= length(body)) return(NULL)
+  post <- body[(call_i + 1L):length(body)]
+  compiled <- list()
+  i <- 1L
+  while (i <= length(post)) {
+    # Only a fresh target or the aggregate's isolated template register may
+    # bypass ordinary target unification. Arbitrary PutValue targets fall back.
+    target_op <- post[[i]]$op
+    dest <- as.integer(post[[i]]$xn)
+    if (!(identical(target_op, "PutVariable") ||
+          (identical(target_op, "PutValue") &&
+           identical(dest, as.integer(template_reg))))) return(NULL)
+    if (as.integer(post[[i]]$ai) != 1L) return(NULL)
+    i <- i + 1L
+    if (i > length(post) || !identical(post[[i]]$op, "PutStructure")) return(NULL)
+    fid <- as.integer(post[[i]]$fid)
+    arity <- as.integer(post[[i]]$arity)
+    if (as.integer(post[[i]]$ai) != 2L) return(NULL)
+    i <- i + 1L
+    args <- vector("list", arity)
+    for (a in seq_len(arity)) {
+      if (i > length(post)) return(NULL)
+      if (identical(post[[i]]$op, "SetValue")) {
+        args[[a]] <- list(kind = "reg", reg = as.integer(post[[i]]$xn))
+      } else if (identical(post[[i]]$op, "SetConstant")) {
+        c <- post[[i]]$c
+        if (is.null(c$tag) || !(c$tag %in% c("int", "float"))) return(NULL)
+        args[[a]] <- list(kind = "const", val = as.numeric(c$val))
+      } else return(NULL)
+      i <- i + 1L
+    }
+    if (i > length(post) || !identical(post[[i]]$op, "BuiltinCall")) return(NULL)
+    bp <- as.character(post[[i]]$pred)
+    # Strict is/2 owns ISO error behavior; the numeric shortcut is only
+    # equivalent to the silent-failure is_lax/2 contract.
+    if (!identical(bp, "is_lax/2")) return(NULL)
+    opname <- WamRuntime$string_of(program$intern_table, fid)
+    if (is.null(opname) ||
+        !((opname == "-" && arity %in% c(1L, 2L)) ||
+          (opname %in% c("+", "*", "/", "//", "**", "^") && arity == 2L)))
+      return(NULL)
+    i <- i + 1L
+    compiled[[length(compiled) + 1L]] <- list(
+      dest = dest, fid = fid, arity = arity, args = args, opname = opname)
+  }
+  if (!length(compiled)) return(NULL)
+  compiled
+}
+
+WamRuntime$eval_scalar_aggregate_arith_op <- function(opname, arity, vals) {
+  switch(opname,
+    "+" = vals[[1]] + vals[[2]],
+    "-" = if (arity == 1L) -vals[[1]] else vals[[1]] - vals[[2]],
+    "*" = vals[[1]] * vals[[2]],
+    "/" = vals[[1]] / vals[[2]],
+    "//" = vals[[1]] %/% vals[[2]],
+    "**" = vals[[1]] ^ vals[[2]],
+    "^" = vals[[1]] ^ vals[[2]],
+    NULL)
+}
+
+WamRuntime$eval_scalar_aggregate_arith <- function(program, compiled, reg_env) {
+  for (step in compiled) {
+    opname <- step$opname
+    if (is.null(opname) || !nzchar(opname)) {
+      opname <- WamRuntime$string_of(program$intern_table, as.integer(step$fid))
+    }
+    if (is.null(opname) || !nzchar(opname)) return(NULL)
+    vals <- vector("list", length(step$args))
+    for (j in seq_along(step$args)) {
+      a <- step$args[[j]]
+      if (identical(a$kind, "const")) {
+        vals[[j]] <- a$val
+      } else {
+        key <- as.character(a$reg)
+        if (!exists(key, envir = reg_env, inherits = FALSE)) return(NULL)
+        vals[[j]] <- get(key, envir = reg_env, inherits = FALSE)
+      }
+    }
+    result <- WamRuntime$eval_scalar_aggregate_arith_op(
+      opname, as.integer(step$arity), vals)
+    if (is.null(result)) return(NULL)
+    assign(as.character(step$dest), result, envir = reg_env)
+  }
+  reg_env
+}
+
+# Match arith_to_term's int vs float tagging for aggregate bag construction.
+WamRuntime$arith_num_is_float_tag <- function(n) {
+  !(length(n) == 1L && is.finite(n) &&
+    abs(n) < .Machine$integer.max && n == trunc(n))
+}
+
+WamRuntime$scalar_aggregate_bag_term <- function(
+    kind, stream_n, stream_total, stream_saw_float, stream_best_n,
+    stream_best_float = FALSE) {
+  if (identical(kind, "count")) return(IntTerm(as.integer(stream_n)))
+  if (identical(kind, "min") || identical(kind, "max")) {
+    if (stream_n == 0L || is.null(stream_best_n)) return(NULL)
+    if (isTRUE(stream_best_float)) return(FloatTerm(stream_best_n))
+    return(IntTerm(as.integer(stream_best_n)))
+  }
+  total <- stream_total
+  if (stream_saw_float || !is.finite(total) ||
+      total > .Machine$integer.max ||
+      total < (-.Machine$integer.max - 1) || total != trunc(total))
+    return(FloatTerm(total))
+  IntTerm(as.integer(total))
+}
+
+# Returns TRUE/FALSE when the fast path handled the region; NULL to
+# fall through to the classic BeginAggregate frame.
+WamRuntime$try_scalar_aggregate_fastpath <- function(program, state, instr) {
+  kind <- as.character(instr$kind)
+  if (!(kind %in% c("sum", "count", "min", "max"))) return(NULL)
+  be <- WamRuntime$bulk_collect_env(program)
+  if (is.null(be)) return(NULL)
+
+  end_pc <- 0L
+  depth <- 1L
+  for (j in seq.int(state$pc + 1L, length(program$instructions))) {
+    opj <- program$instructions[[j]]$op
+    if (opj == "BeginAggregate") depth <- depth + 1L
+    else if (opj == "EndAggregate") {
+      depth <- depth - 1L
+      if (depth == 0L) { end_pc <- j; break }
+    }
+  }
+  if (end_pc == 0L) return(NULL)
+
+  body_pcs <- seq.int(state$pc + 1L, end_pc - 1L)
+  body <- program$instructions[body_pcs]
+  call_i <- 0L
+  for (i in seq_along(body)) {
+    op <- body[[i]]$op
+    if (op %in% c("Call", "Execute")) {
+      if (call_i != 0L) return(NULL)
+      call_i <- i
+    } else if (op %in% c("PutValue", "PutVariable", "PutConstant",
+                          "PutStructure", "PutList", "SetValue",
+                          "SetVariable", "SetConstant", "GetVariable",
+                          "GetValue", "GetConstant", "BuiltinCall")) {
+      if (identical(op, "BuiltinCall") &&
+          !(as.character(body[[i]]$pred) %in% c("is/2", "is_lax/2")))
+        return(NULL)
+    } else return(NULL)
+  }
+  if (call_i == 0L) return(NULL)
+  cinst <- body[[call_i]]
+  key <- paste0(as.character(cinst$pred), "/", as.integer(cinst$arity))
+  if (!exists(key, envir = be, inherits = FALSE)) return(NULL)
+  # Match normal Call/Execute: dynamic clauses shadow lowered capabilities.
+  if (!WamRuntime$lowered_path_ok(program, key)) return(NULL)
+  bulk_cap <- get(key, envir = be, inherits = FALSE)
+  if (!is.list(bulk_cap) || !is.function(bulk_cap$fn) ||
+      is.null(bulk_cap$output_regs)) return(NULL)
+  compiled <- WamRuntime$compile_scalar_aggregate_arith(
+    program, body, call_i, as.integer(instr$template))
+  if (is.null(compiled)) return(NULL)
+  for (step in compiled) {
+    opname <- WamRuntime$string_of(program$intern_table, as.integer(step$fid))
+    if (is.null(opname) ||
+        !(opname %in% c("+", "-", "*", "/", "//", "**", "^"))) return(NULL)
+  }
+
+  # Every bulk output must be a fresh generator output at this call site.
+  # Bound/aliased outputs require ordinary unification and remain on fallback.
+  out_aliases <- new.env(parent = emptyenv())
+  for (i in seq_len(call_i - 1L)) {
+    bi <- body[[i]]
+    if (identical(bi$op, "PutVariable")) {
+      ai_key <- as.character(as.integer(bi$ai))
+      prev <- if (exists(ai_key, envir = out_aliases, inherits = FALSE))
+        get(ai_key, envir = out_aliases, inherits = FALSE) else integer(0)
+      assign(ai_key, c(prev, as.integer(bi$xn)), envir = out_aliases)
+    }
+  }
+  for (out_reg in bulk_cap$output_regs)
+    if (!exists(as.character(out_reg), envir = out_aliases, inherits = FALSE))
+      return(NULL)
+
+  # Run setup puts until the generator Call/Execute.
+  state$pc <- state$pc + 1L
+  call_pc <- state$pc + call_i - 1L
+  while (state$pc < call_pc) {
+    if (!isTRUE(WamRuntime$step(program, state,
+                                program$instructions[[state$pc]])))
+      return(FALSE)
+  }
+
+  sols <- bulk_cap$fn(program, state)
+  if (is.null(sols)) return(FALSE)
+
+  needed <- integer(0)
+  for (step in compiled) {
+    needed <- c(needed, as.integer(step$dest))
+    for (a in step$args)
+      if (identical(a$kind, "reg")) needed <- c(needed, as.integer(a$reg))
+  }
+  needed <- unique(needed)
+  base_vals <- new.env(parent = emptyenv())
+  alias_all <- integer(0)
+  for (k in ls(out_aliases, all.names = TRUE))
+    alias_all <- c(alias_all, get(k, envir = out_aliases, inherits = FALSE))
+  for (r in needed) {
+    if (r %in% alias_all) next
+    # Skip output Ai keys too — filled per solution.
+    if (exists(as.character(r), envir = out_aliases, inherits = FALSE)) next
+    v <- WamRuntime$deref(state, WamRuntime$get_reg(state, r))
+    if (!is.null(v) && !is.null(v$tag) && v$tag %in% c("int", "float"))
+      assign(as.character(r), as.numeric(v$val), envir = base_vals)
+  }
+
+  if (!isTRUE(WamRuntime$finalize_bulk_scalar_reduce(
+      program, state, kind, as.integer(instr$bag), as.integer(instr$template),
+      compiled, out_aliases, base_vals, sols, bulk_cap$output_regs)))
+    return(FALSE)
+  state$pc <- as.integer(end_pc + 1L)
+  TRUE
+}
+
+# Shared bulk scalar reduce + bag unify (AGG-BATCH / PLAN-1).
+WamRuntime$finalize_bulk_scalar_reduce <- function(
+    program, state, kind, bag_reg, template_reg, compiled, out_aliases,
+    base_vals, sols, output_regs) {
+  tkey <- as.character(as.integer(template_reg))
+  stream_n <- 0L; stream_total <- 0.0; stream_saw_float <- FALSE
+  stream_best_n <- NULL; stream_best_float <- FALSE
+  is_typed_batch <- is.list(sols) && identical(sols$type, "numeric_batch")
+  batch <- WamRuntime$as_bulk_numeric_batch(sols, output_regs)
+  if (is_typed_batch && is.null(batch)) return(FALSE)
+  if (!is.null(batch)) {
+    env <- new.env(parent = emptyenv())
+    for (k in ls(base_vals, all.names = TRUE))
+      assign(k, get(k, envir = base_vals, inherits = FALSE), envir = env)
+    out_reg <- as.integer(batch$reg)
+    assign(as.character(out_reg), batch$val, envir = env)
+    out_key <- as.character(out_reg)
+    aliases <- if (exists(out_key, envir = out_aliases, inherits = FALSE))
+      get(out_key, envir = out_aliases, inherits = FALSE) else integer(0)
+    for (a in aliases) assign(as.character(a), batch$val, envir = env)
+    env2 <- WamRuntime$eval_scalar_aggregate_arith(program, compiled, env)
+    if (is.null(env2) || !exists(tkey, envir = env2, inherits = FALSE)) return(FALSE)
+    nvals <- get(tkey, envir = env2, inherits = FALSE)
+    if (!is.numeric(nvals)) return(FALSE)
+    stream_n <- length(nvals)
+    if (identical(kind, "sum")) {
+      if (stream_n > 0L) {
+        stream_total <- sum(nvals)
+        stream_saw_float <- any(!is.finite(nvals) | abs(nvals) >= .Machine$integer.max |
+                                  nvals != trunc(nvals))
+      }
+    } else if (!identical(kind, "count") && stream_n > 0L) {
+      idx <- if (identical(kind, "min")) which.min(nvals) else which.max(nvals)
+      stream_best_n <- nvals[[idx]]
+      stream_best_float <- WamRuntime$arith_num_is_float_tag(stream_best_n)
+    }
+  } else {
+    for (sol in sols) {
+      env <- new.env(parent = emptyenv())
+      for (k in ls(base_vals, all.names = TRUE))
+        assign(k, get(k, envir = base_vals, inherits = FALSE), envir = env)
+      out_reg <- as.integer(sol$reg)
+      assign(as.character(out_reg), as.numeric(sol$val), envir = env)
+      out_key <- as.character(out_reg)
+      aliases <- if (exists(out_key, envir = out_aliases, inherits = FALSE))
+        get(out_key, envir = out_aliases, inherits = FALSE) else integer(0)
+      for (a in aliases)
+        assign(as.character(a), as.numeric(sol$val), envir = env)
+      env2 <- WamRuntime$eval_scalar_aggregate_arith(program, compiled, env)
+      if (is.null(env2) || !exists(tkey, envir = env2, inherits = FALSE)) next
+      nval <- get(tkey, envir = env2, inherits = FALSE)
+      nterm <- WamRuntime$arith_to_term(nval)
+      if (is.null(nterm)) next
+      n_is_float <- identical(nterm$tag, "float")
+      if (identical(kind, "count")) stream_n <- stream_n + 1L
+      else if (identical(kind, "sum")) {
+        stream_total <- stream_total + nval; stream_n <- stream_n + 1L
+        if (n_is_float) stream_saw_float <- TRUE
+      } else {
+        if (is.null(stream_best_n) ||
+            (identical(kind, "min") && nval < stream_best_n) ||
+            (identical(kind, "max") && nval > stream_best_n)) {
+          stream_best_n <- nval; stream_best_float <- n_is_float
+        }
+        stream_n <- stream_n + 1L
+      }
+    }
+  }
+  bag <- WamRuntime$scalar_aggregate_bag_term(
+    kind, stream_n, stream_total, stream_saw_float, stream_best_n, stream_best_float)
+  if (is.null(bag)) return(FALSE)
+  cur <- WamRuntime$get_reg(state, as.integer(bag_reg))
+  if (is.null(cur)) WamRuntime$put_reg(state, as.integer(bag_reg), bag)
+  else if (!WamRuntime$unify(state, cur, bag)) return(FALSE)
+  TRUE
+}
+
+# PERF-R-BULK-REDUCE-PLAN-1: execute generate-time fused bulk-reduce plan.
+WamRuntime$exec_bulk_reduce_plan <- function(program, state, plan, key) {
+  snap <- as.list.environment(state, all.names = TRUE); snap_trail <- length(state$trail)
+  fb <- function() {
+    WamRuntime$undo_trail_to(state, snap_trail); for (nm in names(snap)) assign(nm, snap[[nm]], envir = state)
+    tgt <- program$labels[[key]]; if (is.null(tgt)) return(FALSE)
+    sp <- state$pc; sc <- state$cp; sh <- state$halt
+    ss <- length(state$stack); scps <- length(state$cps); sf <- state$shadow_frame
+    state$pc <- as.integer(tgt); state$cp <- 0L; state$halt <- FALSE
+    ok <- isTRUE(WamRuntime$run(program, state, min_cps = scps))
+    state$pc <- sp; state$cp <- sc; state$halt <- sh
+    if (length(state$stack) > ss) state$stack <- state$stack[seq_len(ss)]
+    if (length(state$cps) > scps) state$cps <- state$cps[seq_len(scps)]
+    state$shadow_frame <- sf; ok
+  }
+  if (!is.list(plan) || is.null(plan$kind) || is.null(plan$bulk_key)) return(fb())
+  kind <- as.character(plan$kind)
+  if (!(kind %in% c("sum", "count", "min", "max"))) return(fb())
+  be <- WamRuntime$bulk_collect_env(program); bkey <- as.character(plan$bulk_key)
+  if (is.null(be) || !exists(bkey, envir = be, inherits = FALSE) ||
+      !WamRuntime$lowered_path_ok(program, bkey)) return(fb())
+  bulk_cap <- get(bkey, envir = be, inherits = FALSE)
+  if (!is.list(bulk_cap) || !is.function(bulk_cap$fn) || is.null(bulk_cap$output_regs))
+    return(fb())
+  for (ai in as.integer(plan$nonvar_ais)) {
+    v <- WamRuntime$deref(state, WamRuntime$get_reg(state, ai))
+    if (is.null(v) || identical(v$tag, "unbound")) return(FALSE)
+  }
+  bag_ai <- as.integer(plan$bag_ai); bag_saved <- WamRuntime$get_reg(state, bag_ai)
+  entry <- new.env(parent = emptyenv())
+  for (p in plan$puts) if (!is.null(p$f)) {
+    fi <- as.integer(p$f); fk <- as.character(fi)
+    if (!exists(fk, envir = entry, inherits = FALSE))
+      assign(fk, WamRuntime$get_reg(state, fi), envir = entry)
+  }
+  base_vals <- new.env(parent = emptyenv()); ef <- as.character(plan$exp_fact)
+  if (nzchar(ef)) {
+    slash <- regexpr("/", ef, fixed = TRUE)[1]; if (slash < 2L) return(fb())
+    WamRuntime$put_reg(state, 1L, Unbound(paste0("V", state$var_counter)))
+    state$var_counter <- state$var_counter + 1L
+    if (!isTRUE(WamRuntime$dispatch_call(program, state, substr(ef, 1L, slash - 1L),
+        as.integer(substr(ef, slash + 1L, nchar(ef)))))) return(FALSE)
+    nv <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+    if (is.null(nv) || !(nv$tag %in% c("int", "float"))) return(fb())
+    nval <- as.numeric(nv$val); if (isTRUE(plan$uminus)) nval <- -nval
+    assign(as.character(as.integer(plan$exp_y)), nval, envir = base_vals)
+  }
+  for (p in plan$puts) {
+    k <- as.character(p$k); ai <- as.integer(p$a)
+    if (identical(k, "c"))
+      WamRuntime$put_reg(state, ai, get(as.character(as.integer(p$f)), envir = entry))
+    else if (identical(k, "f")) {
+      u <- Unbound(paste0("V", state$var_counter)); state$var_counter <- state$var_counter + 1L
+      WamRuntime$put_reg(state, ai, u)
+    } else if (identical(k, "l"))
+      WamRuntime$put_reg(state, ai, WamRuntime$wam_list_build(
+        list(get(as.character(as.integer(p$f)), envir = entry)), program$intern_table))
+    else return(fb())
+  }
+  sols <- bulk_cap$fn(program, state)
+  if (is.null(sols) || !is.list(plan$compiled) || !length(plan$compiled)) return(fb())
+  out_aliases <- new.env(parent = emptyenv())
+  for (al in plan$aliases) {
+    ak <- as.character(as.integer(al[[1]]))
+    prev <- if (exists(ak, envir = out_aliases, inherits = FALSE))
+      get(ak, envir = out_aliases, inherits = FALSE) else integer(0)
+    assign(ak, c(prev, as.integer(al[[2]])), envir = out_aliases)
+  }
+  for (out_reg in bulk_cap$output_regs)
+    if (!exists(as.character(out_reg), envir = out_aliases, inherits = FALSE)) return(fb())
+  WamRuntime$put_reg(state, bag_ai, bag_saved)
+  if (!isTRUE(WamRuntime$finalize_bulk_scalar_reduce(
+      program, state, kind, bag_ai, as.integer(plan$tkey), plan$compiled,
+      out_aliases, base_vals, sols, bulk_cap$output_regs))) return(FALSE)
+  if (isTRUE(plan$gt0)) {
+    bv <- WamRuntime$deref(state, WamRuntime$get_reg(state, bag_ai))
+    if (is.null(bv) || !(bv$tag %in% c("int", "float")) || !(as.numeric(bv$val) > 0))
+      return(FALSE)
+  }
+  TRUE
+}
+
+# Bulk collect for category_ancestor/4: typed numeric hop batch on A3.
+WamRuntime$category_ancestor_bulk_collect <- function(program, state, edge_pred,
+                                                       edge_key, max_depth) {
+  table <- program$intern_table
+  src_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
+  root_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
+  visited <- WamRuntime$get_reg(state, 4L)
+  if (is.null(src_v) || is.null(root_v) ||
+      !identical(src_v$tag, "atom") || !identical(root_v$tag, "atom"))
+    return(list())
+  visited_elems <- WamRuntime$wam_list_decompose(state, visited, table)
+  if (is.null(visited_elems)) return(list())
+  cap <- WamRuntime$get_arg1_capability(program, edge_key)
+  lookup_ids <- if (!is.null(cap)) cap$lookup_ids else NULL
+  id_table <- if (!is.null(cap)) {
+    WamRuntime$resolve_arg1_parent_id_table(cap$id_table)
+  } else NULL
+  parent_lookup <- if (!is.null(cap)) cap$lookup else NULL
+  edge_atom_id <- WamRuntime$intern(table, edge_pred)
+  hops_num <- numeric(0)
+  if (!is.null(lookup_ids) || !is.null(id_table)) {
+    vlen0 <- length(visited_elems)
+    visited_ids <- integer(max(8L, vlen0))
+    for (i in seq_along(visited_elems)) {
+      elem <- visited_elems[[i]]
+      if (!is.null(elem) && identical(elem$tag, "atom"))
+        visited_ids[[i]] <- as.integer(elem$id)
+    }
+    out <- new.env(parent = emptyenv())
+    out$buf <- integer(8L)
+    out$n <- 0L
+    WamRuntime$category_ancestor_hops_ids(
+      lookup_ids, as.integer(src_v$id), as.integer(root_v$id),
+      visited_ids, vlen0, as.integer(max_depth), out, id_table)
+    if (out$n > 0L) hops_num <- as.numeric(out$buf[seq_len(out$n)])
+  } else {
+    visited_env <- new.env(parent = emptyenv())
+    for (elem in visited_elems) {
+      if (!is.null(elem) && identical(elem$tag, "atom"))
+        assign(as.character(elem$id), TRUE, envir = visited_env)
+    }
+    out <- new.env(parent = emptyenv())
+    out$hops <- list()
+    WamRuntime$category_ancestor_hops_rec(
+      program, state, edge_atom_id, parent_lookup, src_v, root_v$id,
+      visited_env, length(visited_elems), as.integer(max_depth), out)
+    if (length(out$hops) > 0L) {
+      hops_num <- vapply(out$hops, function(t) as.numeric(t$val), numeric(1))
+    }
+  }
+  if (!length(hops_num)) return(list())
+  list(type = "numeric_batch", reg = 3L, val = hops_num)
 }
 
 # Iterate a precomputed result list, unifying each entry with the
@@ -3411,20 +4631,31 @@ WamRuntime$read_facts_csv <- function(path, intern_table) {
 # wam_scala_target.pl). Arity-2 only -- the codegen layer is
 # responsible for refusing other arities at codegen time.
 WamRuntime$read_facts_grouped_tsv <- function(path, intern_table) {
+  WamRuntime$read_facts_grouped_tsv_with(path, intern_table, numeric = TRUE)
+}
+
+# Like read_facts_grouped_tsv, but every field is interned as an atom
+# (no IntTerm/FloatTerm coercion). Use for Prolog-atom identity of
+# numeric-looking Wikipedia category IDs.
+WamRuntime$read_facts_grouped_tsv_atoms <- function(path, intern_table) {
+  WamRuntime$read_facts_grouped_tsv_with(path, intern_table, numeric = FALSE)
+}
+
+WamRuntime$read_facts_grouped_tsv_with <- function(path, intern_table, numeric) {
   if (!file.exists(path)) return(list())
   lines <- tryCatch(readLines(path, warn = FALSE),
                     error = function(e) character(0))
   parse_field <- function(p) {
-    n <- suppressWarnings(as.numeric(p))
-    if (!is.na(n) && is.finite(n)) {
-      if (n == as.integer(n) && abs(n) < .Machine$integer.max) {
-        IntTerm(as.integer(n))
-      } else {
-        FloatTerm(as.numeric(n))
+    if (isTRUE(numeric)) {
+      n <- suppressWarnings(as.numeric(p))
+      if (!is.na(n) && is.finite(n)) {
+        if (n == as.integer(n) && abs(n) < .Machine$integer.max) {
+          return(IntTerm(as.integer(n)))
+        }
+        return(FloatTerm(as.numeric(n)))
       }
-    } else {
-      Atom(WamRuntime$intern(intern_table, p))
     }
+    Atom(WamRuntime$intern(intern_table, p))
   }
   out <- list()
   for (raw in lines) {
@@ -3589,6 +4820,187 @@ WamRuntime$lmdb_pick_pkg <- function() {
   NULL
 }
 
+# --- lmdb_arg1_v1: versioned on-demand arg1 index (not legacy numeric keys) ---
+# Schema: "__uw_schema__"="lmdb_arg1_v1"; key=tagged arg1; value=NL-rows of TAB args2..N
+# Adapter (tests/embedders): options(unifyweaver.lmdb_kv_adapter=list(get=, list=, put_all=))
+WamRuntime$lmdb_kv_adapter <- getOption("unifyweaver.lmdb_kv_adapter", NULL)
+WamRuntime$lmdb_schema_key <- "__uw_schema__"
+WamRuntime$lmdb_arg1_v1_id <- "lmdb_arg1_v1"
+WamRuntime$lmdb_parse_tagged_field <- function(p, intern_table) {
+  if (nchar(p) < 2L || substr(p, 2L, 2L) != ":") return(Atom(WamRuntime$intern(intern_table, p)))
+  tag <- substr(p, 1L, 1L); payload <- substr(p, 3L, nchar(p))
+  if (tag == "a") Atom(WamRuntime$intern(intern_table, URLdecode(payload)))
+  else if (tag == "i") IntTerm(as.integer(payload))
+  else if (tag == "f") FloatTerm(as.numeric(payload))
+  else Atom(WamRuntime$intern(intern_table, p))
+}
+WamRuntime$lmdb_parse_tagged_tuple <- function(raw, intern_table) {
+  if (is.null(raw)) return(NULL)
+  s <- if (is.raw(raw)) rawToChar(raw) else as.character(raw)
+  parts <- strsplit(s, "\t", fixed = TRUE)[[1]]
+  if (!length(parts)) return(NULL)
+  lapply(parts, function(p) WamRuntime$lmdb_parse_tagged_field(p, intern_table))
+}
+WamRuntime$lmdb_encode_tagged_field <- function(v, intern_table) {
+  if (is.null(v) || !is.list(v) || is.null(v$tag)) return("a:?")
+  if (v$tag == "atom") paste0("a:", URLencode(WamRuntime$string_of(intern_table, v$id), reserved = TRUE))
+  else if (v$tag == "int") paste0("i:", as.character(v$val))
+  else if (v$tag == "float") paste0("f:", format(v$val, digits = 17))
+  else paste0("a:?", v$tag)
+}
+WamRuntime$lmdb_kv_get <- function(path, key) {
+  ad <- WamRuntime$lmdb_kv_adapter; if (!is.null(ad)) return(ad$get(path, key))
+  pkg <- WamRuntime$lmdb_pick_pkg(); if (is.null(pkg)) return(NULL)
+  if (pkg == "thor") {
+    env <- tryCatch(thor::mdb_env(path, create = FALSE), error = function(e) NULL)
+    if (is.null(env)) return(NULL); on.exit(try(env$close(), silent = TRUE), add = TRUE)
+    return(tryCatch(env$get(key, missing_is_error = FALSE), error = function(e) NULL))
+  }
+  if (pkg == "lmdbr") {
+    env <- tryCatch(lmdbr::mdb_env(path), error = function(e) NULL)
+    if (is.null(env)) return(NULL); on.exit(try(lmdbr::mdb_env_close(env), silent = TRUE), add = TRUE)
+    return(tryCatch(lmdbr::mdb_get(env, key), error = function(e) NULL))
+  }
+  NULL
+}
+WamRuntime$lmdb_kv_list <- function(path) {
+  ad <- WamRuntime$lmdb_kv_adapter; if (!is.null(ad)) return(ad$list(path))
+  pkg <- WamRuntime$lmdb_pick_pkg(); if (is.null(pkg)) return(character(0))
+  if (pkg == "thor") {
+    env <- tryCatch(thor::mdb_env(path, create = FALSE), error = function(e) NULL)
+    if (is.null(env)) return(character(0)); on.exit(try(env$close(), silent = TRUE), add = TRUE)
+    keys <- tryCatch(env$list(), error = function(e) NULL)
+    return(if (is.null(keys)) character(0) else as.character(keys))
+  }
+  if (pkg == "lmdbr") {
+    env <- tryCatch(lmdbr::mdb_env(path), error = function(e) NULL)
+    if (is.null(env)) return(character(0)); on.exit(try(lmdbr::mdb_env_close(env), silent = TRUE), add = TRUE)
+    keys <- tryCatch(lmdbr::mdb_list(env), error = function(e) NULL)
+    return(if (is.null(keys)) character(0) else as.character(keys))
+  }
+  character(0)
+}
+WamRuntime$lmdb_kv_put_all <- function(path, pairs) {
+  ad <- WamRuntime$lmdb_kv_adapter; if (!is.null(ad)) return(isTRUE(ad$put_all(path, pairs)))
+  pkg <- WamRuntime$lmdb_pick_pkg(); if (is.null(pkg)) return(FALSE)
+  keys <- names(pairs)
+  if (pkg == "thor") {
+    env <- tryCatch(thor::mdb_env(path, create = TRUE), error = function(e) NULL)
+    if (is.null(env)) return(FALSE); on.exit(try(env$close(), silent = TRUE), add = TRUE)
+    return(tryCatch({ for (k in keys) env$put(k, pairs[[k]]); TRUE }, error = function(e) FALSE))
+  }
+  if (pkg == "lmdbr") {
+    env <- tryCatch(lmdbr::mdb_env(path, create = TRUE), error = function(e) NULL)
+    if (is.null(env)) return(FALSE); on.exit(try(lmdbr::mdb_env_close(env), silent = TRUE), add = TRUE)
+    return(tryCatch({ for (k in keys) lmdbr::mdb_put(env, k, pairs[[k]]); TRUE }, error = function(e) FALSE))
+  }
+  FALSE
+}
+WamRuntime$lmdb_arg1_v1_ok <- function(path) {
+  raw <- WamRuntime$lmdb_kv_get(path, WamRuntime$lmdb_schema_key)
+  if (is.null(raw)) return(FALSE)
+  value <- if (is.raw(raw)) rawToChar(raw) else as.character(raw)
+  length(value) == 1L && identical(value[[1]], WamRuntime$lmdb_arg1_v1_id)
+}
+WamRuntime$lmdb_arg1_v1_expand <- function(key_str, raw, intern_table, arity) {
+  a1 <- WamRuntime$lmdb_parse_tagged_field(key_str, intern_table)
+  s <- if (is.raw(raw)) rawToChar(raw) else as.character(raw); out <- list()
+  for (row in strsplit(s, "\n", fixed = TRUE)[[1]]) {
+    if (!nzchar(row)) next
+    tail <- WamRuntime$lmdb_parse_tagged_tuple(row, intern_table)
+    if (!is.null(tail) && length(tail) == arity - 1L) out <- c(out, list(c(list(a1), tail)))
+  }
+  out
+}
+WamRuntime$lmdb_arg1_v1_lookup <- function(path, key_term, arity, intern_table) {
+  if (!WamRuntime$lmdb_arg1_v1_ok(path)) return(list())
+  key <- WamRuntime$lmdb_encode_tagged_field(key_term, intern_table)
+  raw <- WamRuntime$lmdb_kv_get(path, key)
+  if (is.null(raw)) list() else WamRuntime$lmdb_arg1_v1_expand(key, raw, intern_table, arity)
+}
+WamRuntime$lmdb_arg1_v1_stream <- function(path, arity, intern_table) {
+  if (!WamRuntime$lmdb_arg1_v1_ok(path)) return(list()); out <- list()
+  for (k in WamRuntime$lmdb_kv_list(path)) {
+    if (identical(k, WamRuntime$lmdb_schema_key)) next
+    raw <- WamRuntime$lmdb_kv_get(path, k)
+    if (!is.null(raw)) out <- c(out, WamRuntime$lmdb_arg1_v1_expand(k, raw, intern_table, arity))
+  }
+  out
+}
+WamRuntime$lmdb_arg1_v1_dispatch <- function(program, state, path, arity, args, resume_pc) {
+  table <- program$intern_table
+  if (!WamRuntime$lmdb_arg1_v1_ok(path)) return(FALSE)
+  a1 <- WamRuntime$deref(state, args[[1]])
+  ground <- !is.null(a1) && !is.null(a1$tag) && a1$tag %in% c("atom", "int", "float")
+  tuples <- if (ground) WamRuntime$lmdb_arg1_v1_lookup(path, a1, arity, table)
+            else WamRuntime$lmdb_arg1_v1_stream(path, arity, table)
+  if (!length(tuples)) return(FALSE)
+  WamRuntime$fact_table_iter(program, state, path, tuples, args, 1L, resume_pc)
+}
+WamRuntime$lmdb_write_facts_arg1_v1 <- function(path, facts, intern_table) {
+  buckets <- new.env(parent = emptyenv())
+  for (tup in facts) {
+    if (length(tup) < 2L) next
+    key <- WamRuntime$lmdb_encode_tagged_field(tup[[1]], intern_table)
+    tail <- paste(vapply(tup[-1], function(v) WamRuntime$lmdb_encode_tagged_field(v, intern_table), character(1)), collapse = "\t")
+    prev <- if (exists(key, envir = buckets, inherits = FALSE)) get(key, envir = buckets) else character(0)
+    assign(key, c(prev, tail), envir = buckets)
+  }
+  pairs <- list(); pairs[[WamRuntime$lmdb_schema_key]] <- WamRuntime$lmdb_arg1_v1_id
+  for (k in ls(envir = buckets, all.names = TRUE)) pairs[[k]] <- paste(get(k, envir = buckets), collapse = "\n")
+  WamRuntime$lmdb_kv_put_all(path, pairs)
+}
+
+# --- lmdb_arg1_v1 cached: per-source L1 MRU + bounded L2 true-LRU ----
+# capacity = max distinct arg1 keys in L2 (empty/missing buckets count).
+# Unbound/stream bypasses the cache (no populate/evict).
+WamRuntime$lmdb_arg1_v1_new_cache <- function(capacity) {
+  e <- new.env(parent = emptyenv())
+  e$capacity <- as.integer(capacity)
+  e$l1_key <- NULL
+  e$l1_val <- NULL
+  e$l2 <- new.env(parent = emptyenv(), hash = TRUE)
+  e$order <- character(0)  # oldest .. newest
+  e
+}
+WamRuntime$lmdb_arg1_v1_cached_lookup <- function(cache, path, key_term, arity, intern_table) {
+  key <- WamRuntime$lmdb_encode_tagged_field(key_term, intern_table)
+  if (!is.null(cache$l1_key) && identical(cache$l1_key, key)) return(cache$l1_val)
+  if (exists(key, envir = cache$l2, inherits = FALSE)) {
+    val <- get(key, envir = cache$l2, inherits = FALSE)
+    cache$order <- c(cache$order[cache$order != key], key)
+    cache$l1_key <- key; cache$l1_val <- val
+    return(val)
+  }
+  tuples <- WamRuntime$lmdb_arg1_v1_lookup(path, key_term, arity, intern_table)
+  if (length(cache$order) >= cache$capacity) {
+    old <- cache$order[[1]]
+    cache$order <- cache$order[-1]
+    if (exists(old, envir = cache$l2, inherits = FALSE))
+      rm(list = old, envir = cache$l2)
+    if (!is.null(cache$l1_key) && identical(cache$l1_key, old)) {
+      cache$l1_key <- NULL; cache$l1_val <- NULL
+    }
+  }
+  assign(key, tuples, envir = cache$l2)
+  cache$order <- c(cache$order, key)
+  cache$l1_key <- key; cache$l1_val <- tuples
+  tuples
+}
+WamRuntime$lmdb_arg1_v1_cached_dispatch <- function(program, state, path, arity, args,
+                                                     resume_pc, cache) {
+  table <- program$intern_table
+  a1 <- WamRuntime$deref(state, args[[1]])
+  ground <- !is.null(a1) && !is.null(a1$tag) && a1$tag %in% c("atom", "int", "float")
+  tuples <- if (ground) {
+    WamRuntime$lmdb_arg1_v1_cached_lookup(cache, path, a1, arity, table)
+  } else {
+    WamRuntime$lmdb_arg1_v1_stream(path, arity, table)
+  }
+  if (!length(tuples)) return(FALSE)
+  WamRuntime$fact_table_iter(program, state, path, tuples, args, 1L, resume_pc)
+}
+
 # Build per-arg hash indexes for a runtime-loaded fact table.
 # Returns a list of N envs (one per arg position, where N = arity).
 # Each env follows the same shape as the codegen-emitted
@@ -3626,6 +5038,317 @@ WamRuntime$build_fact_indexes <- function(facts, arity) {
     }
   }
   idxs
+}
+
+# ----------------------------------------------------------
+# Bound-arg1 parent-lookup capability
+# (PERF-R-CA-DIRECT / IDDFS / IDCACHE / IDTABLE)
+# ----------------------------------------------------------
+# Registry: program$arg1_lookups["pred/arity"] -> capability list:
+#   list(lookup = function(key_term) -> list(atom TermValues) | NULL,
+#        lookup_ids = function(atom_id) -> integer vector of parent ids | NULL,
+#        id_table = lazy state or list(dense, overflow, dense_cap) | NULL)
+# Installed by codegen after fact tables / FactSources are built — never
+# by guessing pred_*_indexes names from a kernel. lookup_ids enables the
+# integer-ID DFS; id_table (when present) lets the CA loop read parent
+# vectors by list index without a per-node closure; lookup alone keeps
+# the TermValue path; neither falls back to iterate_goal. Atom-only
+# parents match collect_parents filtering. In-memory indexed sources expose
+# a lazy-on-first-CA id_table (PERF-R-CA-IDTABLE); lookup_ids keeps its prior
+# lazy memo API for other callers. Lazy/cached LMDB stay on-demand (no table).
+WamRuntime$arg1_parent_terms_from_tuples <- function(tuples) {
+  n <- length(tuples)
+  if (n == 0L) return(list())
+  parents <- vector("list", n)
+  k <- 0L
+  for (tup in tuples) {
+    if (length(tup) < 2L) next
+    p <- tup[[2L]]
+    if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+      k <- k + 1L
+      parents[[k]] <- p
+    }
+  }
+  if (k == 0L) list() else if (k == n) parents else parents[seq_len(k)]
+}
+
+WamRuntime$arg1_parent_ids_from_tuples <- function(tuples) {
+  n <- length(tuples)
+  if (n == 0L) return(integer(0))
+  ids <- integer(n)
+  k <- 0L
+  for (tup in tuples) {
+    if (length(tup) < 2L) next
+    p <- tup[[2L]]
+    if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+      k <- k + 1L
+      ids[[k]] <- as.integer(p$id)
+    }
+  }
+  if (k == 0L) integer(0) else if (k == n) ids else ids[seq_len(k)]
+}
+
+WamRuntime$make_indexed_arg1_parent_lookup <- function(facts, indexes) {
+  if (is.null(indexes) || length(indexes) < 1L) return(NULL)
+  idx0 <- indexes[[1L]]
+  function(key_term) {
+    if (is.null(key_term) || is.null(key_term$tag)) return(list())
+    bk <- if (identical(key_term$tag, "atom")) paste0("a", key_term$id)
+          else if (identical(key_term$tag, "int")) paste0("i", key_term$val)
+          else return(list())
+    if (!exists(bk, envir = idx0, inherits = FALSE)) return(list())
+    tidxs <- get(bk, envir = idx0, inherits = FALSE)
+    n <- length(tidxs)
+    if (n == 0L) return(list())
+    parents <- vector("list", n)
+    k <- 0L
+    for (ti in tidxs) {
+      tup <- facts[[ti]]
+      if (length(tup) < 2L) next
+      p <- tup[[2L]]
+      if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+        k <- k + 1L
+        parents[[k]] <- p
+      }
+    }
+    if (k == 0L) list() else if (k == n) parents else parents[seq_len(k)]
+  }
+}
+
+# Eager in-memory adjacency table for atom-id -> ordered parent-id vectors.
+# Dense list covers ids 0 .. dense_cap-1 (intern ids are 0-based). dense_cap
+# is derived from atom ids present in the fact table (capped), never from an
+# arbitrary query-time id. Higher ids use a hashed overflow env.
+WamRuntime$make_indexed_arg1_parent_id_table <- function(facts, indexes) {
+  if (is.null(indexes) || length(indexes) < 1L) return(NULL)
+  idx0 <- indexes[[1L]]
+  max_id <- -1L
+  for (tup in facts) {
+    for (term in tup) {
+      if (!is.null(term) && !is.null(term$tag) && identical(term$tag, "atom")) {
+        id <- as.integer(term$id)
+        if (!is.na(id) && id > max_id) max_id <- id
+      }
+    }
+  }
+  dense_cap <- as.integer(min(max(max_id + 1L, 1L), 65536L))
+  dense <- vector("list", dense_cap)
+  overflow <- new.env(hash = TRUE, parent = emptyenv())
+  for (bk in ls(idx0, all.names = TRUE)) {
+    if (!startsWith(bk, "a")) next
+    aid <- suppressWarnings(as.integer(substring(bk, 2L)))
+    if (is.na(aid)) next
+    tidxs <- get(bk, envir = idx0, inherits = FALSE)
+    n <- length(tidxs)
+    out <- integer(0)
+    if (n > 0L) {
+      ids <- integer(n)
+      k <- 0L
+      for (ti in tidxs) {
+        tup <- facts[[ti]]
+        if (length(tup) < 2L) next
+        p <- tup[[2L]]
+        if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+          k <- k + 1L
+          ids[[k]] <- as.integer(p$id)
+        }
+      }
+      out <- if (k == 0L) integer(0) else if (k == n) ids else ids[seq_len(k)]
+    }
+    if (aid >= 0L && aid < dense_cap) {
+      dense[[aid + 1L]] <- out
+    } else {
+      assign(as.character(aid), out, envir = overflow)
+    }
+  }
+  list(dense = dense, overflow = overflow, dense_cap = dense_cap)
+}
+
+# Defer eager adjacency construction until a CA kernel actually requests it.
+# Registration is emitted for every in-memory FactSource with arity >= 2, so
+# building here would charge unrelated predicates the table's setup/memory.
+WamRuntime$make_lazy_indexed_arg1_parent_id_table <- function(facts, indexes) {
+  state <- new.env(parent = emptyenv())
+  state$ready <- FALSE
+  state$value <- NULL
+  state$get <- function() {
+    if (!state$ready) {
+      state$value <- WamRuntime$make_indexed_arg1_parent_id_table(facts, indexes)
+      state$ready <- TRUE
+    }
+    state$value
+  }
+  state
+}
+
+WamRuntime$resolve_arg1_parent_id_table <- function(id_table) {
+  if (is.environment(id_table) && is.function(id_table$get)) id_table$get()
+  else id_table
+}
+
+# Lazy memo lookup_ids (kept for sources that register without id_table).
+WamRuntime$make_indexed_arg1_parent_lookup_ids <- function(facts, indexes) {
+  if (is.null(indexes) || length(indexes) < 1L) return(NULL)
+  idx0 <- indexes[[1L]]
+  # Closure-private memo: list indexed by intern atom id.
+  # NULL slot = not yet computed; integer vector (possibly empty) = cached.
+  # Avoids repeated paste0("a", id) / env bucket walks / parent extraction
+  # on the CA ID-DFS hot path. Does not duplicate the full edge table up
+  # front — entries are filled lazily on first query of each id.
+  cache <- list()
+  # Keep the numeric-list fast path bounded. Intern ids are normally dense,
+  # but a capability caller can supply an arbitrary positive integer; growing
+  # a list to that id would turn a cache miss into an unbounded allocation.
+  # Rare ids beyond the dense bound use a closure-private hashed overflow.
+  # Intern ids are 0-based; dense slots are 1-based via aid+1.
+  dense_limit <- max(4096L, length(facts))
+  overflow <- new.env(hash = TRUE, parent = emptyenv())
+  function(atom_id) {
+    aid <- as.integer(atom_id)
+    if (!is.na(aid) && aid >= 0L) {
+      if (aid < dense_limit) {
+        slot <- aid + 1L
+        if (slot <= length(cache)) {
+          hit <- cache[[slot]]
+          if (!is.null(hit)) return(hit)
+        }
+      } else {
+        overflow_key <- as.character(aid)
+        if (exists(overflow_key, envir = overflow, inherits = FALSE)) {
+          return(get(overflow_key, envir = overflow, inherits = FALSE))
+        }
+      }
+    }
+    out <- integer(0)
+    if (!is.na(aid)) {
+      bk <- paste0("a", aid)
+      if (exists(bk, envir = idx0, inherits = FALSE)) {
+        tidxs <- get(bk, envir = idx0, inherits = FALSE)
+        n <- length(tidxs)
+        if (n > 0L) {
+          ids <- integer(n)
+          k <- 0L
+          for (ti in tidxs) {
+            tup <- facts[[ti]]
+            if (length(tup) < 2L) next
+            p <- tup[[2L]]
+            if (!is.null(p) && !is.null(p$tag) && identical(p$tag, "atom")) {
+              k <- k + 1L
+              ids[[k]] <- as.integer(p$id)
+            }
+          }
+          out <- if (k == 0L) integer(0) else if (k == n) ids else ids[seq_len(k)]
+        }
+      }
+      if (aid >= 0L) {
+        if (aid < dense_limit) {
+          slot <- aid + 1L
+          if (slot > length(cache)) length(cache) <<- slot
+          cache[[slot]] <<- out
+        } else {
+          assign(as.character(aid), out, envir = overflow)
+        }
+      }
+    }
+    out
+  }
+}
+
+WamRuntime$normalize_arg1_capability <- function(cap) {
+  if (is.null(cap)) return(NULL)
+  # Legacy: bare function treated as TermValue-only lookup.
+  if (is.function(cap)) {
+    return(list(lookup = cap, lookup_ids = NULL, id_table = NULL))
+  }
+  if (!is.list(cap)) return(NULL)
+  list(
+    lookup = if (!is.null(cap$lookup)) cap$lookup else NULL,
+    lookup_ids = if (!is.null(cap$lookup_ids)) cap$lookup_ids else NULL,
+    id_table = if (!is.null(cap$id_table)) cap$id_table else NULL
+  )
+}
+
+WamRuntime$register_arg1_capability <- function(program, key, cap) {
+  if (is.null(program$arg1_lookups) || is.null(cap)) return(invisible(NULL))
+  assign(key, WamRuntime$normalize_arg1_capability(cap),
+         envir = program$arg1_lookups)
+  invisible(NULL)
+}
+
+# Back-compat: register a TermValue-only (or full) capability via fn args.
+WamRuntime$register_arg1_parent_lookup_fn <- function(program, key, fn,
+                                                       lookup_ids = NULL) {
+  WamRuntime$register_arg1_capability(
+    program, key, list(lookup = fn, lookup_ids = lookup_ids))
+}
+
+WamRuntime$register_indexed_arg1_parent_lookup <- function(program, key,
+                                                            facts, indexes) {
+  WamRuntime$register_arg1_capability(program, key, list(
+    lookup = WamRuntime$make_indexed_arg1_parent_lookup(facts, indexes),
+    lookup_ids = WamRuntime$make_indexed_arg1_parent_lookup_ids(facts, indexes),
+    id_table = WamRuntime$make_lazy_indexed_arg1_parent_id_table(facts, indexes)
+  ))
+}
+
+WamRuntime$get_arg1_parent_id_table <- function(program, key) {
+  cap <- WamRuntime$get_arg1_capability(program, key)
+  if (is.null(cap)) return(NULL)
+  WamRuntime$resolve_arg1_parent_id_table(cap$id_table)
+}
+
+WamRuntime$register_lmdb_arg1_parent_lookup <- function(program, key, path,
+                                                         arity) {
+  # On-demand: each key hits lmdb_arg1_v1_lookup — no full materialize.
+  table <- program$intern_table
+  WamRuntime$register_arg1_capability(program, key, list(
+    lookup = function(key_term) {
+      rows <- WamRuntime$lmdb_arg1_v1_lookup(path, key_term, arity, table)
+      WamRuntime$arg1_parent_terms_from_tuples(rows)
+    },
+    lookup_ids = function(atom_id) {
+      rows <- WamRuntime$lmdb_arg1_v1_lookup(
+        path, Atom(as.integer(atom_id)), arity, table)
+      WamRuntime$arg1_parent_ids_from_tuples(rows)
+    }
+  ))
+}
+
+WamRuntime$register_lmdb_cached_arg1_parent_lookup <- function(program, key,
+                                                                path, arity,
+                                                                cache) {
+  table <- program$intern_table
+  WamRuntime$register_arg1_capability(program, key, list(
+    lookup = function(key_term) {
+      rows <- WamRuntime$lmdb_arg1_v1_cached_lookup(
+        cache, path, key_term, arity, table)
+      WamRuntime$arg1_parent_terms_from_tuples(rows)
+    },
+    lookup_ids = function(atom_id) {
+      rows <- WamRuntime$lmdb_arg1_v1_cached_lookup(
+        cache, path, Atom(as.integer(atom_id)), arity, table)
+      WamRuntime$arg1_parent_ids_from_tuples(rows)
+    }
+  ))
+}
+
+WamRuntime$get_arg1_capability <- function(program, key) {
+  env <- program$arg1_lookups
+  if (is.null(env)) return(NULL)
+  if (!exists(key, envir = env, inherits = FALSE)) return(NULL)
+  WamRuntime$normalize_arg1_capability(get(key, envir = env, inherits = FALSE))
+}
+
+WamRuntime$get_arg1_parent_lookup <- function(program, key) {
+  cap <- WamRuntime$get_arg1_capability(program, key)
+  if (is.null(cap)) return(NULL)
+  cap$lookup
+}
+
+WamRuntime$get_arg1_parent_lookup_ids <- function(program, key) {
+  cap <- WamRuntime$get_arg1_capability(program, key)
+  if (is.null(cap)) return(NULL)
+  cap$lookup_ids
 }
 
 # Binary-search a sorted-by-value index for tuple indices whose value
@@ -4127,11 +5850,12 @@ WamRuntime$dispatch_call <- function(program, state, pred, arity) {
     saved_cp       <- state$cp
     saved_halt     <- state$halt
     saved_stack_n  <- length(state$stack)
+    saved_cps_n    <- length(state$cps)
     saved_shadow   <- state$shadow_frame
     state$pc   <- as.integer(tgt)
     state$cp   <- 0L
     state$halt <- FALSE
-    ok <- WamRuntime$run(program, state)
+    ok <- WamRuntime$run(program, state, min_cps = saved_cps_n)
     state$pc   <- saved_pc
     state$cp   <- saved_cp
     state$halt <- saved_halt
@@ -4221,7 +5945,7 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
         cont <- on_each()
         if (!isTRUE(cont)) break
         if (length(state$cps) <= snap_cps_len) break
-        if (!WamRuntime$backtrack(state)) break
+        if (!WamRuntime$backtrack(state, snap_cps_len)) break
         ok <- TRUE
       }
       return(invisible(NULL))
@@ -4343,7 +6067,7 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
           cont <- on_each()
           if (!isTRUE(cont)) break
           if (length(state$cps) <= snap_cps_len) break
-          if (!WamRuntime$backtrack(state)) break
+          if (!WamRuntime$backtrack(state, snap_cps_len)) break
           ok <- TRUE  # backtrack already invoked retry; keep iterating
         }
         return(invisible(NULL))
@@ -4360,9 +6084,9 @@ WamRuntime$iterate_goal <- function(program, state, goal_term, on_each) {
     cont <- on_each()
     if (!isTRUE(cont)) break
     if (length(state$cps) <= snap_cps_len) break
-    if (!WamRuntime$backtrack(state)) break
+    if (!WamRuntime$backtrack(state, snap_cps_len)) break
     state$halt <- FALSE
-    ok <- WamRuntime$run(program, state)
+    ok <- WamRuntime$run(program, state, min_cps = snap_cps_len)
   }
   invisible(NULL)
 }
@@ -4636,66 +6360,23 @@ WamRuntime$call_builtin <- function(program, state, pred, arity) {
     return(!isTRUE(ok))
   }
 
-  # is/2: eval A2, unify with A1.
-  #
-  # Fast path: when the expression is a 2-arg arithmetic struct whose
-  # both args deref to ints, and the operator is one of the common
-  # integer ops, do the arith inline and skip the eval_arith recursion
-  # (which would otherwise call itself 2-3 times for this single op)
-  # and the arith_to_term dispatch. Additionally, when the target derefs
-  # to unbound, fast-bind (skipping unify). Falls through to the slow
-  # path for anything else.
-  if (pred == "is/2" && arity == 2L) {
-    target <- WamRuntime$get_reg(state, 1L)
-    expr   <- WamRuntime$get_reg(state, 2L)
-    expr_d <- WamRuntime$deref(state, expr)
-    if (!is.null(expr_d) && is.list(expr_d) && !is.null(expr_d$tag) &&
-        expr_d$tag == "struct" && length(expr_d$args) == 2L) {
-      a_d <- WamRuntime$deref(state, expr_d$args[[1L]])
-      b_d <- WamRuntime$deref(state, expr_d$args[[2L]])
-      if (!is.null(a_d) && !is.null(b_d) &&
-          !is.null(a_d$tag) && !is.null(b_d$tag) &&
-          a_d$tag == "int" && b_d$tag == "int") {
-        op <- WamRuntime$string_of(table, expr_d$fid)
-        fast_val <- switch(op,
-          "+"   = a_d$val + b_d$val,
-          "-"   = a_d$val - b_d$val,
-          "*"   = a_d$val * b_d$val,
-          "//"  = a_d$val %/% b_d$val,
-          "mod" = a_d$val %% b_d$val,
-          NULL)
-        if (!is.null(fast_val)) {
-          res <- IntTerm(as.integer(fast_val))
-          target_d <- WamRuntime$deref(state, target)
-          if (!is.null(target_d) && !is.null(target_d$tag) &&
-              target_d$tag == "unbound") {
-            WamRuntime$bind(state, target_d$name, res)
-            return(TRUE)
-          }
-          return(WamRuntime$unify(state, target, res))
-        }
-      }
-    }
-    n <- WamRuntime$eval_arith(state, expr, table)
-    if (is.null(n)) return(FALSE)
-    res <- WamRuntime$arith_to_term(n)
-    if (is.null(res)) return(FALSE)
-    return(WamRuntime$unify(state, target, res))
+  # is/2 and is_lax/2 share the lax body. is_iso/2 throws structured
+  # ISO errors (unbound → zero_divisor → non-evaluable).
+  if (arity == 2L && (pred == "is/2" || pred == "is_lax/2")) {
+    return(WamRuntime$builtin_is_lax(program, state))
   }
-  # Numeric comparison builtins: eval both args, compare.
-  if (arity == 2L && pred %in% c("=:=/2", "=\\=/2", "</2", ">/2", "=</2", ">=/2")) {
-    a <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 1L), table)
-    b <- WamRuntime$eval_arith(state, WamRuntime$get_reg(state, 2L), table)
-    if (is.null(a) || is.null(b)) return(FALSE)
-    return(switch(pred,
-      "=:=/2"  = a == b,
-      "=\\=/2" = a != b,
-      "</2"    = a <  b,
-      ">/2"    = a >  b,
-      "=</2"   = a <= b,
-      ">=/2"   = a >= b,
-      FALSE
-    ))
+  if (pred == "is_iso/2" && arity == 2L) {
+    return(WamRuntime$builtin_is_iso(program, state))
+  }
+  # Arithmetic comparisons (ISO-R-2A): default/_lax/_iso share one helper.
+  if (arity == 2L) {
+    cmp_info <- WamRuntime$arith_compare_key_info(pred)
+    if (!is.null(cmp_info)) {
+      if (identical(cmp_info$mode, "iso")) {
+        return(WamRuntime$builtin_arith_compare_iso(program, state, cmp_info$op))
+      }
+      return(WamRuntime$builtin_arith_compare_lax(program, state, cmp_info$op))
+    }
   }
 
   # Type-check builtins: deref A1, classify.
@@ -4940,6 +6621,29 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
   table <- program$intern_table
   key <- if (grepl("/[0-9]+$", pred)) pred else paste0(pred, "/", arity)
 
+  # Explicit is_*/compare_* arrive as Execute/Call (not builtin_call).
+  # Invoke helpers directly (avoid call_builtin → call_library recursion).
+  if (key == "is_iso/2" && arity == 2L) {
+    return(WamRuntime$builtin_is_iso(program, state))
+  }
+  if (key == "is_lax/2" && arity == 2L) {
+    return(WamRuntime$builtin_is_lax(program, state))
+  }
+  cmp_info <- WamRuntime$arith_compare_key_info(key)
+  if (!is.null(cmp_info) && arity == 2L) {
+    if (identical(cmp_info$mode, "iso")) {
+      return(WamRuntime$builtin_arith_compare_iso(program, state, cmp_info$op))
+    }
+    return(WamRuntime$builtin_arith_compare_lax(program, state, cmp_info$op))
+  }
+  # succ/2 family: Execute/Call (compiler does not emit BuiltinCall).
+  if (arity == 2L && (key == "succ/2" || key == "succ_lax/2")) {
+    return(WamRuntime$builtin_succ_lax(program, state))
+  }
+  if (key == "succ_iso/2" && arity == 2L) {
+    return(WamRuntime$builtin_succ_iso(program, state))
+  }
+
   # ----- ^/2 existential scope -----
   # When the WAM compiler emits `Y^Goal` as a Call("^", 2), treat
   # the wrapper as transparent and run Goal. Y is locally scoped
@@ -5052,23 +6756,6 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
     }
     return(WamRuntime$unify(state, WamRuntime$get_reg(state, 3L),
                             WamRuntime$wam_list_build(keep, table)))
-  }
-
-  # ----- succ/2: successor (bidirectional integer +1) -----
-  if (key == "succ/2") {
-    x_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 1L))
-    y_v <- WamRuntime$deref(state, WamRuntime$get_reg(state, 2L))
-    if (!is.null(x_v) && !is.null(x_v$tag) && x_v$tag == "int") {
-      if (x_v$val < 0L) return(FALSE)
-      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 2L),
-                              IntTerm(x_v$val + 1L)))
-    }
-    if (!is.null(y_v) && !is.null(y_v$tag) && y_v$tag == "int") {
-      if (y_v$val <= 0L) return(FALSE)
-      return(WamRuntime$unify(state, WamRuntime$get_reg(state, 1L),
-                              IntTerm(y_v$val - 1L)))
-    }
-    return(FALSE)
   }
 
   # ----- between/3: deterministic mode (test only) -----
@@ -6055,9 +7742,12 @@ WamRuntime$call_library <- function(program, state, pred, arity) {
 # ----------------------------------------------------------
 # Backtracking
 # ----------------------------------------------------------
-WamRuntime$backtrack <- function(state) {
+WamRuntime$backtrack <- function(state, min_cps = 0L) {
   n <- length(state$cps)
-  if (n == 0L) return(FALSE)
+  # Nested enumerators (notably graph kernels calling iterate_goal)
+  # must not consume a caller-owned choice point when their own
+  # retry stream is exhausted. min_cps is that protected stack depth.
+  if (n <= min_cps) return(FALSE)
   cp <- state$cps[[n]]
   # Dynamic-CP resume: the previous clause succeeded; backtracking
   # now means "try the next stored clause for the same predicate". On
@@ -6084,7 +7774,7 @@ WamRuntime$backtrack <- function(state) {
       state$pc <- as.integer(cp$resume_pc)
       return(TRUE)
     }
-    return(WamRuntime$backtrack(state))
+    return(WamRuntime$backtrack(state, min_cps))
   }
 
   # Iter-CP resume: builtin enumerators (member/2, between/3, ...)
@@ -6118,13 +7808,14 @@ WamRuntime$backtrack <- function(state) {
       state$pc <- as.integer(cp$resume_pc)
       return(TRUE)
     }
-    return(WamRuntime$backtrack(state))
+    return(WamRuntime$backtrack(state, min_cps))
   }
 
   # Aggregate-frame finalization: when backtrack reaches a frame
   # left by BeginAggregate, the goal has exhausted all its solutions.
-  # Restore the snapshot, bind the bag register to the collected list,
-  # and resume at the instruction after end_aggregate.
+  # Restore the snapshot, bind the bag register to the kind-specific
+  # result (sum/count/min/max or collect/bag/set list), and resume at
+  # the instruction after end_aggregate.
   if (!is.null(cp$kind) && cp$kind == "aggregate") {
     state$cps <- state$cps[-n]
     state$regs2 <- cp$regs
@@ -6140,7 +7831,10 @@ WamRuntime$backtrack <- function(state) {
     state$mode        <- cp$mode
     state$build_stack <- cp$build_stack
     state$read_stack  <- cp$read_stack
-    bag <- WamRuntime$wam_list_build(cp$collected, cp$table)
+    bag <- WamRuntime$aggregate_result(cp$agg_kind, cp$collected, cp$table)
+    if (is.null(bag)) {
+      return(WamRuntime$backtrack(state, min_cps))
+    }
     cur <- WamRuntime$get_reg(state, cp$bag_reg)
     if (is.null(cur)) {
       # Bag register was unset at begin_aggregate time (typical case
@@ -6149,7 +7843,7 @@ WamRuntime$backtrack <- function(state) {
       WamRuntime$put_reg(state, cp$bag_reg, bag)
     } else if (!WamRuntime$unify(state, cur, bag)) {
       # Bag unification failed - propagate as another backtrack.
-      return(WamRuntime$backtrack(state))
+      return(WamRuntime$backtrack(state, min_cps))
     }
     state$pc <- as.integer(cp$next_pc)
     return(TRUE)
@@ -6191,17 +7885,18 @@ WamRuntime$backtrack <- function(state) {
 # ----------------------------------------------------------
 # Top-level driver
 # ----------------------------------------------------------
-WamRuntime$run <- function(program, state, max_steps = 1e7) {
+WamRuntime$run <- function(program, state, max_steps = 1e7,
+                           min_cps = 0L) {
   for (i in seq_len(max_steps)) {
     if (state$halt) return(TRUE)
     if (state$pc < 1L || state$pc > length(program$instructions)) {
-      if (!WamRuntime$backtrack(state)) return(FALSE)
+      if (!WamRuntime$backtrack(state, min_cps)) return(FALSE)
       next
     }
     instr <- program$instructions[[state$pc]]
     ok <- WamRuntime$step(program, state, instr)
     if (!ok) {
-      if (!WamRuntime$backtrack(state)) return(FALSE)
+      if (!WamRuntime$backtrack(state, min_cps)) return(FALSE)
     }
   }
   warning("WAM run exceeded max_steps; truncating")

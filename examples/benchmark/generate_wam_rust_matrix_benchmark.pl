@@ -74,7 +74,10 @@ generate(VariantAtom, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbCrateAtom,
     % PR #2754 so the *main* wam_rust target can import via <module_name>::).
     % With no [lib] override the lib crate takes the package name, so the
     % package must be named wam_lib for the matrix bench's imports to resolve.
-    append([[module_name(wam_lib), wam_fallback(true), emit_mode(EmitMode), parallel(true)],
+    % rust_named_calls(true) (R1): keep call/execute/builtin_call by name, because
+    % the matrix main.rs rewrites and fuses those forms itself.
+    append([[module_name(wam_lib), wam_fallback(true), emit_mode(EmitMode), parallel(true),
+             rust_named_calls(true)],
             KernelOptions, LmdbOptions, LmdbCrateOptions, LmdbMaterialisationOptions], Options),
     write_wam_rust_project(Predicates, Options, OutputDir),
     write_matrix_main(OutputDir, EmitModeAtom, KernelModeAtom, LmdbModeAtom, LmdbMaterialisation, CacheCapacity),
@@ -281,7 +284,7 @@ use std::time::Instant;
 use wam_lib::foreign_pred_keys;
 use wam_lib::setup_foreign_predicates;
 use wam_lib::shared_wam_program;
-use wam_lib::instructions::Instruction;
+use wam_lib::instructions::{Instruction, Reg};
 use wam_lib::state::WamState;
 use wam_lib::value::Value;
 use rayon::prelude::*;
@@ -385,8 +388,8 @@ fn append_fact2(code: &mut Vec<Instruction>, labels: &mut HashMap<String, usize>
                     code.push(Instruction::RetryMeElse(format!("{}_g_{}_{}", pred_name, key, i + 1)));
                 }
             }
-            code.push(Instruction::GetConstant(Value::Atom(key.clone()), "A1".to_string()));
-            code.push(Instruction::GetConstant(Value::Atom(b.clone()), "A2".to_string()));
+            code.push(Instruction::GetConstant(Value::Atom(key.clone()), Reg::a(1)));
+            code.push(Instruction::GetConstant(Value::Atom(b.clone()), Reg::a(2)));
             code.push(Instruction::Proceed);
         }
     }
@@ -636,6 +639,9 @@ fn resolve_targets(code: &mut Vec<Instruction>, labels: &HashMap<String, usize>)
             }
             Instruction::TryMeElse(label) => {
                 labels.get(label).copied().map(Instruction::TryMeElsePc)
+            }
+            Instruction::TryMeElseArgs(label, arity) => {
+                labels.get(label).copied().map(|pc| Instruction::TryMeElsePcArgs(pc, *arity))
             }
             Instruction::RetryMeElse(label) => {
                 labels.get(label).copied().map(Instruction::RetryMeElsePc)
@@ -835,7 +841,7 @@ fn main() {
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
-            vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
+            vm.set_reg("A4", Value::list(vec![Value::Atom(cat.clone())]));
             let mut first = true;
             let mut solutions = 0usize;
             loop {
@@ -857,7 +863,7 @@ fn main() {
                 if let Some(hops) = vm.bindings
                     .get("Hops")
                     .cloned()
-                    .or_else(|| vm.regs.get(3).cloned().map(|v| vm.deref_var(&v)))
+                    .or_else(|| vm.regs().get(3).cloned().map(|v| vm.deref_var(&v)))
                     .and_then(|value| value_to_f64(&value)) {
                     let distance = hops + 1.0;
                     weight_sum += distance.powf(-n);
@@ -928,7 +934,7 @@ use std::time::Instant;
 use wam_lib::foreign_pred_keys;
 use wam_lib::setup_foreign_predicates;
 use wam_lib::shared_wam_program;
-use wam_lib::instructions::Instruction;
+use wam_lib::instructions::{Instruction, Reg};
 use wam_lib::state::WamState;
 use wam_lib::value::Value;
 use wam_lib::lmdb_fact_source::LmdbFactSource;
@@ -1033,8 +1039,8 @@ fn append_fact2(code: &mut Vec<Instruction>, labels: &mut HashMap<String, usize>
                     code.push(Instruction::RetryMeElse(format!("{}_g_{}_{}", pred_name, key, i + 1)));
                 }
             }
-            code.push(Instruction::GetConstant(Value::Atom(key.clone()), "A1".to_string()));
-            code.push(Instruction::GetConstant(Value::Atom(b.clone()), "A2".to_string()));
+            code.push(Instruction::GetConstant(Value::Atom(key.clone()), Reg::a(1)));
+            code.push(Instruction::GetConstant(Value::Atom(b.clone()), Reg::a(2)));
             code.push(Instruction::Proceed);
         }
     }
@@ -1284,6 +1290,9 @@ fn resolve_targets(code: &mut Vec<Instruction>, labels: &HashMap<String, usize>)
             }
             Instruction::TryMeElse(label) => {
                 labels.get(label).copied().map(Instruction::TryMeElsePc)
+            }
+            Instruction::TryMeElseArgs(label, arity) => {
+                labels.get(label).copied().map(|pc| Instruction::TryMeElsePcArgs(pc, *arity))
             }
             Instruction::RetryMeElse(label) => {
                 labels.get(label).copied().map(Instruction::RetryMeElsePc)
@@ -1572,7 +1581,7 @@ fn main() {
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
-            vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
+            vm.set_reg("A4", Value::list(vec![Value::Atom(cat.clone())]));
             let mut first = true;
             let mut solutions = 0usize;
             loop {
@@ -1594,7 +1603,7 @@ fn main() {
                 if let Some(hops) = vm.bindings
                     .get("Hops")
                     .cloned()
-                    .or_else(|| vm.regs.get(3).cloned().map(|v| vm.deref_var(&v)))
+                    .or_else(|| vm.regs().get(3).cloned().map(|v| vm.deref_var(&v)))
                     .and_then(|value| value_to_f64(&value)) {
                     let distance = hops + 1.0;
                     weight_sum += distance.powf(-n);

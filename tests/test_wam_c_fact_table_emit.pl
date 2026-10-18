@@ -10,6 +10,9 @@
 :- use_module('../src/unifyweaver/targets/wam_c_target').
 
 :- dynamic user:ek/2.
+:- dynamic user:ek_project/1, user:ek_filter/1.
+user:ek_project(V) :- ek(a,V).
+user:ek_filter(V) :- ek(a,V), V > 1.
 user:ek(a, 1). user:ek(a, 2). user:ek(b, 3).
 user:ek(a, 4). user:ek(c, 5). user:ek(b, 6).
 
@@ -34,10 +37,10 @@ test(below_min_fact_only) :-
     plan([t9_min_rows(100)], Plans),
     assertion(member(wam_c_lowered_helper_plan('ek/2', _, lowered, fact_only(_)), Plans)).
 
-% above t9_max_rows -> not inlined as a fact table (deterministic fallback).
-test(above_cap_fact_only) :-
+% Above the cap uses interpreted clauses, without an uncapped static table.
+test(above_cap_interpreted) :-
     plan([t9_min_rows(2), t9_max_rows(5)], Plans),
-    assertion(member(wam_c_lowered_helper_plan('ek/2', _, lowered, fact_only(_)), Plans)),
+    assertion(member(wam_c_lowered_helper_plan('ek/2', _, interpreted, fact_table_limit), Plans)),
     assertion(\+ member(wam_c_lowered_helper_plan('ek/2', _, lowered, fact_table(_)), Plans)).
 
 % classifier yields fact_info with the rows when in-window.
@@ -62,5 +65,34 @@ test(value_literals) :-
     assertion(sub_string(Code, _, _, _, ".tag = VAL_ATOM, .data.atom = \"foo\"")),
     assertion(sub_string(Code, _, _, _, ".tag = VAL_INT, .data.integer = 7")),
     assertion(sub_string(Code, _, _, _, ".tag = VAL_INT, .data.integer = -3")).
+
+test(inclusive_min) :-
+    wam_c_fact_table_classify(user:ek/2, [t9_min_rows(6)], _).
+test(inclusive_max) :-
+    wam_c_fact_table_classify(user:ek/2, [t9_min_rows(1),t9_max_rows(6)], _).
+test(invalid_min, [throws(error(type_error(nonneg, _), _))]) :- plan([t9_min_rows(1.5)], _).
+test(invalid_max, [throws(error(type_error(nonneg, _), _))]) :- plan([t9_max_rows(foo)], _).
+test(projected_caller_interpreted) :-
+    plan_wam_c_lowered_helpers([user:ek/2,user:ek_project/1],
+      [lowered_helpers(true),t9_min_rows(1)], [], Plans),
+    assertion(member(wam_c_lowered_helper_plan('ek_project/1',_,interpreted,fact_table_dependency),Plans)).
+test(filtered_caller_interpreted) :-
+    plan_wam_c_lowered_helpers([user:ek/2,user:ek_filter/1],
+      [lowered_helpers(true),t9_min_rows(1)], [], Plans),
+    assertion(member(wam_c_lowered_helper_plan('ek_filter/1',_,interpreted,fact_table_dependency),Plans)).
+
+test(default_window) :-
+    setup_call_cleanup(
+      forall(between(1,257,I),assertz(user:ek_window(I))),
+      ( wam_c_fact_table_classify(user:ek_window/1,[t9_max_rows(257)],fact_info(1,All)),
+        assertion(length(All,257)),
+        assertion(\+ wam_c_fact_table_classify(user:ek_window/1,[],_)),
+        retract(user:ek_window(257)),
+        assertion(wam_c_fact_table_classify(user:ek_window/1,[],_)),
+        forall(between(65,256,J),retract(user:ek_window(J))),
+        assertion(wam_c_fact_table_classify(user:ek_window/1,[],_)),
+        retract(user:ek_window(64)),
+        assertion(\+ wam_c_fact_table_classify(user:ek_window/1,[],_)) ),
+      retractall(user:ek_window(_))).
 
 :- end_tests(wam_c_fact_table_emit).

@@ -6,8 +6,10 @@
 ## What it is
 
 A single set of classic Prolog programs (`member`, `append`, `reverse`,
-`fib`, `ack`, and a `builtins` arithmetic/comparison/unification pack)
-with one shared table of expected query results. The harness compiles
+`fib`, `ack`, and a `builtins` arithmetic/comparison/unification pack),
+plus five **head-shape** programs (`wide`, `nested`, `buildnest`,
+`repeatvar`, `emptylist`) with one shared table of expected query
+results. The harness compiles
 that *same* spec to every WAM backend whose toolchain is on `PATH`, runs
 each backend, and asserts the answers match.
 
@@ -51,7 +53,204 @@ so the harness is built to stay cheap:
 - `member` — a set operation — is the preferred everyday case: high-level
   but far cheaper than a generic recursive algorithm;
 - the query set can be **random-sampled** so any single CI run is bounded
-  while coverage accumulates across runs.
+  while coverage accumulates across runs;
+- the head-shape programs are near-zero compute by design — they exist to hit argument-passing and unification
+  edges, not to do work.
+
+## Head-shape programs (added 2026-08-06)
+
+The six classic programs are all arity <= 3 over flat lists and atoms.
+That leaves real gaps: nothing exercised argument registers **above A8**,
+a **structure nested inside a cons-cell head**, the **cons tail** unified
+after such a structure, or **`[]` reached as a tail** versus written as a
+literal.
+
+The gap was not hypothetical. The WAM-Go runtime-parser bring-up
+(PARSE-GO) found eight defects in a backend that was registered here and
+green on all six classics — including argument registers above A8 being
+dropped at every choicepoint, and two distinct `[]` atoms that made
+`get_constant []` fail against a genuinely empty list.
+
+Three programs covered those shapes initially (`buildnest` and
+`repeatvar` were split out later, see below):
+
+| Program | Shape | What it catches |
+|---|---|---|
+| `wide` | arity-10 predicate whose first clause fails on argument 9 | argument registers above the runtime's fast-path window being dropped on backtracking |
+| `nested` | `[tk(X)|R]` head — list containing a structure; plus multi-clause discrimination on the *inner* functor | nested destructuring that clobbers the enclosing list context, and read/write-mode decisions made before dereferencing |
+| `emptylist` | `[]` as a cons tail, and a literal `[X|[]]` spine in a head | `[]` represented two different ways inside one runtime |
+
+They found live divergences in two more mature backends on the first
+run — see the narrative block where the `ct_xfail` entries used to sit in
+`tests/test_wam_cross_target_conformance.pl` for the per-backend
+diagnosis, and `WAM_FLEET_GAP_TASKS.md` for the fix cards:
+
+- **C / `nested`** — ~~`ctail/3` returns the wrong answer on one query and
+  **segfaults the generated binary** (exit 139) on another.~~ **Fixed**
+  (CONF-FIX-C-NESTED): a single `S` register with no save/restore around
+  nested terms. Fixing it also exposed the same bug in the *write* path,
+  which the ground-query design had hidden entirely — see below.
+- ~~**Rust / `nested`** — three-way clause discrimination on the inner
+  functor matches nothing, and `cnest([tk(a)], z)` returns **true** when
+  it must be false (a silent wrong answer, not a missed solution).~~
+  **Fixed** (CONF-FIX-RUST-NESTED): `get_structure` tested `is_unbound`
+  before dereferencing, and its read branch re-appended the arity to a
+  functor key that already carried one.
+- ~~**Rust / `emptylist`** — both `cone/2` queries come back
+  **inverted**.~~ **Fixed** (CONF-FIX-RUST-EMPTYLIST): `unify_constant`
+  used raw equality plus an unbound short-circuit instead of `unify()`.
+  A fourth bug in the same family — `unify_value` accepting an unbound
+  heap argument without binding it — was found and fixed alongside.
+
+All six backends buildable at the time — `go`, `python`, `c`, `cpp`,
+`rust`, `wat` — passed all three after those fixes. The remaining nine
+arms were swept later, once their toolchains could be installed; see the
+scorecard below.
+
+A fourth program, `repeatvar`, covers a head with a *repeated* variable
+inside a structure (`csame(p(X,X), X)`): matching it against a term whose
+slots are both unbound must **bind** the second slot, not merely accept
+it. Detecting that needs `==/2` rather than `=/2` — with the bug the term
+was left as `p(_, a)`, and `T = p(a,a)` would happily bind the remaining
+slot and succeed. It is a separate program precisely because it leans on
+`==/2`, so a backend can diverge here for a term-comparison reason that
+has nothing to do with the nested-head shapes above; a shared program
+would let one xfail blanket both.
+
+That separation earned its keep immediately: C failed `repeatvar` while
+passing every `nested` query, and the symptom pointed at `==/2`
+(`CONF-FIX-C-EQ-DEREF`). `==/2` turned out to be innocent. The defect was
+in read-mode `unify_variable`, which copied the heap cell into the
+register **by value** — correct for a bound cell, since `VAL_REF`,
+`VAL_ATOM`, `VAL_STR` and `VAL_LIST` each carry their own identity, but
+`VAL_UNBOUND` carries no address, so the register got its own detached
+variable. `csame(p(X,X), X)` then aliased X with the *second* slot and
+bound only that one. Read mode now installs a `VAL_REF` at `S` for an
+unbound cell, mirroring what the write branch already did. Fixed
+2026-08-09; also guarded by `tests/test_wam_c_var_alias.pl`, which now
+reaches the same aliasing requirement through a head rather than `=/2`.
+
+### Round scorecard — the whole fleet, swept
+
+Every registered arm has now been run against the four new programs. All
+15 are green; getting there took eight fixes across seven backends.
+
+Three of the four programs found live bugs; the fourth (`wide`) found
+none anywhere. **Seven of the fifteen registered arms were green on the
+six classic programs while carrying a silent head-unification defect:**
+
+| Backend | Programs that failed | Defect |
+|---|---|---|
+| go | nested, emptylist | nested write contexts, get_structure deref, get_list cons, A-regs > A8, atom-intern init order |
+| rust | nested, emptylist | get_structure deref + arity-qualified functor key; unify_constant/unify_value bypassing `unify()` |
+| c | nested | single S register lost the enclosing term's argument pointer (SIGSEGV in read, silent drop in write) |
+| c | repeatvar | read-mode `unify_variable` copied unbound heap cells by value, losing identity |
+| elixir | repeatvar | `unify/3` did not dereference, and `deref_var` stopped on an alias as readily as on a self-reference |
+| scala | nested | single `unifyQueue` discarded the enclosing term's pending arguments |
+| scala | repeatvar | `==/2` and `\==/2` absent from the builtin table — failed closed |
+| kotlin, kotlin_functions | nested | single `context` slot, same shape as Scala's — fixed by giving `WamContext` a `parent` chain |
+| fsharp_functions | nested, emptylist, repeatvar | the **lowered** emitter inlined shallow `a = x` for `get_value` — the FS-LIST-PARTIAL-TAIL fix had only ever been applied to the interpreter |
+
+Clean on the first run, no fix needed: **python, cpp, wat, haskell, r,
+r_functions, fsharp** (interpreter).
+
+Two structural lessons fall out of the table:
+
+- **The same defect recurs independently.** A single argument-context
+  slot, overwritten by a nested `get_structure`, was found separately in
+  C (`S` register), Scala (`unifyQueue`), Kotlin (`context`) and Go
+  (write contexts). Four runtimes, four spellings, one bug. It is worth
+  checking any new backend for it directly rather than waiting for the
+  suite.
+- **A fix applied to one execution mode is not applied to the other.**
+  `fsharp` (interpreter) was green while `fsharp_functions` (lowered)
+  failed on a bug whose fix comment was sitting in the interpreter
+  source. Backends with dual lowering — Scala, Kotlin, F#, R, Elixir —
+  need both paths touched, and the conformance arms are registered
+  separately precisely so that shows up.
+
+`scala` and `elixir` are the two **default-CI** arms, so their entries
+were live breakage rather than latent gaps: the widened suite ran
+against them on the next push. They are also the two hardest to check
+locally — Scala's emitted runtime needs 2.13+ (`String.toIntOption`), and
+a 2.11 toolchain fails to *compile* the project rather than diverging,
+which reads as a harness error rather than a conformance one.
+
+Toolchains this sweep needed, none of which were present at the start:
+`elixir` (apt), Scala **2.13** (tarball — apt only carries 2.11),
+`ghc`+`cabal-install` (apt), `r-base-core` (apt,
+`--no-install-recommends`; the default recommends pull in a broken mesa
+dependency), `dotnet-sdk-8.0` (apt). Kotlin needed only the `gradle`
+already on the image.
+
+### The write-mode check that could not fail (2026-08-10)
+
+`cbuild_chk/1` was written to cover construction — it calls
+`cbuild_one/2` with an unbound second argument so the runtime has to
+*build* `[tk(X)|[]]`. But it verified the result with `=/2`, which
+**re-unifies**: if the head never bound the caller's output at all,
+`L = [tk(X)]` binds it on the spot and reports success. The one query
+guarding the entire write path could not fail for the bug it existed to
+catch. It is now `==/2` — the same trap `crepeat/1` already documented,
+one program over.
+
+The check also moved into its own program, `buildnest`. A backend can
+match nested heads perfectly and still fail to build them, so leaving it
+inside `nested` would let one xfail blanket working read-mode coverage.
+
+Four arms went red the moment it became a real check:
+
+| Backend | Cause | Status |
+|---|---|---|
+| scala | `finalizeBuild` skipped the bind-through for A registers, **and** `GetStructure` guessed its arity by counting trailing `unify_*` ops | fixed |
+| kotlin, kotlin_functions | the identical A-register guard in `bindTarget` | fixed |
+| elixir | write mode overwrote the register without binding the variable it held — in the interpreter *and* the lowered emitter | fixed |
+| elixir | a term NESTED inside another: the nested term was allocated in the middle of the enclosing term's argument region (the CONF-FIX-C-NESTED class), so get-family write mode now RESERVES its argument cells | fixed |
+| r, r_functions | the same A-register guard in `append_build_arg`; one fix, both arms | fixed |
+
+**All fixed — the harness carries no `ct_xfail` again.** Five backends
+had the A-register bind-through asymmetry (Scala, Kotlin, Elixir, R, and
+Go's write contexts earlier), which makes it the single most-repeated
+defect this suite has found.
+
+R is worth calling out as the counter-example to assuming a diagnosis
+transfers. Its card was filed as the nesting defect by analogy with
+Elixir; the three-way probe came back cons-only FALSE, struct-only
+FALSE, struct-inside-cons FALSE — even *flat* construction failed, so it
+was the binding half and nesting had never been broken there at all. It
+was an S, not the M the card estimated. Run the probe; do not infer.
+
+The A-register story is worth stating carefully, because both halves are
+real. `put_structure`/`put_list` must **not** bind an A register's
+previous occupant — that is body staging, and binding it builds a cyclic
+term (the M139/M140 class, fixed across Rust, Go, LLVM, Scala, Kotlin).
+`get_structure`/`get_list` in write mode **must** bind it — that is head
+matching, and the A register holds the caller's output variable. Four
+runtimes had generalised the first rule over both families. The fix is
+the same shape everywhere: carry a flag on the build frame saying which
+family opened it.
+
+Scala's second defect is a different lesson: an instruction that does
+not carry the information it needs will get it from somewhere wrong.
+`GetStructure` recovered its arity by counting the `unify_*` ops that
+follow it, which is correct only when nothing is nested — and the whole
+point of the `nested` program is that things nest. The emitter had the
+arity all along and was discarding it.
+
+### Ground queries hide construction bugs
+
+Every query in this harness is ground, so a predicate head is always
+*matched* and never *built*. That makes write-mode (construction) bugs
+invisible. Fixing the C read-mode bug above surfaced a second one in the
+write path: building `[tk(X)|[]]` with an unbound output left the cons
+tail slot unwritten, so every such query silently failed — and
+`foo(X, [tag(X)|Rest])` is an ordinary constructor shape, not an exotic
+one.
+
+The `nested` program therefore also carries `cbuild_chk/1`, which calls a
+constructor with an unbound argument and then checks the result. New
+programs that exercise a head shape should include a build-then-check
+query for the same reason.
 
 Environment knobs:
 
@@ -89,10 +288,12 @@ the recorded seed.
 
 ## Known divergences (tracked as `ct_xfail/2`)
 
-The harness is green today and **every registered backend — scala,
-elixir, wat, haskell, python, go, rust, c, and c++ — passes the whole
-spec** (there are no live `ct_xfail/2` or `ct_skip/2` entries; both are
-declared `dynamic` so they may have zero clauses). The oracle is the hand-specified
+The harness is green today and **all fifteen registered arms — scala,
+elixir, wat, haskell, python, go, rust, c, c++, kotlin,
+kotlin_functions, fsharp, fsharp_functions, r, and r_functions — pass
+the whole spec**, including the five head-shape programs (there are no
+live `ct_xfail/2` or `ct_skip/2` entries; both are declared `dynamic` so
+they may have zero clauses). The oracle is the hand-specified
 expected-results table in `wam_conformance_fixtures.pl` (standard Prolog
 semantics), not any backend's output; Scala was the original reference.
 A tolerated divergence would be logged via a new `ct_xfail/2`, with an

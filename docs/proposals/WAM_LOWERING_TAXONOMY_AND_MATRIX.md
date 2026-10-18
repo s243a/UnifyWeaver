@@ -188,7 +188,10 @@ Verification notes:
   disjunction CP), so every matching row is enumerated; registered as a foreign
   predicate, so it is reachable as a query and from another predicate unchanged.
   Below `t9_min_rows` keeps the cheap deterministic scanner; opt out with
-  `fact_table_inline(false)`; above `t9_max_rows` declines + warns. Tests:
+  `fact_table_inline(false)`; above `t9_max_rows` uses interpreted clauses + warns (no static table).
+  Arity is capped at 32, matching the choice-point argument snapshot.
+  Projected/filtered callers of T9 predicates remain interpreted to preserve retries.
+  Below-window and opt-out deterministic lowering retain their existing first-match semantics. Tests:
   `tests/test_wam_c_fact_table_exec.pl` (query-mode matrix),
   `tests/test_wam_c_fact_table_emit.pl`.
 - **T8** (native kernels) is a curated library feature dispatched via shared

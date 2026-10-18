@@ -207,7 +207,10 @@ test_choice_point_instructions :-
     (   implemented_wam_c_cases(Cases),
         member(try_me_else, Cases),
         member(retry_me_else, Cases),
-        member(trust_me, Cases)
+        member(trust_me, Cases),
+        member(try, Cases),
+        member(retry, Cases),
+        member(trust, Cases)
     ->  pass(Test)
     ;   fail_test(Test, 'missing choice point instruction arms')
     ).
@@ -218,9 +221,26 @@ test_choice_point_content :-
         atom_string(Code, S),
         sub_string(S, _, _, _, 'push_choice_point(state'),
         sub_string(S, _, _, _, 'cp->next_pc = target'),
-        sub_string(S, _, _, _, 'pop_choice_point(state)')
+        sub_string(S, _, _, _, 'pop_choice_point(state)'),
+        sub_string(S, _, _, _, 'push_choice_point(state, state->P + 1'),
+        sub_string(S, _, _, _, 'cp->next_pc = next_chain')
     ->  pass(Test)
     ;   fail_test(Test, 'choice point bytecode missing expected functions')
+    ).
+
+test_indexed_dispatch_instruction_parsing :-
+    Test = 'WAM-C: indexed try/retry/trust parse to distinct tags',
+    WamCode = 'wam_c_idx_parse/1:\n    try L_b1\n    retry L_b2\n    trust L_b3\nL_b1:\n    proceed\nL_b2:\n    proceed\nL_b3:\n    proceed',
+    (   compile_wam_predicate_to_c(user:wam_c_idx_parse/1, WamCode, [], CCode),
+        atom_string(CCode, S),
+        sub_string(S, _, _, _, 'INSTR_TRY,'),
+        sub_string(S, _, _, _, 'INSTR_RETRY,'),
+        sub_string(S, _, _, _, 'INSTR_TRUST,'),
+        \+ sub_string(S, _, _, _, 'INSTR_TRY_ME_ELSE'),
+        \+ sub_string(S, _, _, _, 'INSTR_RETRY_ME_ELSE'),
+        \+ sub_string(S, _, _, _, 'INSTR_TRUST_ME')
+    ->  pass(Test)
+    ;   fail_test(Test, 'indexed try/retry/trust were aliased to try_me_else/retry_me_else/trust_me')
     ).
 
 test_switch_on_term_list_dispatch :-
@@ -309,6 +329,86 @@ test_builtin_call_generation :-
     ;   fail_test(Test, 'builtin_call parser/runtime delegation missing')
     ).
 
+test_builtin_unsupported_diagnostics_generation :-
+    Test = 'WAM-C: unsupported builtin is a distinct runtime error',
+    (   compile_step_wam_to_c([], StepCode),
+        atom_string(StepCode, StepS),
+        compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(StepS, _, _, _, 'if (state->error != 0)'),
+        sub_string(HelpersS, _, _, _, 'wam_clear_error(state)'),
+        sub_string(HelpersS, _, _, _, 'wam_set_unsupported_builtin(state, op, arity)'),
+        sub_string(HelpersS, _, _, _, 'Classify arithmetic comparisons by operator first')
+    ->  pass(Test)
+    ;   fail_test(Test, 'unsupported-builtin error path missing from generated runtime')
+    ).
+
+test_sort_builtin_generation :-
+    Test = 'WAM-C: sort/2 standard-order unique sort is generated',
+    (   compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(HelpersS, _, _, _, 'strcmp(op, "sort/2")'),
+        sub_string(HelpersS, _, _, _, 'wam_execute_sort'),
+        sub_string(HelpersS, _, _, _, 'sort/2: standard-order unique sort'),
+        sub_string(HelpersS, _, _, _, 'wam_sort_identity_value'),
+        sub_string(HelpersS, _, _, _, 'Does not reuse the aggregate stored-term comparator')
+    ->  pass(Test)
+    ;   fail_test(Test, 'sort/2 builtin missing from generated runtime')
+    ).
+
+test_compare_builtin_generation :-
+    Test = 'WAM-C: compare/3 standard-order relation is generated',
+    (   compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(HelpersS, _, _, _, 'strcmp(op, "compare/3")'),
+        sub_string(HelpersS, _, _, _, 'wam_execute_compare'),
+        sub_string(HelpersS, _, _, _, 'wam_compare_live_terms'),
+        sub_string(HelpersS, _, _, _, 'c < 0 ? "<" : (c > 0 ? ">" : "=")')
+    ->  pass(Test)
+    ;   fail_test(Test, 'compare/3 builtin missing from generated runtime')
+    ).
+
+test_length_builtin_generation :-
+    Test = 'WAM-C: length/2 measure and construct modes are generated',
+    (   compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(HelpersS, _, _, _, 'strcmp(op, "length/2")'),
+        sub_string(HelpersS, _, _, _, 'wam_execute_length'),
+        sub_string(HelpersS, _, _, _, 'wam_measure_length_list'),
+        sub_string(HelpersS, _, _, _, 'wam_build_fresh_var_list'),
+        sub_string(HelpersS, _, _, _, 'length/2: two supported modes')
+    ->  pass(Test)
+    ;   fail_test(Test, 'length/2 builtin missing from generated runtime')
+    ).
+
+test_atom_length_builtin_generation :-
+    Test = 'WAM-C: atom_length/2 Unicode code-point handler is generated',
+    (   compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(HelpersS, _, _, _, 'strcmp(op, "atom_length/2")'),
+        sub_string(HelpersS, _, _, _, 'wam_execute_atom_length'),
+        sub_string(HelpersS, _, _, _, 'wam_utf8_codepoint_count')
+    ->  pass(Test)
+    ;   fail_test(Test, 'atom_length/2 builtin missing from generated runtime')
+    ).
+
+test_atomic_builtin_generation :-
+    Test = 'WAM-C: atomic/1 type dispatch is generated',
+    WamCode = 'wam_c_builtin_atomic/1:\n    builtin_call atomic/1, 1\n    proceed',
+    (   compile_wam_helpers_to_c([], HelpersCode),
+        atom_string(HelpersCode, HelpersS),
+        sub_string(HelpersS, _, _, _, 'strcmp(op, "atomic/1")'),
+        sub_string(HelpersS, _, _, _, 'VAL_ATOM'),
+        sub_string(HelpersS, _, _, _, 'VAL_INT'),
+        sub_string(HelpersS, _, _, _, 'VAL_FLOAT'),
+        compile_wam_predicate_to_c(user:wam_c_builtin_atomic/1, WamCode, [], PredCode),
+        atom_string(PredCode, PredS),
+        sub_string(PredS, _, _, _, 'INSTR_BUILTIN_CALL'),
+        sub_string(PredS, _, _, _, '.pred = "atomic/1"')
+    ->  pass(Test)
+    ;   fail_test(Test, 'atomic/1 type dispatch missing from generated code')
+    ).
+
 test_call_foreign_generation :-
     Test = 'WAM-C: call_foreign parses and dispatches registered handlers',
     WamCode = 'foo/1:\n    call_foreign foo/1, 1\n    proceed',
@@ -364,6 +464,21 @@ test_bidirectional_ancestor_kernel_generation :-
     ;   fail_test(Test, 'bidirectional_ancestor native kernel helpers missing')
     ).
 
+% The traversal helper is `wam_collect_transitive_closure`, NOT
+% `wam_transitive_closure_dfs`. This test asserted the latter and had
+% been red since the repository import — the name never existed in the
+% emitted runtime. Its sibling kernels really do spell theirs `_dfs`
+% (`wam_category_ancestor_dfs`, `wam_bidirectional_ancestor_dfs`), which
+% is how the wrong name looked plausible for so long.
+%
+% The `_dfs` suffix would also have been wrong on the merits: the
+% collector is a BFS worklist (head/tail queue over `category_edges`).
+% That is contract-conformant — WAM_TRANSITIVE_CLOSURE2_CONTRACT.md
+% leaves enumeration order unspecified and compares targets as
+% normalized sorted sets — so the traversal is fine and only the
+% assertion was wrong. Executable proof that the kernel works is the
+% `detected transitive_closure2 executable smoke` test below; these two
+% only pin the emitted surface.
 test_transitive_closure_kernel_generation :-
     Test = 'WAM-C: transitive_closure2 native kernel helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
@@ -371,18 +486,26 @@ test_transitive_closure_kernel_generation :-
         sub_string(S, _, _, _, 'void wam_register_transitive_edge'),
         sub_string(S, _, _, _, 'void wam_register_transitive_closure_kernel'),
         sub_string(S, _, _, _, 'bool wam_transitive_closure_handler'),
-        sub_string(S, _, _, _, 'wam_transitive_closure_dfs')
+        sub_string(S, _, _, _, 'wam_collect_transitive_closure'),
+        % tc(+Source,-Target) is stream-valued through the ordinary
+        % choice-point stack, per the contract's "no parallel retry
+        % protocol" rule.
+        sub_string(S, _, _, _, 'wam_bind_foreign_atom_stream')
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_closure2 native kernel helpers missing')
     ).
 
+% Same stale-name story as above: the helper is
+% `wam_collect_transitive_distance`, not `wam_transitive_distance_bfs`.
+% Here the algorithm genuinely is a BFS (see the dist+ note in
+% WAM_TRANSITIVE_DISTANCE3_CONTRACT.md) — only the symbol differs.
 test_transitive_distance_kernel_generation :-
     Test = 'WAM-C: transitive_distance3 native kernel helpers generated',
     (   compile_wam_runtime_to_c([], RuntimeCode),
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_register_transitive_distance_kernel'),
         sub_string(S, _, _, _, 'bool wam_transitive_distance_handler'),
-        sub_string(S, _, _, _, 'wam_transitive_distance_bfs')
+        sub_string(S, _, _, _, 'wam_collect_transitive_distance')
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_distance3 native kernel helpers missing')
     ).
@@ -393,7 +516,7 @@ test_transitive_parent_distance_kernel_generation :-
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_register_transitive_parent_distance_kernel'),
         sub_string(S, _, _, _, 'bool wam_transitive_parent_distance_handler'),
-        sub_string(S, _, _, _, 'wam_transitive_parent_distance_bfs')
+        sub_string(S, _, _, _, 'wam_collect_transitive_parent_distance')
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_parent_distance4 native kernel helpers missing')
     ).
@@ -404,7 +527,9 @@ test_transitive_step_parent_distance_kernel_generation :-
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_register_transitive_step_parent_distance_kernel'),
         sub_string(S, _, _, _, 'bool wam_transitive_step_parent_distance_handler'),
-        sub_string(S, _, _, _, 'wam_transitive_step_parent_distance_bfs')
+        sub_string(S, _, _, _, 'wam_collect_transitive_step_parent_distance'),
+        sub_string(S, _, _, _, 'wam_register_relation_edge'),
+        sub_string(S, _, _, _, 'wam_bind_foreign_quad_stream')
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_step_parent_distance5 native kernel helpers missing')
     ).
@@ -414,9 +539,11 @@ test_weighted_shortest_path_kernel_generation :-
     (   compile_wam_runtime_to_c([], RuntimeCode),
         atom_string(RuntimeCode, S),
         sub_string(S, _, _, _, 'void wam_register_weighted_edge'),
+        sub_string(S, _, _, _, 'void wam_register_relation_weighted_edge'),
         sub_string(S, _, _, _, 'void wam_register_weighted_shortest_path_kernel'),
         sub_string(S, _, _, _, 'bool wam_weighted_shortest_path_handler'),
-        sub_string(S, _, _, _, 'wam_weighted_shortest_path_dijkstra')
+        sub_string(S, _, _, _, 'wam_collect_weighted_shortest_path'),
+        sub_string(S, _, _, _, 'wam_bind_foreign_pair_stream')
     ->  pass(Test)
     ;   fail_test(Test, 'weighted_shortest_path3 native kernel helpers missing')
     ).
@@ -798,7 +925,7 @@ test_transitive_step_parent_distance_detector_setup_generation :-
         Detected = ['tc_step_parent_distance/5'-_Kernel],
         generate_setup_detected_kernels_c(Detected, SetupCode),
         sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
-        sub_atom(SetupCode, _, _, _, 'wam_register_transitive_step_parent_distance_kernel(state, "tc_step_parent_distance/5")')
+        sub_atom(SetupCode, _, _, _, 'wam_register_transitive_step_parent_distance_kernel(state, "tc_step_parent_distance/5", "tspd_parent")')
     ->  cleanup_wam_c_detector_transitive_step_parent_distance,
         pass(Test)
     ;   cleanup_wam_c_detector_transitive_step_parent_distance,
@@ -812,7 +939,7 @@ test_weighted_shortest_path_detector_setup_generation :-
         Detected = ['weighted_path/3'-_Kernel],
         generate_setup_detected_kernels_c(Detected, SetupCode),
         sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
-        sub_atom(SetupCode, _, _, _, 'wam_register_weighted_shortest_path_kernel(state, "weighted_path/3")')
+        sub_atom(SetupCode, _, _, _, 'wam_register_weighted_shortest_path_kernel(state, "weighted_path/3", "test_weighted_edge")')
     ->  cleanup_wam_c_detector_weighted_shortest_path,
         pass(Test)
     ;   cleanup_wam_c_detector_weighted_shortest_path,
@@ -826,7 +953,8 @@ test_astar_shortest_path_detector_setup_generation :-
         Detected = ['astar_path/4'-_Kernel],
         generate_setup_detected_kernels_c(Detected, SetupCode),
         sub_atom(SetupCode, _, _, _, 'setup_detected_wam_c_kernels'),
-        sub_atom(SetupCode, _, _, _, 'wam_register_astar_shortest_path_kernel(state, "astar_path/4")')
+        sub_atom(SetupCode, _, _, _,
+                 'wam_register_astar_shortest_path_kernel(state, "astar_path/4", "test_astar_edge", "test_direct_distance")')
     ->  cleanup_wam_c_detector_astar_shortest_path,
         pass(Test)
     ;   cleanup_wam_c_detector_astar_shortest_path,
@@ -1383,6 +1511,16 @@ test_builtin_call_executable_smoke :-
     ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
     ).
 
+test_atomic_builtin_executable_smoke :-
+    Test = 'WAM-C: atomic/1 executable smoke',
+    (   gcc_available
+    ->  (   run_atomic_builtin_executable_smoke
+        ->  pass(Test)
+        ;   fail_test(Test, 'atomic/1 executable failed')
+        )
+    ;   format('[PASS] ~w (gcc unavailable; skipped executable smoke)~n', [Test])
+    ).
+
 test_call_foreign_executable_smoke :-
     Test = 'WAM-C: call_foreign executable smoke',
     (   gcc_available
@@ -1932,6 +2070,33 @@ run_multi_predicate_setup_executable_smoke :-
     format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w~n~n~w', [FirstPredCode, SecondPredCode]),
     write_text_file(PredPath, PredTranslationUnit),
     wam_c_multi_setup_smoke_main(MainCode),
+    write_text_file(MainPath, MainCode),
+    compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
+    run_c_smoke_plain(ExePath).
+
+run_atomic_builtin_executable_smoke :-
+    assertz((user:wam_c_builtin_atomic(X) :- atomic(X))),
+    setup_call_cleanup(
+        true,
+        run_atomic_builtin_executable_smoke_compiled,
+        retractall(user:wam_c_builtin_atomic(_))).
+
+run_atomic_builtin_executable_smoke_compiled :-
+    compile_predicate_to_wam(user:wam_c_builtin_atomic/1, [], WamCode),
+    sub_string(WamCode, _, _, _, 'builtin_call atomic/1, 1'),
+    compile_wam_predicate_to_c(user:wam_c_builtin_atomic/1, WamCode, [], PredCode),
+    compile_wam_runtime_to_c([], RuntimeCode),
+    get_time(Now),
+    Stamp is round(Now * 1000000),
+    wam_c_temp_path('unifyweaver_wam_c_atomic_smoke', Stamp, TmpBase),
+    format(atom(RuntimePath), '~w_runtime.c', [TmpBase]),
+    format(atom(PredPath), '~w_pred.c', [TmpBase]),
+    format(atom(MainPath), '~w_main.c', [TmpBase]),
+    format(atom(ExePath), '~w_bin', [TmpBase]),
+    write_text_file(RuntimePath, RuntimeCode),
+    format(atom(PredTranslationUnit), '#include "wam_runtime.h"~n~n~w', [PredCode]),
+    write_text_file(PredPath, PredTranslationUnit),
+    wam_c_atomic_smoke_main(MainCode),
     write_text_file(MainPath, MainCode),
     compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath),
     run_c_smoke_plain(ExePath).
@@ -2714,15 +2879,42 @@ run_real_prolog_explicit_cut_executable_smoke :-
     assertz((user:wam_c_cut_choice(b) :- true)),
     assertz((user:wam_c_inner_cut :- wam_c_cut_choice(_), !)),
     assertz((user:wam_c_outer_cut(ok) :- (wam_c_inner_cut, fail ; true))),
+    assertz((user:wam_c_cut_retry_p(X) :-
+        wam_c_cut_retry_q(X), wam_c_cut_retry_r(X), X == c)),
+    assertz((user:wam_c_cut_retry_q(a) :- true)),
+    assertz((user:wam_c_cut_retry_q(b) :- !, fail)),
+    assertz((user:wam_c_cut_retry_q(c) :- true)),
+    assertz((user:wam_c_cut_retry_r(c) :- true)),
+    assertz((user:wam_c_tail_choice(a) :- true)),
+    assertz((user:wam_c_tail_choice(b) :- true)),
+    assertz((user:wam_c_tail_cut_target(a) :- !, fail)),
+    assertz((user:wam_c_tail_cut_target(b) :- true)),
+    assertz((user:wam_c_tail_cut(X) :-
+        wam_c_tail_choice(X), wam_c_tail_cut_target(X))),
     (   compile_predicate_to_wam(user:wam_c_cut_choice/1, [], WamChoice),
         compile_predicate_to_wam(user:wam_c_inner_cut/0, [], WamInner),
         compile_predicate_to_wam(user:wam_c_outer_cut/1, [], WamOuter),
+        compile_predicate_to_wam(user:wam_c_cut_retry_p/1, [], WamRetryP),
+        compile_predicate_to_wam(user:wam_c_cut_retry_q/1, [], WamRetryQ),
+        compile_predicate_to_wam(user:wam_c_cut_retry_r/1, [], WamRetryR),
+        compile_predicate_to_wam(user:wam_c_tail_choice/1, [], WamTailChoice),
+        compile_predicate_to_wam(user:wam_c_tail_cut_target/1, [], WamTailTarget),
+        compile_predicate_to_wam(user:wam_c_tail_cut/1, [], WamTailCut),
         sub_string(WamInner, _, _, _, 'builtin_call !/0, 0'),
         sub_string(WamOuter, _, _, _, 'try_me_else'),
         compile_wam_predicate_to_c(user:wam_c_cut_choice/1, WamChoice, [], ChoiceCode),
         compile_wam_predicate_to_c(user:wam_c_inner_cut/0, WamInner, [], InnerCode),
         compile_wam_predicate_to_c(user:wam_c_outer_cut/1, WamOuter, [], OuterCode),
-        atomic_list_concat([ChoiceCode, InnerCode, OuterCode], '\n\n', PredCode),
+        compile_wam_predicate_to_c(user:wam_c_cut_retry_p/1, WamRetryP, [], RetryPCode),
+        compile_wam_predicate_to_c(user:wam_c_cut_retry_q/1, WamRetryQ, [], RetryQCode),
+        compile_wam_predicate_to_c(user:wam_c_cut_retry_r/1, WamRetryR, [], RetryRCode),
+        compile_wam_predicate_to_c(user:wam_c_tail_choice/1, WamTailChoice, [], TailChoiceCode),
+        compile_wam_predicate_to_c(user:wam_c_tail_cut_target/1, WamTailTarget, [], TailTargetCode),
+        compile_wam_predicate_to_c(user:wam_c_tail_cut/1, WamTailCut, [], TailCutCode),
+        atomic_list_concat([ChoiceCode, InnerCode, OuterCode,
+                            RetryPCode, RetryQCode, RetryRCode,
+                            TailChoiceCode, TailTargetCode, TailCutCode],
+                           '\n\n', PredCode),
         compile_wam_runtime_to_c([], RuntimeCode),
         get_time(Now),
         Stamp is round(Now * 1000000),
@@ -2746,7 +2938,13 @@ run_real_prolog_explicit_cut_executable_smoke :-
 cleanup_wam_c_explicit_cut_smoke :-
     retractall(user:wam_c_cut_choice(_)),
     retractall(user:wam_c_inner_cut),
-    retractall(user:wam_c_outer_cut(_)).
+    retractall(user:wam_c_outer_cut(_)),
+    retractall(user:wam_c_cut_retry_p(_)),
+    retractall(user:wam_c_cut_retry_q(_)),
+    retractall(user:wam_c_cut_retry_r(_)),
+    retractall(user:wam_c_tail_choice(_)),
+    retractall(user:wam_c_tail_cut_target(_)),
+    retractall(user:wam_c_tail_cut(_)).
 
 run_real_prolog_forall_executable_smoke :-
     assertz((user:wam_c_forall_num(1) :- true)),
@@ -3644,7 +3842,7 @@ write_binary_file(Path, Bytes) :-
 compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath) :-
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
     format(atom(Cmd),
-           'gcc -std=c11 -Wall -Wextra -fsanitize=address -I ~w ~w ~w ~w -o ~w',
+           'gcc -std=c11 -Wall -Wextra -fsanitize=address -I ~w ~w ~w ~w -lm -o ~w',
            [IncludeDir, RuntimePath, PredPath, MainPath, ExePath]),
     shell(Cmd, Status),
     (   Status =:= 0
@@ -3656,7 +3854,7 @@ compile_c_smoke(RuntimePath, PredPath, MainPath, ExePath) :-
 compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath) :-
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
     format(atom(Cmd),
-           'gcc -std=c11 -Wall -Wextra -I ~w ~w ~w ~w -o ~w',
+           'gcc -std=c11 -Wall -Wextra -I ~w ~w ~w ~w -lm -o ~w',
            [IncludeDir, RuntimePath, PredPath, MainPath, ExePath]),
     shell(Cmd, Status),
     (   Status =:= 0
@@ -3668,7 +3866,7 @@ compile_c_smoke_plain(RuntimePath, PredPath, MainPath, ExePath) :-
 compile_c_smoke_lmdb(RuntimePath, PredPath, MainPath, ExePath) :-
     IncludeDir = 'src/unifyweaver/targets/wam_c_runtime',
     format(atom(Cmd),
-           'gcc -std=c11 -Wall -Wextra -DWAM_C_ENABLE_LMDB -I ~w ~w ~w ~w -llmdb -o ~w',
+           'gcc -std=c11 -Wall -Wextra -DWAM_C_ENABLE_LMDB -I ~w ~w ~w ~w -llmdb -lm -o ~w',
            [IncludeDir, RuntimePath, PredPath, MainPath, ExePath]),
     shell(Cmd, Status),
     (   Status =:= 0
@@ -3942,6 +4140,93 @@ int main(void) {
     if (first_fail_rc != WAM_HALT) {
         wam_free_state(&state);
         return 30;
+    }
+
+    wam_free_state(&state);
+    return 0;
+}
+').
+
+wam_c_atomic_smoke_main(
+'#include "wam_runtime.h"
+
+void setup_wam_c_builtin_atomic_1(WamState* state);
+
+static WamValue make_atomic_smoke_struct(WamState *state, const char *functor,
+                                         WamValue left, WamValue right) {
+    WamValue term;
+    term.tag = VAL_STR;
+    term.data.ref_addr = state->H;
+    state->H_array[state->H++] = val_atom(functor);
+    state->H_array[state->H++] = left;
+    state->H_array[state->H++] = right;
+    return term;
+}
+
+static WamValue make_atomic_smoke_list(WamState *state, WamValue head, WamValue tail) {
+    WamValue list;
+    list.tag = VAL_LIST;
+    list.data.ref_addr = state->H;
+    state->H_array[state->H++] = head;
+    state->H_array[state->H++] = tail;
+    return list;
+}
+
+int main(void) {
+    WamState state;
+    wam_state_init(&state);
+    setup_wam_c_builtin_atomic_1(&state);
+
+    WamValue atom_args[1] = { val_atom("a") };
+    int atom_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", atom_args, 1);
+    if (atom_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 10;
+    }
+
+    WamValue int_args[1] = { val_int(42) };
+    int int_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", int_args, 1);
+    if (int_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 20;
+    }
+
+    WamValue float_args[1] = { val_float(1.5) };
+    int float_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", float_args, 1);
+    if (float_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 30;
+    }
+
+    WamValue var_args[1] = { val_unbound("X") };
+    int var_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", var_args, 1);
+    if (var_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue struct_term = make_atomic_smoke_struct(&state, "f/2",
+                                                    val_atom("x"), val_atom("y"));
+    WamValue struct_args[1] = { struct_term };
+    int struct_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", struct_args, 1);
+    if (struct_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 50;
+    }
+
+    WamValue list_term = make_atomic_smoke_list(&state, val_atom("h"), val_atom("[]"));
+    WamValue list_args[1] = { list_term };
+    int list_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", list_args, 1);
+    if (list_rc != WAM_HALT) {
+        wam_free_state(&state);
+        return 60;
+    }
+
+    WamValue nil_args[1] = { val_atom("[]") };
+    int nil_rc = wam_run_predicate(&state, "wam_c_builtin_atomic/1", nil_args, 1);
+    if (nil_rc != 0 || state.P != WAM_HALT) {
+        wam_free_state(&state);
+        return 70;
     }
 
     wam_free_state(&state);
@@ -4665,10 +4950,10 @@ int main(void) {
     WamState state;
     wam_state_init(&state);
     setup_tc_step_parent_distance_5(&state);
-    wam_register_transitive_edge(&state, "tom", "bob");
-    wam_register_transitive_edge(&state, "bob", "ann");
-    wam_register_transitive_edge(&state, "bob", "pat");
-    wam_register_transitive_step_parent_distance_kernel(&state, "tc_step_parent_distance/5");
+    wam_register_relation_edge(&state, "tspd_parent", "tom", "bob");
+    wam_register_relation_edge(&state, "tspd_parent", "bob", "ann");
+    wam_register_relation_edge(&state, "tspd_parent", "bob", "pat");
+    wam_register_transitive_step_parent_distance_kernel(&state, "tc_step_parent_distance/5", "tspd_parent");
 
     WamValue recursive_args[5] = {
         val_atom("tom"),
@@ -4743,13 +5028,13 @@ int main(void) {
     WamState state;
     wam_state_init(&state);
     setup_weighted_path_3(&state);
-    wam_register_weighted_edge(&state, "tom", "bob", 5);
-    wam_register_weighted_edge(&state, "tom", "eve", 1);
-    wam_register_weighted_edge(&state, "eve", "ann", 1);
-    wam_register_weighted_edge(&state, "bob", "ann", 1);
-    wam_register_weighted_edge(&state, "flo", "mid", 0.5);
-    wam_register_weighted_edge(&state, "mid", "fin", 1.0);
-    wam_register_weighted_shortest_path_kernel(&state, "weighted_path/3");
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "tom", "bob", 5);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "tom", "eve", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "bob", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "flo", "mid", 0.5);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "mid", "fin", 1.0);
+    wam_register_weighted_shortest_path_kernel(&state, "weighted_path/3", "test_weighted_edge");
 
     WamValue shortest_args[3] = {
         val_atom("tom"),
@@ -4758,7 +5043,7 @@ int main(void) {
     };
     int shortest_rc = wam_run_predicate(&state, "weighted_path/3", shortest_args, 3);
     if (shortest_rc != 0 || state.P != WAM_HALT ||
-        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        state.A[2].tag != VAL_FLOAT || state.A[2].data.floating != 2.0) {
         wam_free_state(&state);
         return 10;
     }
@@ -4766,7 +5051,7 @@ int main(void) {
     WamValue direct_args[3] = {
         val_atom("bob"),
         val_atom("ann"),
-        val_int(1)
+        val_float(1.0)
     };
     int direct_rc = wam_run_predicate(&state, "weighted_path/3", direct_args, 3);
     if (direct_rc != 0 || state.P != WAM_HALT) {
@@ -4774,15 +5059,17 @@ int main(void) {
         return 20;
     }
 
+    /* Unbound Target streams all reachable pairs (order non-semantic).
+     * Single-sink source keeps the first-yield check deterministic. */
     WamValue output_args[3] = {
-        val_atom("tom"),
+        val_atom("bob"),
         val_unbound("Target"),
         val_unbound("Weight")
     };
     int output_rc = wam_run_predicate(&state, "weighted_path/3", output_args, 3);
     if (output_rc != 0 || state.P != WAM_HALT ||
-        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "eve") != 0 ||
-        state.A[2].tag != VAL_INT || state.A[2].data.integer != 1) {
+        state.A[1].tag != VAL_ATOM || strcmp(state.A[1].data.atom, "ann") != 0 ||
+        state.A[2].tag != VAL_FLOAT || state.A[2].data.floating != 1.0) {
         wam_free_state(&state);
         return 30;
     }
@@ -4832,16 +5119,16 @@ wam_c_astar_shortest_path_smoke_main(
 void setup_astar_path_4(WamState* state);
 
 static void register_astar_edges(WamState *state) {
-    wam_register_weighted_edge(state, "tom", "bob", 5);
-    wam_register_weighted_edge(state, "tom", "eve", 1);
-    wam_register_weighted_edge(state, "eve", "ann", 1);
-    wam_register_weighted_edge(state, "bob", "ann", 1);
-    wam_register_weighted_edge(state, "flo", "mid", 0.5);
-    wam_register_weighted_edge(state, "mid", "fin", 1.0);
-    wam_register_direct_distance_edge(state, "tom", "ann", 2);
-    wam_register_direct_distance_edge(state, "eve", "ann", 1);
-    wam_register_direct_distance_edge(state, "bob", "ann", 1);
-    wam_register_direct_distance_edge(state, "flo", "fin", 1.5);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "tom", "bob", 5);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "tom", "eve", 1);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "bob", "ann", 1);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "flo", "mid", 0.5);
+    wam_register_relation_weighted_edge(state, "test_astar_edge", "mid", "fin", 1.0);
+    wam_register_relation_weighted_edge(state, "test_direct_distance", "tom", "ann", 2);
+    wam_register_relation_weighted_edge(state, "test_direct_distance", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(state, "test_direct_distance", "bob", "ann", 1);
+    wam_register_relation_weighted_edge(state, "test_direct_distance", "flo", "fin", 1.5);
 }
 
 int main(void) {
@@ -4849,7 +5136,8 @@ int main(void) {
     wam_state_init(&state);
     setup_astar_path_4(&state);
     register_astar_edges(&state);
-    wam_register_astar_shortest_path_kernel(&state, "astar_path/4");
+    wam_register_astar_shortest_path_kernel(&state, "astar_path/4",
+                                            "test_astar_edge", "test_direct_distance");
 
     WamValue shortest_args[4] = {
         val_atom("tom"),
@@ -4859,7 +5147,7 @@ int main(void) {
     };
     int shortest_rc = wam_run_predicate(&state, "astar_path/4", shortest_args, 4);
     if (shortest_rc != 0 || state.P != WAM_HALT ||
-        state.A[3].tag != VAL_INT || state.A[3].data.integer != 2) {
+        state.A[3].tag != VAL_FLOAT || state.A[3].data.floating != 2.0) {
         wam_free_state(&state);
         return 10;
     }
@@ -4868,7 +5156,7 @@ int main(void) {
         val_atom("bob"),
         val_atom("ann"),
         val_int(5),
-        val_int(1)
+        val_float(1.0)
     };
     int direct_rc = wam_run_predicate(&state, "astar_path/4", direct_args, 4);
     if (direct_rc != 0 || state.P != WAM_HALT) {
@@ -4887,6 +5175,19 @@ int main(void) {
         state.A[3].tag != VAL_FLOAT || state.A[3].data.floating != 1.5) {
         wam_free_state(&state);
         return 25;
+    }
+
+    WamValue self_args[4] = {
+        val_atom("tom"),
+        val_atom("tom"),
+        val_int(5),
+        val_unbound("Weight")
+    };
+    int self_rc = wam_run_predicate(&state, "astar_path/4", self_args, 4);
+    if (self_rc != 0 || state.P != WAM_HALT ||
+        state.A[3].tag != VAL_FLOAT || state.A[3].data.floating != 0.0) {
+        wam_free_state(&state);
+        return 28;
     }
 
     WamValue bad_dim_args[4] = {
@@ -5068,8 +5369,8 @@ int main(void) {
     setup_tc_step_parent_distance_5(&state);
     setup_detected_wam_c_kernels(&state);
 
-    wam_register_transitive_edge(&state, "tom", "bob");
-    wam_register_transitive_edge(&state, "bob", "ann");
+    wam_register_relation_edge(&state, "tspd_parent", "tom", "bob");
+    wam_register_relation_edge(&state, "tspd_parent", "bob", "ann");
 
     WamValue args[5] = {
         val_atom("tom"),
@@ -5104,10 +5405,10 @@ int main(void) {
     setup_weighted_path_3(&state);
     setup_detected_wam_c_kernels(&state);
 
-    wam_register_weighted_edge(&state, "tom", "bob", 5);
-    wam_register_weighted_edge(&state, "tom", "eve", 1);
-    wam_register_weighted_edge(&state, "eve", "ann", 1);
-    wam_register_weighted_edge(&state, "bob", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "tom", "bob", 5);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "tom", "eve", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_weighted_edge", "bob", "ann", 1);
 
     WamValue args[3] = {
         val_atom("tom"),
@@ -5116,7 +5417,7 @@ int main(void) {
     };
     int rc = wam_run_predicate(&state, "weighted_path/3", args, 3);
     if (rc != 0 || state.P != WAM_HALT ||
-        state.A[2].tag != VAL_INT || state.A[2].data.integer != 2) {
+        state.A[2].tag != VAL_FLOAT || state.A[2].data.floating != 2.0) {
         wam_free_state(&state);
         return 10;
     }
@@ -5138,13 +5439,13 @@ int main(void) {
     setup_astar_path_4(&state);
     setup_detected_wam_c_kernels(&state);
 
-    wam_register_weighted_edge(&state, "tom", "bob", 5);
-    wam_register_weighted_edge(&state, "tom", "eve", 1);
-    wam_register_weighted_edge(&state, "eve", "ann", 1);
-    wam_register_weighted_edge(&state, "bob", "ann", 1);
-    wam_register_direct_distance_edge(&state, "tom", "ann", 2);
-    wam_register_direct_distance_edge(&state, "eve", "ann", 1);
-    wam_register_direct_distance_edge(&state, "bob", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_astar_edge", "tom", "bob", 5);
+    wam_register_relation_weighted_edge(&state, "test_astar_edge", "tom", "eve", 1);
+    wam_register_relation_weighted_edge(&state, "test_astar_edge", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_astar_edge", "bob", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_direct_distance", "tom", "ann", 2);
+    wam_register_relation_weighted_edge(&state, "test_direct_distance", "eve", "ann", 1);
+    wam_register_relation_weighted_edge(&state, "test_direct_distance", "bob", "ann", 1);
 
     WamValue args[4] = {
         val_atom("tom"),
@@ -5154,7 +5455,7 @@ int main(void) {
     };
     int rc = wam_run_predicate(&state, "astar_path/4", args, 4);
     if (rc != 0 || state.P != WAM_HALT ||
-        state.A[3].tag != VAL_INT || state.A[3].data.integer != 2) {
+        state.A[3].tag != VAL_FLOAT || state.A[3].data.floating != 2.0) {
         wam_free_state(&state);
         return 10;
     }
@@ -5943,7 +6244,7 @@ int main(void) {
     WamValue ok_args[2] = { val_atom("a"), val_unbound("Y") };
     int ok_rc = wam_run_predicate(&state, "wam_c_real_builtin/2", ok_args, 2);
     if (ok_rc != 0 || state.P != WAM_HALT ||
-        state.A[0].tag != VAL_INT || state.A[0].data.integer != 7) {
+        state.A[1].tag != VAL_INT || state.A[1].data.integer != 7) {
         wam_free_state(&state);
         return 10;
     }
@@ -6310,6 +6611,12 @@ wam_c_explicit_cut_smoke_main(
 void setup_wam_c_cut_choice_1(WamState* state);
 void setup_wam_c_inner_cut_0(WamState* state);
 void setup_wam_c_outer_cut_1(WamState* state);
+void setup_wam_c_cut_retry_p_1(WamState* state);
+void setup_wam_c_cut_retry_q_1(WamState* state);
+void setup_wam_c_cut_retry_r_1(WamState* state);
+void setup_wam_c_tail_choice_1(WamState* state);
+void setup_wam_c_tail_cut_target_1(WamState* state);
+void setup_wam_c_tail_cut_1(WamState* state);
 
 int main(void) {
     WamState state;
@@ -6317,6 +6624,12 @@ int main(void) {
     setup_wam_c_cut_choice_1(&state);
     setup_wam_c_inner_cut_0(&state);
     setup_wam_c_outer_cut_1(&state);
+    setup_wam_c_cut_retry_p_1(&state);
+    setup_wam_c_cut_retry_q_1(&state);
+    setup_wam_c_cut_retry_r_1(&state);
+    setup_wam_c_tail_choice_1(&state);
+    setup_wam_c_tail_cut_target_1(&state);
+    setup_wam_c_tail_cut_1(&state);
 
     int inner_rc = wam_run_predicate(&state, "wam_c_inner_cut/0", NULL, 0);
     if (inner_rc != 0 || state.P != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
@@ -6336,6 +6649,22 @@ int main(void) {
     if (outer_fail_rc != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
         wam_free_state(&state);
         return 30;
+    }
+
+    WamValue retry_args[1] = { val_unbound("X") };
+    int retry_rc = wam_run_predicate(&state, "wam_c_cut_retry_p/1", retry_args, 1);
+    if (retry_rc != WAM_HALT || state.B != 0 || state.call_base_top != 0) {
+        wam_free_state(&state);
+        return 40;
+    }
+
+    WamValue tail_args[1] = { val_unbound("X") };
+    int tail_rc = wam_run_predicate(&state, "wam_c_tail_cut/1", tail_args, 1);
+    if (tail_rc != 0 || state.P != WAM_HALT || state.B != 0 ||
+        state.call_base_top != 0 || state.A[0].tag != VAL_ATOM ||
+        strcmp(state.A[0].data.atom, "b") != 0) {
+        wam_free_state(&state);
+        return 50;
     }
 
     wam_free_state(&state);
@@ -7246,7 +7575,7 @@ static int expect_fib(WamState *state, int n, int expected) {
     setup_wam_c_classic_fib_2(&local);
     WamValue args[2] = { val_int(n), val_unbound("F") };
     int rc = wam_run_predicate(&local, "wam_c_classic_fib/2", args, 2);
-    WamValue *result = wam_deref_ptr(&local, &local.A[0]);
+    WamValue *result = wam_deref_ptr(&local, &local.A[1]);
     int ok = rc == 0 &&
              local.P == WAM_HALT &&
              result->tag == VAL_INT &&
@@ -7312,6 +7641,9 @@ implemented_case(end_aggregate, 'case INSTR_END_AGGREGATE').
 implemented_case(try_me_else, 'case INSTR_TRY_ME_ELSE').
 implemented_case(retry_me_else, 'case INSTR_RETRY_ME_ELSE').
 implemented_case(trust_me, 'case INSTR_TRUST_ME').
+implemented_case(try, 'case INSTR_TRY:').
+implemented_case(retry, 'case INSTR_RETRY:').
+implemented_case(trust, 'case INSTR_TRUST:').
 implemented_case(get_level, 'case INSTR_GET_LEVEL').
 implemented_case(cut, 'case INSTR_CUT').
 implemented_case(cut_ite, 'case INSTR_CUT_ITE').
@@ -7356,6 +7688,7 @@ run_tests_once :-
     test_precise_ite_y_level_generation,
     test_choice_point_instructions,
     test_choice_point_content,
+    test_indexed_dispatch_instruction_parsing,
     test_switch_on_term_list_dispatch,
     test_c_pointer_access,
     test_c_return_pattern,
@@ -7363,6 +7696,12 @@ run_tests_once :-
     test_c_while_loop,
     test_predicate_hash_registration,
     test_builtin_call_generation,
+    test_builtin_unsupported_diagnostics_generation,
+    test_sort_builtin_generation,
+    test_compare_builtin_generation,
+    test_length_builtin_generation,
+    test_atom_length_builtin_generation,
+    test_atomic_builtin_generation,
     test_call_foreign_generation,
     test_category_ancestor_kernel_generation,
     test_bidirectional_ancestor_kernel_generation,
@@ -7414,6 +7753,7 @@ run_tests_once :-
     test_cross_predicate_executable_smoke,
     test_multi_predicate_setup_executable_smoke,
     test_builtin_call_executable_smoke,
+    test_atomic_builtin_executable_smoke,
     test_call_foreign_executable_smoke,
     test_category_ancestor_kernel_executable_smoke,
     test_bidirectional_ancestor_kernel_executable_smoke,

@@ -6,6 +6,49 @@ WAM-Rust target) can run on domains where only a sparse set of categories has be
 
 This is a **separate project, prototyped on a branch** — it is Python/ML, not the Rust/Prolog core.
 
+> **New here? Start with [`TECHNIQUES.md`](TECHNIQUES.md)** — a practical guide to the multi-operator model
+> (`SYM`/`WIKI`/`ELEM`/`LLM`), the data-acquisition toolchain (category slices → page frontier → Pearltrees
+> gap-fill), and the find-weak → supplement → retrain loop, with runnable commands. Deep theory:
+> [`DESIGN_calibrated_judges.md`](DESIGN_calibrated_judges.md).
+>
+> **Doing uncertainty / confidence / multi-source estimation work?** Read
+> [`DESIGN_uncertainty_estimation_playbook.md`](DESIGN_uncertainty_estimation_playbook.md) **first** — the
+> calibrated-joint-posterior + margin-gate approach and the six pitfalls (correlated sources, margin-not-level,
+> held-out node-disjoint, …) the project learned the slow way. Don't hand-set independent confidence weights.
+
+### Two tracks with different entry tickets
+
+Two separate workstreams live under this directory. They share a directory, not a dependency —
+read only the chain you need.
+
+**Process-expression track** (the little DSL like `e5(routing(e5,haiku,t=[0.02],menus=[10]))` that
+names a composed scoring pipeline, and the planned learned encoder for it). Background needed:
+[`process_cards.py`](process_cards.py) alone.
+
+| step | where |
+|---|---|
+| grammar, typed registry, canonicalization, lossless identity | [`DESIGN_process_expression_language.md`](DESIGN_process_expression_language.md), [`process_cards.py`](process_cards.py) (#3982) |
+| proposed vNext patterns, optional types, lineage interpretation/representation rules, verified identity | [`DESIGN_process_expression_patterns.md`](DESIGN_process_expression_patterns.md) (#4013) |
+| P0–P4 empirical ladder and the deterministic P3 baseline | [`DESIGN_process_expression_implementation.md`](DESIGN_process_expression_implementation.md) |
+| encoder/position theory, gated behind frozen P1 + plateaued P3 | [`DESIGN_expression_encoder_future.md`](DESIGN_expression_encoder_future.md), [`DESIGN_tree_position_encoding_theory.md`](DESIGN_tree_position_encoding_theory.md) (#3983, #3995) |
+| step 1 — identity helpers and frozen golden vectors | [`process_identity.py`](process_identity.py), [`process_expression_contract.py`](process_expression_contract.py); current bundle `PROCESS_EXPRESSION_GOLDEN_v4.json` (`pec-v4`, registry `v0.5`), with `…_v1.json`–`…_v3.json` retained as audit-only provenance (#4000, #4004) |
+| step 2 — corpus generator specification | [`DESIGN_process_expression_generator.md`](DESIGN_process_expression_generator.md) (#4003, #4004) |
+
+`process_identity` and `process_expression_contract` import nothing but `process_cards` — no filing
+stack, no embedder, no torch, no corpus. Keeping that surface small is deliberate: it leaves the
+option of extracting this track as a standalone package if the encoder work matures.
+
+**Filing-decision track** (choose a folder for a bookmark). Background needed: the routed-task
+chain, because Stage A is *additive over* it by design rather than a parallel baseline.
+
+| step | where |
+|---|---|
+| content-bound task/pick/policy primitives, `routed-task.v2` | [`routed_policy.py`](routed_policy.py), [`routed_queries.py`](routed_queries.py) |
+| privacy index and public-only catalog | [`filing_privacy.py`](filing_privacy.py) |
+| standing architecture decisions | [`ARCHITECTURE_filing_engine.md`](../../docs/design/ARCHITECTURE_filing_engine.md) |
+| handoff contract, staged A–E | [`DESIGN_filing_path_decoder_handoff.md`](DESIGN_filing_path_decoder_handoff.md) (#3995) |
+| Stage A — `SELECT_EXISTING` / `ABSTAIN`, no mutation | [`filing_path_decision.py`](filing_path_decision.py) (#4000) |
+
 ## Status & handoff (read this first)
 
 **Status:** merged to `main` (via #3280); the torch port + direct-embedding comparison are folded in
@@ -25,6 +68,56 @@ torch 2.x + sentence-transformers (ML pieces).
 | training on the scored pairs | ✅ **done** — `train_cosine_mu_torch.py --mode pairs --minilm` on `mu_pairs_scored.tsv`; held-out pos corr **+0.726**, lin-agreement moved **−0.13 → +0.10** |
 | wiring dense μ back to the Rust core | 🟡 **emitter done** — `emit_dense_mu.py` / `dense_mu_direct.py` (clamped, verbatim names, 100% coverage); Rust consumption verified by `check_feeds_rust.py`, not run end-to-end in CI |
 | control baseline + theory questions | ✅ **done** — `validate_control_baseline.py` → `REPORT_control_baseline.md` (the #3287 control arm the directional model must beat; lin-saturation, decision-flip, cold-start all resolved) |
+| gated similarity correctness | ✅ **node-gated IC** (#3296) — `gated_ic_node_filtered` de-saturates Lin/Resnik/FaITH (path-gated 96.7% → **0.1%**); theory in `WAM_RUST_GRAPH_FUNCTIONAL_SEMIRINGS.md` §5f, proof `node_gated_ic.py`. Directional model's Lin-agreement is validated on this (#3297). |
+| **directional multi-relational μ** | ✅ **done** — `mu_attention.py` + `train_mu_attention.py` → `REPORT_directional.md`. Frozen e5 + learned tags + 2-layer attention, multi-task over operators. **WIKI directional edge order-accuracy 99.1%** (control structurally 50%), gate-leak 0/5 all operators, every map feeds `check_feeds_rust`. SYM held-out corr +0.335 (< control +0.726 — the multi-task trade-off). No new LLM budget. |
+| **SYM more-data + ablation** | ✅ **done** — `gen_more_sym_pairs.py` + `mu_pairs_scored_large_260620-223001.tsv` (+600 Haiku pairs, ~38.5k tokens) → `REPORT_sym_more_data.md`. More data raised SYM held-out corr **+0.342 → +0.479** (WIKI stays ~98%); single-task SYM **collapses** ⇒ the gap was **data starvation, not multi-task dilution** (multi-task is load-bearing). |
+| **multi-domain (Physics + Chemistry)** | ✅ **done** — child-only sampler + μ-coherent pools (`gen_multidomain_pairs.py`, +650 Haiku pairs) → `REPORT_multidomain.md`. SYM `pos`-stratum corr **+0.479 → +0.695** (control +0.726; gap ~0.03), overall +0.822; **Physics-vs-Chemistry discrimination 10/10**; WIKI 99.7%; lin-agreement +0.183 (> control). |
+| **four roots (Phys/Chem/Math/CS)** | ✅ **done** — depth-bounded closures ∩ μ-coherence + #3309 bidir batch (`gen_multidomain_pairs.py`, +885 Haiku pairs) → `REPORT_4roots.md`. **4-domain discrimination 18/20 (90%)** — Physics/Chemistry/CS clean 5/5, **Math 3/5** (Calculus & Diff-eq leak to Physics — thin 9-node pool). WIKI 98.6%; lin-agreement +0.237. `pos` stratum regressed +0.695→+0.570 (breadth traded vs physics fidelity). |
+| **more Math DATA + Engineering** | ✅ **done** — deepened *inclusive* Math pool (9→13, keeps math-of-physics) + new Engineering domain (`gen_math_eng_pairs.py`, +404 Haiku pairs ~24.8k tok) → `REPORT_matheng.md`. **Physics SYM corr recovered +0.570→+0.838** (more DATA, not breadth — Part-A hypothesis confirmed); `pos_math` +0.818, `cross_MP` +0.780 (math-of-physics learned **high-to-both**); `Calculus` now argmax-Math; Engineering clean 4–5/5; WIKI 99.2%. 5-way argmax **seed-sensitive 56–84%** — Physics is the brittle one (1–2/5) because it's the spine's connective domain (high-μ to several roots → argmax ill-posed even as ranking stays strongest). |
+| **core-physics discrimination** | ✅ **done** — re-measured with a **ranking/margin** metric + targeted sampling (`gen_core_physics_pairs.py`, +152 Haiku pairs ~15.6k tok) → `REPORT_phys_discrim.md`. Re-eval: argmax swings 64–92% but **ranking is robustly strong (top-2 92–100%; physics margins ±0.08)** — the #3314 "brittleness" is mostly a **metric artifact (correct multi-membership)**. Targeted classical-physics data **did NOT help** (argmax mean 81%→71%; physics SYM held +0.823); the clean classical core is only ~23 nodes and the **modern subfields (Quantum/Stat-mech/Relativity) are absent**. Verdict: brittleness is **structural (connective spine) + a missing-subfield problem** — the real fix is graph widening (#3313). |
+| **Engineering build-out (fine-tune+replay)** | ✅ **done** — real 36-node Engineering pool + Mech/Thermo×Eng high-to-both boundary (`gen_engineering_pairs.py`, +300 Haiku pairs ~33k tok) → `REPORT_engineering_finetune.md`. **Continual learning**: warm-start the cumulative checkpoint, fine-tune on new data with 40% **replay** (`--init-from`/`--replay-pairs`, lr 1/3, 400 steps). New data taught the held-out **ranking** (`pos_eng` +0.888, `cross_EP` +0.699); Engineering discriminates 5/5 every seed. **Replay prevented forgetting** (physics SYM +0.824→**+0.872**, WIKI 98.8%, gate-leak 0/5). **Multi-seed (1/7/23):** fine-tune+replay argmax 80–92 / top-2 96–100 — far more **stable** than full retrain (60–96, collapsed at seed 7). **Placebo/churn control** (`drift_control.py`): a no-new-data fine-tune moves the discrimination probe **0.90×** as much as the real data (and argmax 64%→84% on churn alone) → the argmax gains are re-optimization, **not** the new data; new data helps the **ranking**, not the already-saturated argmax. Data-gap: Chem/CS/Eng saturated (100% top-2 every seed); **Physics & Math** are the data-hungry domains (+ Electrical/Process/Chemical/Software/Aerospace eng absent). |
+| **graph widening — enwiki (AI + modern physics)** | ✅ **done** → `REPORT_widen_enwiki.md`. Fixed the enwiki ingest (`scripts/ingest_enwiki_categories.py` — 2024 `categorylinks` schema dropped `cl_to`; parent is now `cl_target_id`→`linktarget`): clean **9.9M-edge** graph → `wide_enwiki` slice (14,368 nodes) with the previously-absent AI + modern-physics subtrees. +637 Haiku pairs (~59k tok, `corpus=enwiki`), fine-tune+replay. **AI became a separable 6th root: 0/5 (rank 5, →CS) → 4/5 (rank 1.2, top-2 100%)** — and the **placebo (no new data) stays 0/5**, so it's the DATA, not churn (first clear new-data→new-capability win). Modern physics: frozen e5 **already** discriminates it (baseline 8/9) — the gap was graph-coverage, not the model. No forgetting (gate-leak 0/3, `pos_math` +0.783, WIKI 96.9%). |
+| **math-deepening (core subfields)** | ✅ **done** → `REPORT_math_fields.md`. `wide_enwiki_math` slice (+813 math nodes: analysis/algebra/geometry-topology/foundations/discrete, e5-coherence-filtered) + 533 Haiku pairs (~56k tok). Within-area > cross-area > cross-domain μ-gradient (areas have real structure). **But Math discrimination was ALREADY saturated** — all 10 probe nodes incl. the deepened subfields (Number_theory/Group_theory/Topology/Real_&_Complex_analysis) argmax Math **10/10 on the baseline** (margin +0.29); deepening left it flat (placebo identical). Data's value is the **within-subfield ranking** (`pos_discrete` +0.922, `pos_foundations` +0.804); no forgetting (SYM +0.827). **But the SUBFIELD axis is not saturated**: μ(node\|Real_analysis) vs μ(node\|Algebra/Topology/…) is only 54% on e5 alone → fine-tune 62% / top-2 79% (placebo 59% — churn drives most, data adds a modest real increment). **Meta-finding:** frozen e5 saturates *coarse* (cross-domain) discrimination but *blurs sibling subfields* — new data adds capability for e5's blind spots (AI) and a modest gain for fine intra-field distinctions, not for coarse separations it already nails. |
+| **retrieval APPLICATION — hybrid μ+e5** | ✅ **done** (#3388) → `DESIGN_model_applications.md`, `eval_hybrid.py`. "Find my container": e5 coarse shortlist → μ re-rank. The score is a **non-linear OR over separately-computed operator queries** — `max(μ-elem, μ-wiki, μ-sym)` — NOT pure ELEM (over-generalises) and NOT the internal μ-super (one blended forward). Tuned grid (μ-part × α=e5-weight, 1000 q): best `max(elem,wiki,sym)` @ α≈0.9 → **MRR 0.358 vs e5-cos 0.286 (+25%)**, container-vs-sibling μ 72% vs e5 67%. Prefixed e5 shared with e5-cos (one encode). Default keeps 10% e5 as **coverage insurance** for untrained/OOD regions. |
+| **LLM re-rank — two-stage pipeline** | ✅ **done** (#3389) → `eval_rerank.py`. Blend top-K → Haiku picks precision@1. 60 q, top-5: blend #1 (no LLM) **0.267 → blend→LLM 0.350 (+31%)**, ceiling recall@5 0.50. **The re-rank doubles as a μ-quality eval** (user's framing): 50% LLM↔μ agreement (kept μ's #1); when it overrides it moves only ~1 rank (to 2.2) — μ's ordering is close even when #1 is wrong. Head-to-head blend→LLM vs e5→LLM coded but unrun (deferred on Haiku spend). |
+| **confidence-adaptive blend** | ✅ **done** (this branch) → `DESIGN_model_applications.md`, `eval_hybrid.py`. Per-query α from μ's **own top-score** (calibrated [0,1] degree = free confidence signal). **Mechanism validated**: μ earns its weight where confident (α0.9 vs 0.3 worth **+0.037** MRR) vs not (**+0.003**) — μ knows when it's useful. But adaptive α∈[0.3,0.9] beats fixed α=0.9 by only **+0.006** in-dist, because low-confidence μ is **neutral, not harmful** (e5-heavy even slightly worse) → fixed high-α already near-optimal. **Real payoff is OOD** (where low confidence coincides with μ being *wrong*); confirms the coverage-insurance testable. Correct and never hurts. |
+
+> **Methodology** (how every round above works — sampling, the graded-rubric "instruct grading", the
+> data-rejection rules, fine-tune-with-replay, the placebo control, and the standing **test matrix** of
+> roots/subroots + subsampling policy): [`DESIGN_sampling_and_grading.md`](DESIGN_sampling_and_grading.md).
+
+### Progress — directional, multi-relational μ (`MuAttention`, DESIGN_directional_attention.md realized)
+
+The symmetric encoder computes `μ(a,b)=cos(f(a),f(b))`, which **cannot** represent order
+(`μ(Optics|Physics) ≫ μ(Physics|Optics)`). `MuAttention` (`mu_attention.py`) is a tiny
+permutation-invariant transformer over a **set** of tagged tokens — `operator`, `anchor(root)`,
+`node@gen0`, `{ancestors}@gen_d` (min-hop on the DAG), off-manifold-noise absent slots — on **frozen e5**
+inputs, learning only the tags (`op_emb`/`anchor_tag`/`gen_emb`), a 2-layer attention block, and a
+per-operator sigmoid readout. `train_mu_attention.py` trains it multi-task over operators (WIKI margin +
+SYM order-invariant MSE + an optional LLM operator from the already-bought boundary fixture, no new
+spend). All 8,247 nodes covered (frozen e5 + shared tags). Results (`REPORT_directional.md`):
+
+| operator | metric | value | control |
+|---|---|---|---|
+| **WIKI** | held-out edge order-accuracy `μ(child\|parent)>μ(parent\|child)` | **99.1%** | 50% (symmetric ceiling) |
+| **SYM** | held-out μ corr / symmetry gap | +0.335 / 0.159 | +0.726 |
+| **LLM** | in-sample directional-μ corr (654 band) | +0.963 | — |
+| all | gate-leak 5-probe / OOD | **0/5** / 0.2–1.5% | 0/5 / 1.1% |
+
+**Wins decisively on the directional task** (the design's reason to exist; the symmetric control is
+pinned at 50%); matches on the gate-leak probe; **behind on pure symmetric corr** (multi-task trade-off —
+SYM shares the backbone with WIKI+LLM). Every operator's dense map feeds `gated_ic`/`lin_from_ic`. The
+SECONDARY node-gated-IC (#3296) lin check confirms the saturation fix (0.1% vs 96.7% path-gated).
+
+**Provenance token** (`REPORT_provenance.md`) — the deferred judge axis, realized. One **maskable**
+token with a **factored** embedding `corpus_emb[corpus] + judge_emb[judge] + prov_tag` records each
+label's source (corpus `simplewiki`/`enwiki`; judge `haiku` for bought SYM/LLM labels, `graph` for WIKI
+edges + free μ=0 negatives). **Masked by default** (off-manifold noise → provenance-agnostic μ,
+marginalizing over sources — the default inference path). Single-corpus so validated **structurally**:
+the slot is read (revealing `judge=graph` collapses μ by 0.66 — it learned graph-judged SYM = the μ=0
+non-edges; `judge=haiku` near-constant 0.027), and a `--prov-mask 1.0` ablation confirms it does **not
+regress** Part A (`pos_phys` +0.831 vs +0.838). Ready to carry real signal once `enwiki`/a 2nd judge
+arrives — no architecture change.
 
 ### Progress — ML-environment port (folded in from #3283)
 
@@ -318,6 +411,28 @@ This environment has **no numpy / torch / network**, so:
 Once the encoder produces dense `μ` for *all* categories (not just the scored 90), it removes the
 density caveat on `descendant_mu_mass_gated` (gating no longer prunes through unscored connectors) and
 feeds `gated_ic` / `lin_from_ic` directly — the same `μ` map, just dense and domain-swappable.
+
+### Realized (no training): `gen_dense_mu.py` + `sanity_check_rust.py`
+
+Kickoff prompt **A** below is now implemented as the *fastest path to unblock the graph work*:
+
+- `gen_dense_mu.py` MiniLM-encodes every category name (`all-MiniLM-L6-v2`), cosines it to the
+  `Physics` anchor, clamps via `to_membership`, and emits `dense_mu_physics.tsv` (`name<TAB>μ`, the
+  fixture format, names verbatim). It is a **raw pretrained-embedding prior** — coarse semantic
+  proximity, NOT the trained cosine-μ encoder and NOT authoritative (e.g. untrained MiniLM scores
+  `Music ≈ 0.34`, where the curated fixture has it at `0`). Its job is *density*.
+- `sanity_check_rust.py` renders this very template into a throwaway crate and runs the **real**
+  `condense_scc → lift_mu_to_components → gated_ic → lin_from_ic` on the dense map (the loader is
+  copied verbatim from `wikipedia_gated_similarity_tracks_physics_relatedness`). It checks the
+  integration *contract* (coverage, finite/`+∞` IC, `lin ∈ [0,1]`), not the training-dependent physics
+  ordering. Last run: **8247/8247 names resolve (100% coverage)**, `gated_ic` (threshold `0.3`) →
+  7429 finite IC + 775 out-of-domain, `lin_from_ic(Electromagnetism, Optics) = 0.85`.
+
+```
+pip install -r requirements.txt          # torch, sentence-transformers (+ HF egress)
+python3 gen_dense_mu.py --anchor Physics --out dense_mu_physics.tsv
+python3 sanity_check_rust.py --fuzzy dense_mu_physics.tsv   # needs cargo
+```
 
 **Two things that will silently corrupt the integration if missed (review-flagged):**
 1. **Clamp the cosine to `[0,1]` before emitting** (`to_membership` in `mu_encoder.py`). Cosine is in

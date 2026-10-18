@@ -29,6 +29,9 @@
 :- use_module(wam_ite_structurer, [structure_ite/2, split_commit/3, is_commit/1]).
 :- use_module(wam_text_parser, [wam_text_to_items/2, wam_classify_constant_token/2]).
 :- use_module(wam_clause_chain, [clause_chain/2]).
+:- use_module(wam_cpp_templates,
+              [cpp_render_stache/3, cpp_lowered_function_lines/4,
+               cpp_render_ite_shell/6]).
 % Inlined escape helper to avoid a circular import with wam_cpp_target.
 % Keeps this module standalone-loadable.
 
@@ -304,11 +307,9 @@ lower_predicate_to_cpp(PI, WamCode, Options, CppLines) :-
         ;   cpp_structured_clause1(WamCode, EmitInstrs)
         ),
         with_output_to(string(Body), emit_instrs(EmitInstrs, "    ", ForeignPreds)),
-        format(string(Header),
-'// ~w — lowered from ~w/~w
-bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
-        format(string(Footer), '}', []),
-        CppLines = [Header, Body, Footer]
+        format(string(Comment), '// ~w — lowered from ~w/~w',
+               [FuncName, Pred, Arity]),
+        cpp_lowered_function_lines(FuncName, Comment, Body, CppLines)
     ).
 
 %% emit_clause_chain_cpp(+FuncName, +Pred, +Arity, +Guards, +FK, +Options, -CppLines)
@@ -361,9 +362,8 @@ cpp_t6_min_clauses(Options, N) :-
 
 % --- T5 back-end: if-cascade ---
 emit_clause_chain_cascade_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines) :-
-    format(string(Header),
-'// ~w — lowered from ~w/~w (T5 first-argument dispatch)
-bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
+    format(string(Comment), '// ~w — lowered from ~w/~w (T5 first-argument dispatch)',
+           [FuncName, Pred, Arity]),
     with_output_to(string(Body),
         ( % Per-guard dispatch compares the first argument in place (no
           % `Value t5a1 = get_reg(...)` copy, no temporary Value::Atom per
@@ -371,14 +371,12 @@ bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
           % returns false, deferring to the interpreter fallback as before.
           emit_cpp_guards(Guards, ForeignPreds),
           format("    return false;~n") )),
-    format(string(Footer), '}', []),
-    CppLines = [Header, Body, Footer].
+    cpp_lowered_function_lines(FuncName, Comment, Body, CppLines).
 
 % --- T6 back-end: static unordered_map -> switch (jump table) ---
 emit_clause_chain_map_cpp(FuncName, Pred, Arity, Guards, ForeignPreds, CppLines) :-
-    format(string(Header),
-'// ~w — lowered from ~w/~w (T6 first-argument indexing / map+switch)
-bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
+    format(string(Comment), '// ~w — lowered from ~w/~w (T6 first-argument indexing / map+switch)',
+           [FuncName, Pred, Arity]),
     with_output_to(string(Body),
         ( format("    const std::string* _t6s = vm->match_reg_atom_str(\"A1\");~n"),
           format("    if (!_t6s) return false;  // unbound (defer to interpreter) or non-atom~n"),
@@ -391,8 +389,7 @@ bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
           emit_cpp_t6_cases(Guards, 0, ForeignPreds),
           format("    }~n"),
           format("    return false;~n") )),
-    format(string(Footer), '}', []),
-    CppLines = [Header, Body, Footer].
+    cpp_lowered_function_lines(FuncName, Comment, Body, CppLines).
 
 emit_cpp_t6_map_entries([], _).
 emit_cpp_t6_map_entries([guard(V, _) | Rest], I) :-
@@ -432,15 +429,13 @@ emit_cpp_guards([guard(V, Rem) | Rest], ForeignPreds) :-
 emit_multi_clause_n_cpp(FuncName, Pred, Arity, Instrs0, ForeignPreds, CppLines) :-
     cpp_strip_switch_prefix(Instrs0, Instrs),
     cpp_split_clauses(Instrs, Clauses),
-    format(string(Header),
-'// ~w — lowered from ~w/~w (T4 all-clauses inline)
-bool ~w(WamState* vm) {', [FuncName, Pred, Arity, FuncName]),
+    format(string(Comment), '// ~w — lowered from ~w/~w (T4 all-clauses inline)',
+           [FuncName, Pred, Arity]),
     with_output_to(string(Body),
         ( format("    auto _t4 = vm->lo_clause_snapshot();~n"),
           emit_cpp_clauses(Clauses, ForeignPreds),
           format("    return false;~n") )),
-    format(string(Footer), '}', []),
-    CppLines = [Header, Body, Footer].
+    cpp_lowered_function_lines(FuncName, Comment, Body, CppLines).
 
 emit_cpp_clauses([], _).
 emit_cpp_clauses([Cl | Rest], ForeignPreds) :-
@@ -479,19 +474,11 @@ emit_one(execute(PredStr), I, ForeignPreds) :-
 emit_one(ite(Cond, Then, Else), I, ForeignPreds) :- !,
     nb_getval(cpp_ite_ctr, N0), N is N0 + 1, nb_setval(cpp_ite_ctr, N),
     string_concat(I, "    ", I2),
-    format("~w{~n", [I]),
-    format("~w    std::size_t _ite_mark~w = vm->trail.size();~n", [I, N]),
-    format("~w    bool _ite_cond~w = [&]() -> bool {~n", [I, N]),
-    emit_instrs(Cond, I2, ForeignPreds),
-    format("~w        return true;~n", [I]),
-    format("~w    }();~n", [I]),
-    format("~w    if (_ite_cond~w) {~n", [I, N]),
-    emit_instrs(Then, I2, ForeignPreds),
-    format("~w    } else {~n", [I]),
-    format("~w        vm->unwind_trail_to(_ite_mark~w);~n", [I, N]),
-    emit_instrs(Else, I2, ForeignPreds),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    with_output_to(string(CondCode), emit_instrs(Cond, I2, ForeignPreds)),
+    with_output_to(string(ThenCode), emit_instrs(Then, I2, ForeignPreds)),
+    with_output_to(string(ElseCode), emit_instrs(Else, I2, ForeignPreds)),
+    cpp_render_ite_shell(I, N, CondCode, ThenCode, ElseCode, Text),
+    format('~s', [Text]).
 emit_one(Instr, I, _) :-
     emit_one(Instr, I).
 
@@ -518,57 +505,26 @@ emit_one(fail, I) :-
 % comparison (no allocation).
 emit_one(get_constant(CStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
+    format(string(Comment), 'get_constant ~w, ~w', [CStr, AiStr]),
     wam_classify_constant_token(CStr, Class),
     ( Class = atom(Name)
     ->  local_escape_cpp_string(Name, Esc),
-        format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
-        format("~w{~n", [I]),
-        format("~w    int _m = vm->match_reg_atom(\"~w\", \"~w\");~n", [I, Ai, Esc]),
-        format("~w    if (_m < 0) {~n", [I]),
-        format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
-        format("~w        vm->put_reg(\"~w\", Value::Atom(\"~w\"));~n", [I, Ai, Esc]),
-        format("~w    } else if (_m == 0) {~n", [I]),
-        format("~w        return false;~n", [I]),
-        format("~w    }~n", [I]),
-        format("~w}~n", [I])
+        Op = head_constant(atom(Esc))
     ;   cpp_val_literal(CStr, CppVal),
-        format("~w// get_constant ~w, ~w~n", [I, CStr, AiStr]),
-        format("~w{~n", [I]),
-        format("~w    Value _a = vm->get_reg(\"~w\");~n", [I, Ai]),
-        format("~w    if (_a.is_unbound()) {~n", [I]),
-        format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
-        format("~w        vm->put_reg(\"~w\", ~w);~n", [I, Ai, CppVal]),
-        format("~w    } else if (!(_a == ~w)) {~n", [I, CppVal]),
-        format("~w        return false;~n", [I]),
-        format("~w    }~n", [I]),
-        format("~w}~n", [I])
-    ).
+        Op = head_constant(value(CppVal))
+    ),
+    emit_head_match(Op, Comment, Ai, I).
 
 emit_one(get_integer(NStr, AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
-    format("~w// get_integer ~w, ~w~n", [I, NStr, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    Value _a = vm->get_reg(\"~w\");~n", [I, Ai]),
-    format("~w    if (_a.is_unbound()) {~n", [I]),
-    format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm->put_reg(\"~w\", Value::Integer(~w));~n", [I, Ai, NStr]),
-    format("~w    } else if (!(_a == Value::Integer(~w))) {~n", [I, NStr]),
-    format("~w        return false;~n", [I]),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    format(string(Comment), 'get_integer ~w, ~w', [NStr, AiStr]),
+    format(string(CppVal), 'Value::Integer(~w)', [NStr]),
+    emit_head_match(head_constant(value(CppVal)), Comment, Ai, I).
 
 emit_one(get_nil(AiStr), I) :-
     cpp_reg_name(AiStr, Ai),
-    format("~w// get_nil ~w~n", [I, AiStr]),
-    format("~w{~n", [I]),
-    format("~w    int _m = vm->match_reg_atom(\"~w\", \"[]\");~n", [I, Ai]),
-    format("~w    if (_m < 0) {~n", [I]),
-    format("~w        vm->trail_binding(\"~w\");~n", [I, Ai]),
-    format("~w        vm->put_reg(\"~w\", Value::Atom(\"[]\"));~n", [I, Ai]),
-    format("~w    } else if (_m == 0) {~n", [I]),
-    format("~w        return false;~n", [I]),
-    format("~w    }~n", [I]),
-    format("~w}~n", [I]).
+    format(string(Comment), 'get_nil ~w', [AiStr]),
+    emit_head_match(head_constant(atom("[]")), Comment, Ai, I).
 
 emit_one(get_variable(XnStr, AiStr), I) :-
     cpp_reg_name(XnStr, Xn), cpp_reg_name(AiStr, Ai),
@@ -735,8 +691,8 @@ emit_one(end_aggregate(VStr), I) :-
 
 % --- Fallback ---
 
-emit_one(Instr, I) :-
-    format("~w// TODO: lowered emission for ~w~n", [I, Instr]).
+emit_one(Instr, _I) :-
+    throw(error(wam_cpp_lowered_emitter_error(unsupported_instruction(Instr)), _)).
 
 % =====================================================================
 % Helpers
@@ -779,3 +735,8 @@ cpp_val_literal(Str, CppVal) :-
     ;   Class = atom(Name),
         format(atom(CppVal), 'Value::Atom("~w")', [Name])
     ).
+
+emit_head_match(Op, Comment, Ai, I) :-
+    cpp_render_stache(head_constant,
+        [op=Op, 'I'=I, 'Comment'=Comment, 'Ai'=Ai], Text),
+    format('~s', [Text]).

@@ -21,7 +21,7 @@ current cross-target builtin/runtime baseline.
 | Univ | `=../2` compose/decompose | `=../2` compose/decompose | Present |
 | Copying | `copy_term/2` with fresh variables and preserved sharing | `copy_term/2` with fresh variables and preserved sharing | Present |
 | Control | `true/0`, `fail/0`, `!/0`, `\+/1`, `CutIte` | Same baseline, with broader isolated-goal NAF in Haskell/Python | Present for current baseline, including isolated user-goal NAF and race-to-true over multi-clause WAM targets |
-| IO | `write/1`, `display/1`, `writeln/1`, `print/1`, `write_canonical/1`, `put_char/1`, `put_char/2`, `put_code/1`, `put_code/2`, `get_char/1`, `get_char/2`, `peek_char/1`, `peek_char/2`, `get_code/1`, `get_code/2`, `open/3`, `close/1`, `read_line_to_string/2`, `format/1`, `format/2`, `nl/0`, `tab/1`, `getenv/2`, `setenv/2` | `write/1`, `display/1`, `nl/0`; Python/C++ also cover `write_canonical/1`; Python/C++/LLVM also cover `put_char/1` and `put_code/1`; Python also covers default-stream `get_char/1`, `peek_char/1`, and `get_code/1` plus file-backed stream char IO and line reads; R/C++/Python also cover `format/N`; R/C++ also cover `writeln/1`, `print/1`, and `tab/1`; LLVM covers `getenv/2` and `setenv/2` | Present for current baseline plus simple output aliases, bounded canonical output, single-character output, default and file-backed stream character IO, bounded line reads, bounded format output, tab output, and bounded environment access |
+| IO | `write/1`, `display/1`, `writeln/1`, `print/1`, `write_canonical/1`, `put_char/1`, `put_char/2`, `put_code/1`, `put_code/2`, `get_char/1`, `get_char/2`, `peek_char/1`, `peek_char/2`, `get_code/1`, `get_code/2`, `open/3`, `close/1`, `read_line_to_string/2`, `read_string/5`, `at_end_of_stream/1`, `write_to_stream/2`, `nl_to_stream/1`, `format/1`, `format/2`, `nl/0`, `tab/1`, `getenv/2`, `setenv/2` | `write/1`, `display/1`, `nl/0`; Python/C++ also cover `write_canonical/1`; Python/C++/LLVM also cover `put_char/1` and `put_code/1`; Python also covers default-stream `get_char/1`, `peek_char/1`, and `get_code/1` plus file-backed stream char IO, line reads, bounded chunk reads, EOF checks, and stream output helpers; C++ also covers stream EOF checks and helper output; R/C++/Python also cover `format/N`; R/C++ also cover `writeln/1`, `print/1`, and `tab/1`; LLVM covers `getenv/2` and `setenv/2` | Present for current baseline plus simple output aliases, bounded canonical output, single-character output, default and file-backed stream character IO, bounded line/chunk reads, stream EOF checks, helper stream output, bounded format output, tab output, and bounded environment access |
 
 ## Immediate Findings
 
@@ -87,6 +87,15 @@ current cross-target builtin/runtime baseline.
   covered by the generated builtin E2E test for normal lines, blank lines,
   final lines without a trailing newline, and EOF as `end_of_file`, matching
   the bounded Python line-reader surface without adding bounded chunk reads.
+- File-backed `read_string/5` is now a direct Go WAM builtin and is covered by
+  the generated builtin E2E test for bounded chunk reads, short EOF reads, and
+  zero-count EOF reads, matching the bounded Python chunk-reader surface while
+  leaving separator output behavior outside this slice.
+- File-backed `at_end_of_stream/1`, `write_to_stream/2`, and `nl_to_stream/1`
+  are now direct Go WAM builtins and are covered by the generated builtin E2E
+  test for non-consuming EOF checks, EOF after bounded reads, closed-stream
+  failure, simple helper output, and read-stream output failure, matching the
+  bounded Python/C++ stream EOF and helper-output surface.
 - Bounded `format/1` and `format/2` are now direct Go WAM builtins and are
   covered by the generated builtin E2E test for literal `~~`, newline `~n`,
   `~w`, `~a`, `~d`, `~p`, `~q`, and `~s` argument substitution, and
@@ -256,11 +265,112 @@ current cross-target builtin/runtime baseline.
   `UW_LMDB_RELATION_ARTIFACT_BIN`, so tests and deployments can provide the
   concrete LMDB reader without adding a generated-project Go dependency.
 
+## 2026-08 Findings (fleet gap-card work)
+
+Three defects surfaced while attempting the PARSE-GO card (compiling
+`prolog_term_parser` through the Go WAM target). All three are
+independent of the parser and are fixed; see
+`tests/test_wam_go_last_call_builtin.pl`.
+
+- **Last-call builtins reported failure after succeeding.** A clause
+  whose *final* goal is a builtin compiles to `execute <builtin>/N`, and
+  the emitter mapped that to a bare `BuiltinCall`. `BuiltinCall`
+  advances to the next instruction, but `execute` has none: the
+  predicate bound its output arguments correctly and then ran off the
+  end of its code, so `Run` returned false. `s(X) :- succ(1, X).` bound
+  `X = 2` and reported failure. This is the highest-severity item here —
+  it silently mis-reports success for a whole shape of clause, and it is
+  what broke `tokenize/2` (whose last goal is `reverse/2`). Fixed with a
+  `BuiltinExecute` instruction that runs the builtin and then takes
+  `Proceed`'s return path; kept as its own instruction so the WAM-line
+  to instruction mapping stays 1:1 and no later PC or label index shifts.
+
+- **Go identifiers collided across arities.** Wrapper names came from
+  the predicate name alone, so a project holding the same name at two
+  arities emitted two identically named `func`s and failed to compile
+  with "redeclared in this block". Any project carrying, say,
+  `read_term_from_atom/2` and `/3` was unbuildable. Fixed by computing
+  the overloaded set once per project and suffixing only the names that
+  actually collide, so existing generated code is unchanged.
+
+- **`write/1` dropped compound arguments.** The write-family builtins
+  (`write/1`, `writeln/1`, `print/1`, `display/1`, `write_to_stream/2`)
+  and `format`'s `~w`/`~p`/`~a` rendered terms via `Value.String()`,
+  which prints a `*Structure` as bare `functor/arity` — `write(foo(a,b))`
+  printed `foo/2`. Fixed with `writeTermString`, an unquoted sibling of
+  the `write_canonical/1` renderer; `~q` keeps canonical (quoted)
+  rendering. The existing `format` assertion in
+  `tests/test_go_wam_builtins.pl` encoded the old output (`pair/2/2`)
+  and was corrected to the SWI-compatible `pair(a, b)`.
+
+Also landed in the same pass: LMDB materialisation tiers (LMDB-GO), ISO
+three-form error adoption (ISO-GO), and the effective-distance scale-300
+benchmark row (BENCH-GO). See `docs/WAM_FLEET_GAP_TASKS.md`.
+
+Pushing the parser the rest of the way (PARSE-GO) then surfaced five
+more, all in head unification and all affecting ordinary programs:
+
+- **Nested write contexts clobbered the enclosing term.**
+  `CurrentStruct` / `CurrentList` were single slots while the argument
+  contexts are a stack. In a head like `p(C, A, [tk(C)|A])` the nested
+  `get_structure` took the slot and cleared it on pop, leaving the
+  following `unify_value` with no target — the cons tail was never
+  filled, so `[tk(c)]` came out as a two-element list with an empty
+  second slot. The term under construction now travels on the
+  `WriteCtx` frame and is restored when that frame pops.
+
+- **`get_structure` decided read-vs-write mode before dereferencing.**
+  A register holding an already-bound `*Unbound` looked unbound, so the
+  instruction took the *write* branch and built a fresh structure over
+  the incoming value: `p([tk(N)|R], N, R)` bound `N` to a new empty
+  cell. `get_list` and `get_constant` already deref first.
+
+- **`get_list` pushed the raw `Elements` slice as the unify context.**
+  `*List` serves two roles — a cons pair built by `put_list`, and a
+  flat list returned by a Go builtin (`reverse/2`, `findall/3`,
+  `sort/2`, `append/3`). Pushing `Elements` conflated them: a flat
+  one-element list offered a single slot so the cons-tail read failed,
+  and a flat three-element list bound the tail to the second *item*.
+  This is why a head matched a literal list but not one that had been
+  through `reverse/2`. It now destructures through
+  `valueListHeadTail`.
+
+- **A-registers above A8 were never saved at a choicepoint.**
+  `snapshotAllRegs` skipped `Regs[8..199]` as "the X-register range",
+  but `go_reg_index` maps `A(N)` to `Regs[N-1]` and X starts at
+  `Regs[100]` — so A9 and up were A-registers sitting in the skipped
+  window. Any predicate of arity > 8 lost arguments the moment it tried
+  its second clause. The A range is now sized by a `MaxAReg`
+  high-water mark, so the common arity<=8 case costs exactly what it
+  did before.
+
+- **Interned atoms were registered from an `init()`.** Go runs every
+  package-level variable initialiser before any `init()`, so
+  `state.go`'s `var emptyListAtom = internAtom("[]")` created and
+  cached its own `[]` first and the generated `init()` then overwrote
+  the map slot. With `Atom.Equals` being pointer-only that left two
+  distinct `[]` atoms — one reached through list tails, one baked into
+  the bytecode — and `get_constant []` failed against a genuinely empty
+  list. The `wamAtom_` vars are now initialised *through* `internAtom`,
+  which makes the block order-independent.
+
+With those in, the compiled portable parser runs end to end on WAM-Go:
+operator precedence and associativity, functor application, nesting,
+lists, partial lists, parens, prefix operators, quoted atoms and
+numbers. See `tests/test_wam_go_parser_smoke.pl`.
+
 ## Recommended Follow-Up Order
 
-1. Continue broadening generated Go WAM E2E coverage for any remaining
+1. Route the effective-distance benchmark through the registered foreign
+   kernels — the Go perf row is interpreter-bound (~898 ms query vs
+   Rust's 17 ms) because `category_ancestor/4` runs through the shared
+   bytecode loop on that path.
+2. Consider promoting `conformance_target(go)` from opt-in to default
+   CI: the head-unification fixes above are exactly the class of defect
+   the conformance suite is meant to catch, and none of them were.
+3. Continue broadening generated Go WAM E2E coverage for any remaining
    cross-target builtin edge cases.
-2. If Go should avoid a helper process for LMDB, add an optional native Go
+4. If Go should avoid a helper process for LMDB, add an optional native Go
    LMDB build-tag path once a dependency policy is settled.
 
 ## Verification Commands
@@ -270,6 +380,11 @@ Use these checks after touching Go WAM parity:
 ```sh
 swipl -q -g run_tests -t halt tests/test_wam_go_generator.pl
 swipl -q -g run_tests -t halt tests/test_go_wam_builtins.pl
+swipl -q -g run_tests -t halt tests/test_wam_go_last_call_builtin.pl
+swipl -q -g run_tests -t halt tests/test_go_lmdb_materialisation.pl
+swipl -q -g run_tests -t halt tests/test_wam_go_iso_smoke.pl
+swipl -q -g run_tests -t halt tests/test_wam_go_effective_distance_bench.pl
+swipl -q -g run_tests -t halt tests/test_wam_go_parser_smoke.pl
 swipl -q -g run_tests -t halt tests/test_wam_go_lowered_phase1.pl
 swipl -q -g run_tests -t halt tests/test_wam_go_lowered_phase2.pl
 swipl -q -g run_tests -t halt tests/test_wam_go_lowered_phase3.pl

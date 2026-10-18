@@ -1,0 +1,48 @@
+{
+  "batch_size": 32,
+  "branch_unit_count": 50,
+  "corpus": "pearltrees",
+  "device": "cuda",
+  "e5_cache": "regenerable local cache: pearltrees_e5.pt (not archived)",
+  "e5_cache_sha256": "73bbb650f3d46cdc443fb96c42a9eb2a5381d7176ced8a1bbb40180f05325b58",
+  "e5_model": "intfloat/e5-small-v2",
+  "family_tied_rows": 17,
+  "feature_table": "pearltrees_features.tsv",
+  "feature_table_sha256": "5e9e43191a85e445a23f956c853ce529e615cec0e5b43da97c98f4ea97624556",
+  "graph_measurement": {
+    "maximum": 1,
+    "mean": 1,
+    "minimum": 1,
+    "unique_count": 1
+  },
+  "graph_source": {
+    "kind": "pearltrees_pair_specific_principal_paths",
+    "pair_specific_lineages": 250,
+    "paths_jsonl": "local Pearltrees path export (not archived; hash retained)",
+    "paths_jsonl_sha256": "89c1ceff7ef95293a9771eb343c21f5a01fe88a1b1e0efab41840f19b998ebc5",
+    "titles_tsv": "local Pearltrees title table (not archived; hash retained)",
+    "titles_tsv_sha256": "65bd587b680f2092bd4e3cac586bf80d54ed2804515be221946159b8c5316ded"
+  },
+  "guardrail": "fixed sources only; no split-specific calibration or comparative result",
+  "hop_counts": {
+    "1": 50,
+    "2": 50,
+    "3": 50,
+    "4": 50,
+    "5": 50
+  },
+  "identity_component_count": 281,
+  "model": "../../model_prod.pt",
+  "model_sha256": "a9dffd99620b61180f43b28bc0619f7070569bf4bc2f5975689eec6fdb8a83cf",
+  "operator_family_counts": {
+    "directional": 143,
+    "open_world": 44,
+    "symmetric": 63
+  },
+  "pairs": "prototypes/mu_cosine/repro/product_kalman_cross_corpus/pearltrees_pairs_audited.tsv",
+  "pairs_sha256": "d2ae636d0931f7c7485fa0d48db4e6d1f34dce4d0399151b0d37594ffba6581e",
+  "responses": "prototypes/mu_cosine/repro/product_kalman_cross_corpus/pearltrees_merged_audited_responses.txt",
+  "responses_sha256": "ecbadf690a65d079b0bc4a32d82deb1e62c616f86678eb731ef258b1f544e33f",
+  "row_count": 250,
+  "schema_version": 1
+}

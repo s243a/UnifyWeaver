@@ -608,8 +608,16 @@ test_unify_compound_clause_present :-
         % The compound-unify guard.
         sub_string(S, _, _, _,
                    'match?({:ref, _}, v1) and match?({:ref, _}, v2)'),
-        % Same-functor pattern check (variable repeated in both halves of the tuple).
-        sub_string(S, _, _, _, '{{:str, fn_name}, {:str, fn_name}}'),
+        % Functor agreement. This used to assert the literal tuple pattern
+        % '{{:str, fn_name}, {:str, fn_name}}' — a repeated variable, so
+        % the two functors had to be IDENTICAL. Adding cons-tag aliasing
+        % replaced that with distinct binders plus an explicit test, and
+        % the assertion was never updated, leaving this test red since
+        % the aliasing landed. Assert the current shape, which is
+        % strictly stronger: same functor OR a recognised cons alias.
+        sub_string(S, _, _, _, '{{:str, fn1}, {:str, fn2}}'),
+        sub_string(S, _, _, _,
+                   'fn1 == fn2 or step_get_structure_matches?({:str, fn1}, fn2)'),
         % Recursive arg walker.
         sub_string(S, _, _, _, 'defp unify_arg_list(state, [a | as], [b | bs])')
     ->  pass(Test)
@@ -1522,8 +1530,16 @@ run_lmdb_int_ids_real_lmdb_e2e(Test) :-
     close(Out),
     close(Err),
     split_string(StdOut, "\n", "", Lines),
+    % Match the marker ANYWHERE in the line, not only at its start. Mix
+    % prints its "Shall I install Hex? ... [Yn] " prompt WITHOUT a
+    % trailing newline when stdout is a pipe, so the script's own
+    % "[SKIP] real Elmdb dependency unavailable: ..." gets appended to
+    % that same line. string_concat/3 anchored at the start therefore
+    % never matched, and a correct skip was reported as
+    % `status=exit(0) pass=0 fail=0` — this test has been red on every
+    % machine without a Hex install and a NIF toolchain.
     (   member(SkipLine, Lines),
-        string_concat("[SKIP] ", _, SkipLine)
+        sub_string(SkipLine, _, _, _, "[SKIP] ")
     ->  format('[SKIP] ~w: ~s~n', [Test, SkipLine])
     ;   findall(L, (member(L, Lines), string_concat("[PASS] ", _, L)), PassLines),
         findall(L, (member(L, Lines), string_concat("[FAIL] ", _, L)), FailLines),
@@ -1815,27 +1831,27 @@ test_graph_kernel_transitive_distance_emitted_in_runtime :-
     ;   fail_test(Test, 'GraphKernel.TransitiveDistance module missing expected API')
     ).
 
-test_graph_kernel_transitive_distance_uses_per_path_visited :-
-    % Per-path visited list (matches Rust collect_native_transitive_distance_results).
-    % Without it the recursion would loop on cyclic graphs. The walker should
-    % use :lists.member for the visited check (consistent with PR #1817 where
-    % the explicit :lists.member call beats `Enum.member?` on the hot path).
-    Test = 'GraphKernel TransitiveDistance: kernel uses per-path visited list with :lists.member',
+test_graph_kernel_transitive_distance_uses_distplus_bfs :-
+    % Fleet TD3 contract: one minimum positive distance per target. The
+    % source is deliberately not pre-seeded in the visited set, so it is
+    % emitted only through a self-loop or nonempty cycle.
+    Test = 'GraphKernel TransitiveDistance: kernel uses finite dist+ BFS',
     compile_wam_runtime_to_elixir([], RuntimeCode),
-    % Locate the TransitiveDistance module body and check its walker
-    % uses :lists.member — anchored to the module to avoid matching
-    % CategoryAncestors visited check.
+    % Anchor to this module so other graph kernels cannot satisfy the check.
     Pattern = "defmodule WamRuntime.GraphKernel.TransitiveDistance do",
-    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.TransitiveParentDistance do",
     (   sub_string(RuntimeCode, Start, _, _, Pattern),
         sub_string(RuntimeCode, End, _, _, EndPattern),
         End > Start,
         BodyLen is End - Start,
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
-        sub_string(Body, _, _, _, ":lists.member(target, visited)"),
-        sub_string(Body, _, _, _, "[target | visited]")
+        sub_string(Body, _, _, _, ":queue.in({start, 0}, :queue.new())"),
+        sub_string(Body, _, _, _, "MapSet.new()"),
+        sub_string(Body, _, _, _, "MapSet.member?(vv, target)"),
+        sub_string(Body, _, _, _, "MapSet.put(vv, target)"),
+        \+ sub_string(Body, _, _, _, "MapSet.new([start])")
     ->  pass(Test)
-    ;   fail_test(Test, 'TransitiveDistance walker missing :lists.member visited check')
+    ;   fail_test(Test, 'TransitiveDistance kernel missing strict dist+ BFS shape')
     ).
 
 test_kernel_dispatch_emits_transitive_distance_module :-
@@ -1860,6 +1876,17 @@ test_kernel_dispatch_emits_transitive_distance_module :-
         % based on which register the active aggregate is capturing.
         sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
         sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
+        % Bound-output gate plus ordinary choice-point streaming.
+        sub_string(S, _, _, _, "|> compatible_pairs(state)"),
+        % Aggregate contributions are filtered by joint A2/A3 unification,
+        % so shared output variables cannot be treated as two wildcards.
+        sub_string(S, _, _, _,
+                   "not is_nil(bind_two_regs(state, candidate_target, candidate_distance))"),
+        sub_string(S, _, _, _, "unless is_binary(start_val), do: throw({:fail, state})"),
+        sub_string(S, _, _, _, "defp stream_pairs(state, [])"),
+        sub_string(S, _, _, _, "pc: fn restored -> stream_pairs(restored, rest) end"),
+        % Candidate binding dereferences output aliases before unification.
+        sub_string(S, _, _, _, "WamRuntime.get_reg(state, reg_idx)"),
         % Driver-direct binding of both target (reg 2) and distance (reg 3).
         sub_string(S, _, _, _, "bind_two_regs(state, "),
         % Falls through to collect_pairs (no separate fold variant yet —
@@ -1868,6 +1895,49 @@ test_kernel_dispatch_emits_transitive_distance_module :-
         sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_distance3 dispatch module missing expected shape')
+    ).
+
+test_kernel_dispatch_transitive_distance_e2e :-
+    Test = 'Kernel dispatch: transitive_distance3 bound modes and retry stream e2e',
+    (   catch(process_create(path(elixir), ['-v'],
+                              [stdout(null), stderr(null), process(P)]),
+              _, fail),
+        process_wait(P, exit(0))
+    ->  run_kernel_dispatch_transitive_distance_e2e(Test)
+    ;   format('[SKIP] ~w: elixir not installed~n', [Test])
+    ).
+
+run_kernel_dispatch_transitive_distance_e2e(Test) :-
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdtd/3, [], TdWam),
+    elixir_test_tmp_dir('test_kernel_disp_td_e2e', TmpDir),
+    write_wam_elixir_project([kdtd/3-TdWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false),
+         kernel_dispatch(true), source_module(user)],
+        TmpDir),
+    source_file(test_kernel_dispatch_transitive_distance_e2e, SrcFile),
+    file_directory_name(SrcFile, TestsDir),
+    directory_file_path(TestsDir,
+                        'elixir_e2e/td3_contract_test.exs', DriverSrc),
+    directory_file_path(TmpDir, 'td3_contract_test.exs', DriverDst),
+    copy_file(DriverSrc, DriverDst),
+    process_create(path(elixir),
+        ['-r', 'lib/wam_runtime.ex', '-r', 'lib/kdtd.ex',
+         'td3_contract_test.exs'],
+        [cwd(TmpDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+    read_string(Out, _, StdOut),
+    read_string(Err, _, StdErr),
+    process_wait(Pid, Status),
+    close(Out),
+    close(Err),
+    (   Status = exit(0),
+        sub_string(StdOut, _, _, _,
+                   '[PASS] TD3 Elixir bound modes, aggregate aliases, and stream retry')
+    ->  pass(Test)
+    ;   format('[FAIL] ~w: status=~w~nstdout:~n~s~nstderr:~n~s~n',
+               [Test, Status, StdOut, StdErr]),
+        assertz(test_failed)
     ).
 
 test_shared_detector_finds_transitive_distance :-
@@ -1885,53 +1955,45 @@ test_shared_detector_finds_transitive_distance :-
     ).
 
 test_graph_kernel_transitive_parent_distance_emitted_in_runtime :-
-    % Second of the five missing kernels (after TransitiveDistance in PR
-    % #1822). Stack-based DFS with no cycle detection — matches Rust's
-    % collect_native_transitive_parent_distance_results reference exactly.
+    % Shortest-positive parents BFS (TPD4-CONTRACT-PARITY-FS).
     Test = 'GraphKernel TransitiveParentDistance: runtime emits WamRuntime.GraphKernel.TransitiveParentDistance',
     compile_wam_runtime_to_elixir([], RuntimeCode),
     (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveParentDistance do'),
         sub_string(RuntimeCode, _, _, _, 'def collect_triples('),
-        sub_string(RuntimeCode, _, _, _, 'def collect_triples_from_source(')
+        sub_string(RuntimeCode, _, _, _, 'def collect_triples_from_source('),
+        sub_string(RuntimeCode, _, _, _, 'shortest-positive parents')
     ->  pass(Test)
     ;   fail_test(Test, 'GraphKernel.TransitiveParentDistance module missing expected API')
     ).
 
-test_graph_kernel_transitive_parent_distance_no_visited_set :-
-    % Documented contract: NO cycle detection, matches Rust's
-    % stack-based DFS exactly. The walker must NOT carry a visited
-    % list — that would change the per-path enumeration semantics.
-    % Locate the TransitiveParentDistance module body and check it.
-    Test = 'GraphKernel TransitiveParentDistance: walker has no visited list (matches Rust DFS)',
+test_graph_kernel_transitive_parent_distance_uses_bfs_parent_sets :-
+    % Contract: finite BFS with parent sets; dist map not seeded with
+    % start; equal-shortest parents all emitted.
+    Test = 'GraphKernel TransitiveParentDistance: BFS parent-set shape (TPD4 contract)',
     compile_wam_runtime_to_elixir([], RuntimeCode),
     Pattern = "defmodule WamRuntime.GraphKernel.TransitiveParentDistance do",
-    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do",
     (   sub_string(RuntimeCode, Start, _, _, Pattern),
         sub_string(RuntimeCode, End, _, _, EndPattern),
         End > Start,
         BodyLen is End - Start,
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
-        % Stack-based DFS shape: explicit `[{node, depth} | rest]`
-        % stack pattern in the walker, with the records pushed as
-        % `(target, predecessor, next_depth)` triples.
-        sub_string(Body, _, _, _, "[{node, depth} | rest]"),
-        sub_string(Body, _, _, _, "{[{target, node, next_depth}"),
-        % Negative invariant: no `:lists.member` visited check (would
-        % silently change the semantics from "every edge in DFS" to
-        % "every edge with simple-path constraint").
-        \+ sub_string(Body, _, _, _, ":lists.member"),
-        % Documents the cycle caveat in the moduledoc.
-        sub_string(Body, _, _, _, "NO cycle detection")
+        sub_string(Body, _, _, _, ":queue.in({start, 0}"),
+        sub_string(Body, _, _, _, "MapSet.new([node])"),
+        sub_string(Body, _, _, _, "if atom_node?(target) do"),
+        sub_string(Body, _, _, _,
+                   "defp atom_node?(value), do: is_binary(value) or is_atom(value)"),
+        sub_string(Body, _, _, _, "shortest-positive parents"),
+        \+ sub_string(Body, _, _, _, "NO cycle detection"),
+        \+ sub_string(Body, _, _, _, "[{node, depth} | rest]")
     ->  pass(Test)
-    ;   fail_test(Test, 'TransitiveParentDistance walker has wrong shape or missing cycle caveat')
+    ;   fail_test(Test, 'TransitiveParentDistance walker missing BFS parent-set shape')
     ).
 
 test_kernel_dispatch_emits_transitive_parent_distance_module :-
     % End-to-end: detector recognises kdpd/4 as
-    % transitive_parent_distance4, dispatch wrapper emits with the
-    % correct shape (calls collect_triples, branches on agg_value_reg
-    % across reg 2/3/4 for findall slicing, binds three regs in
-    % driver-direct mode).
+    % transitive_parent_distance4; dispatch uses joint filter + stream
+    % (TD3-shaped ordinary choice points) and aggregate slicing.
     Test = 'Kernel dispatch: transitive_parent_distance4 kernel emits Probe.Kdpd dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdpd/4, [], PdWam),
@@ -1939,20 +2001,69 @@ test_kernel_dispatch_emits_transitive_parent_distance_module :-
     write_wam_elixir_project([kdpd/4-PdWam],
         [module_name(probe), emit_mode(lowered),
          intra_query_parallel(false),
-         kernel_dispatch(true), source_module(user)],
+         kernel_dispatch(true), source_module(user),
+         intern_atoms(true)],
         TmpDir),
     directory_file_path(TmpDir, 'lib/kdpd.ex', PredPath),
     read_file_to_string(PredPath, S, []),
     (   sub_string(S, _, _, _, "WamRuntime.GraphKernel.TransitiveParentDistance"),
         sub_string(S, _, _, _, "collect_triples("),
-        % Aggregate-frame slicing for three registers (2/3/4).
+        sub_string(S, _, _, _, "compatible_triples("),
+        sub_string(S, _, _, _, "stream_triples("),
         sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
         sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
-        % Driver-direct binding of all three (target, parent, distance).
         sub_string(S, _, _, _, "bind_three_regs(state, "),
-        sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
+        sub_string(S, _, _, _, "split_at_aggregate_cp(state)"),
+        % Source values use binaries by default and BEAM atoms when the
+        % opt-in lowered-emitter interning mode is enabled.
+        sub_string(S, _, _, _, "unless source_atom?(start_val)"),
+        sub_string(S, _, _, _,
+                   "defp source_atom?(value), do: is_binary(value) or is_atom(value)")
     ->  pass(Test)
     ;   fail_test(Test, 'transitive_parent_distance4 dispatch module missing expected shape')
+    ).
+
+test_kernel_dispatch_transitive_parent_distance_e2e :-
+    Test = 'Kernel dispatch: transitive_parent_distance4 full contract and interned atoms e2e',
+    (   catch(process_create(path(elixir), ['-v'],
+                              [stdout(null), stderr(null), process(P)]),
+              _, fail),
+        process_wait(P, exit(0))
+    ->  run_kernel_dispatch_transitive_parent_distance_e2e(Test)
+    ;   format('[SKIP] ~w: elixir not installed~n', [Test])
+    ).
+
+run_kernel_dispatch_transitive_parent_distance_e2e(Test) :-
+    setup_kernel_fixtures,
+    wam_target:compile_predicate_to_wam(user:kdpd/4, [], PdWam),
+    elixir_test_tmp_dir('test_kernel_disp_tpd4_e2e', TmpDir),
+    write_wam_elixir_project([kdpd/4-PdWam],
+        [module_name(probe), emit_mode(lowered),
+         intra_query_parallel(false), kernel_dispatch(true),
+         source_module(user), intern_atoms(true)],
+        TmpDir),
+    source_file(test_kernel_dispatch_transitive_parent_distance_e2e, SrcFile),
+    file_directory_name(SrcFile, TestsDir),
+    directory_file_path(TestsDir,
+                        'elixir_e2e/tpd4_contract_test.exs', DriverSrc),
+    directory_file_path(TmpDir, 'tpd4_contract_test.exs', DriverDst),
+    copy_file(DriverSrc, DriverDst),
+    process_create(path(elixir),
+        ['-r', 'lib/wam_runtime.ex', '-r', 'lib/kdpd.ex',
+         'tpd4_contract_test.exs'],
+        [cwd(TmpDir), stdout(pipe(Out)), stderr(pipe(Err)), process(Pid)]),
+    read_string(Out, _, StdOut),
+    read_string(Err, _, StdErr),
+    process_wait(Pid, Status),
+    close(Out),
+    close(Err),
+    (   Status = exit(0),
+        sub_string(StdOut, _, _, _,
+                   '[PASS] TPD4 Elixir full binding, aggregate, alias, representation, and retry contract')
+    ->  pass(Test)
+    ;   format('[FAIL] ~w: status=~w~nstdout:~n~s~nstderr:~n~s~n',
+               [Test, Status, StdOut, StdErr]),
+        assertz(test_failed)
     ).
 
 test_shared_detector_finds_transitive_parent_distance :-
@@ -1968,45 +2079,37 @@ test_shared_detector_finds_transitive_parent_distance :-
     ).
 
 test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime :-
-    % Third missing kernel after PRs #1822/#1823. Reuses
-    % TransitiveParentDistance for the inner walk; tags every result
-    % with the FIRST hop taken from start. Same no-cycle-detection
-    % contract as transitive_parent_distance4.
+    % TSPD5 shortest-positive correlated step/parent contract.
     Test = 'GraphKernel TransitiveStepParentDistance: runtime emits WamRuntime.GraphKernel.TransitiveStepParentDistance',
     compile_wam_runtime_to_elixir([], RuntimeCode),
     (   sub_string(RuntimeCode, _, _, _, 'defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do'),
         sub_string(RuntimeCode, _, _, _, 'def collect_quads('),
-        sub_string(RuntimeCode, _, _, _, 'def collect_quads_from_source(')
+        sub_string(RuntimeCode, _, _, _, 'def collect_quads_from_source('),
+        sub_string(RuntimeCode, _, _, _, 'shortest-positive correlated')
     ->  pass(Test)
     ;   fail_test(Test, 'GraphKernel.TransitiveStepParentDistance module missing expected API')
     ).
 
-test_graph_kernel_tspd_reuses_parent_distance_walker :-
-    % Documents the implementation strategy: instead of writing a
-    % third walker, this kernel reuses TransitiveParentDistance's
-    % collect_triples and decorates results with the first-hop step.
-    % Negative invariant: there should NOT be a separate `walk` defp
-    % inside TSPD module body — it shouldnt have its own DFS walker.
-    Test = 'GraphKernel TransitiveStepParentDistance: reuses TransitiveParentDistance.collect_triples',
+test_graph_kernel_tspd_uses_bfs_correlated_contract :-
+    % Contract: finite BFS with correlated (Step, Parent) pair sets;
+    % no legacy all-path walker; equal-shortest correlated pairs emitted.
+    Test = 'GraphKernel TransitiveStepParentDistance: BFS correlated contract (TSPD5)',
     compile_wam_runtime_to_elixir([], RuntimeCode),
     Pattern = "defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do",
-    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.WeightedShortestPath do",
     (   sub_string(RuntimeCode, Start, _, _, Pattern),
         sub_string(RuntimeCode, End, _, _, EndPattern),
         End > Start,
         BodyLen is End - Start,
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
-        % Calls TransitiveParentDistance.collect_triples for the inner walk.
-        sub_string(Body, _, _, _, "WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples"),
-        % Emits the depth-1 base case: {next, next, start, 1}.
-        sub_string(Body, _, _, _, "{next, next, start, 1}"),
-        % Bumps inner triples by 1 (dist + 1).
-        sub_string(Body, _, _, _, "dist + 1"),
-        % Documents the cycle caveat (inherited from
-        % TransitiveParentDistance).
-        sub_string(Body, _, _, _, "NO cycle detection")
+        sub_string(Body, _, _, _, "shortest-positive correlated"),
+        sub_string(Body, _, _, _, ":queue.in({start, 0}"),
+        sub_string(Body, _, _, _, "Never cross-product"),
+        \+ sub_string(Body, _, _, _, "legacy_walk"),
+        \+ sub_string(Body, _, _, _, "collect_legacy_path_triples"),
+        \+ sub_string(Body, _, _, _, "NO cycle detection")
     ->  pass(Test)
-    ;   fail_test(Test, 'TransitiveStepParentDistance does not reuse the parent_distance walker correctly')
+    ;   fail_test(Test, 'TransitiveStepParentDistance walker missing BFS correlated contract')
     ).
 
 test_kernel_dispatch_emits_transitive_step_parent_distance_module :-
@@ -2071,28 +2174,29 @@ test_graph_kernel_wsp_uses_gb_sets_priority_queue :-
     Test = 'GraphKernel WeightedShortestPath: uses :gb_sets priority queue for Dijkstra',
     compile_wam_runtime_to_elixir([], RuntimeCode),
     Pattern = "defmodule WamRuntime.GraphKernel.WeightedShortestPath do",
-    EndPattern = "defmodule WamRuntime.GraphKernel.CategoryAncestor do",
+    EndPattern = "defmodule WamRuntime.GraphKernel.AstarShortestPath do",
     (   sub_string(RuntimeCode, Start, _, _, Pattern),
         sub_string(RuntimeCode, End, _, _, EndPattern),
         End > Start,
         BodyLen is End - Start,
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
-        % Min-heap construction + pop.
-        sub_string(Body, _, _, _, ":gb_sets.singleton({0, start})"),
+        % Min-heap construction + pop (float seed cost per WSP3 contract).
+        sub_string(Body, _, _, _, ":gb_sets.singleton({0.0, start})"),
         sub_string(Body, _, _, _, ":gb_sets.take_smallest(heap)"),
         % Stale-entry skip (the canonical Dijkstra optimisation).
         sub_string(Body, _, _, _, "if cost > best do"),
-        % Documents the semantic narrowing (all-paths -> shortest).
-        sub_string(Body, _, _, _, "semantic narrowing"),
-        sub_string(Body, _, _, _, "computes only the SHORTEST")
+        % Contract: Source excluded; invalid reachable row fails cleanly.
+        sub_string(Body, _, _, _, "excluding start itself"),
+        sub_string(Body, _, _, _, ":invalid")
     ->  pass(Test)
-    ;   fail_test(Test, 'WeightedShortestPath kernel missing :gb_sets primitives or semantic-narrowing note')
+    ;   fail_test(Test, 'WeightedShortestPath kernel missing :gb_sets primitives or contract notes')
     ).
 
 test_kernel_dispatch_emits_weighted_shortest_path_module :-
     % End-to-end: detector recognises kdwsp/3 as
     % weighted_shortest_path3, dispatch wrapper emits with two-register
     % binding (target, cost) and 3-arity edge predicate ("kdweighted_edge/3").
+    % Driver-direct path uses compatible_pairs/stream_pairs like TD3.
     Test = 'Kernel dispatch: weighted_shortest_path3 kernel emits Probe.Kdwsp dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdwsp/3, [], WspWam),
@@ -2111,7 +2215,11 @@ test_kernel_dispatch_emits_weighted_shortest_path_module :-
         % Aggregate-frame slicing for two regs (target=2, cost=3).
         sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
         sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
-        % Driver-direct binding of both regs.
+        % Ordinary multi-result retry (TD3/TPD4 shape).
+        sub_string(S, _, _, _, "|> compatible_pairs(state)"),
+        sub_string(S, _, _, _, "stream_pairs(state, pairs)"),
+        sub_string(S, _, _, _, "defp stream_pairs(state, [])"),
+        sub_string(S, _, _, _, "pc: fn restored -> stream_pairs(restored, rest) end"),
         sub_string(S, _, _, _, "bind_two_regs(state, "),
         sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
     ->  pass(Test)
@@ -2160,11 +2268,18 @@ test_graph_kernel_astar_uses_minkowski_f_cost :-
         sub_string(RuntimeCode, Start, BodyLen, _, Body),
         % Minkowski f-cost helper.
         sub_string(Body, _, _, _, ":math.pow(g, dim) + :math.pow(h, dim)"),
-        % Stale-entry skip + early termination on target.
+        % Stale-entry skip + correctness-safe termination on bound target.
         sub_string(Body, _, _, _, "g_cost > best"),
-        sub_string(Body, _, _, _, "target != nil and node == target"),
+        sub_string(Body, _, _, _, "node == target"),
+        % Strict ASTAR4 boundary and finite-result contract.
+        sub_string(Body, _, _, _, "and is_integer(dim) and dim > 0"),
+        sub_string(Body, _, _, _, "not valid_node?(next)"),
+        sub_string(Body, _, _, _, "not valid_edge_weight?(next_g)"),
+        sub_string(Body, _, _, _, "is_atom(value) and not is_nil(value)"),
+        sub_string(Body, _, _, _, "if valid_edge_weight?(value), do: value, else: g"),
+        sub_string(Body, _, _, _, "ArithmeticError -> g"),
         % Documents the Minkowski narrowing.
-        sub_string(Body, _, _, _, "Minkowski-style f-cost"),
+        sub_string(Body, _, _, _, "Minkowski-style f(n)"),
         % :gb_sets primitives reused from WSP.
         sub_string(Body, _, _, _, ":gb_sets.take_smallest(heap)")
     ->  pass(Test)
@@ -2175,8 +2290,7 @@ test_kernel_dispatch_emits_astar_shortest_path_module :-
     % End-to-end: detector recognises kdastar/4 as
     % astar_shortest_path4 (with the user-asserted direct_dist_pred
     % and dimensionality facts), dispatch wrapper emits with TWO
-    % FactSource lookups + two-register binding (target=2, cost=4),
-    % skipping target rebinding when bound on entry.
+    % FactSource lookups + strict Source/Target/Dim/Cost boundary.
     Test = 'Kernel dispatch: astar_shortest_path4 kernel emits Probe.Kdastar dispatch module',
     setup_kernel_fixtures,
     wam_target:compile_predicate_to_wam(user:kdastar/4, [], AstarWam),
@@ -2195,13 +2309,19 @@ test_kernel_dispatch_emits_astar_shortest_path_module :-
         sub_string(S, _, _, _, "direct_handle = WamRuntime.FactSourceRegistry.lookup!"),
         % Edge indicator is /3.
         sub_string(S, _, _, _, "kdweighted_edge/3"),
-        % Compile-time dim default attribute.
-        sub_string(S, _, _, _, "@default_dim 5"),
+        % No legacy unbound-target enumeration or compile-time Dim fallback.
+        \+ sub_string(S, _, _, _, "@default_dim"),
+        \+ sub_string(S, _, _, _, "{:unbound, _} -> nil"),
+        sub_string(S, _, _, _, "valid_node?(start_val) and valid_node?(target_val)"),
+        sub_string(S, _, _, _, "is_integer(dim_val) and dim_val > 0"),
+        sub_string(S, _, _, _, "valid_cost_arg?(cost_val)"),
+        sub_string(S, _, _, _, "defp valid_cost_arg?(value), do: is_float(value)"),
+        sub_string(S, _, _, _, "defp cost_compatible?(bound, candidate), do: bound === candidate"),
         % Aggregate-frame slicing for two regs (target=2, cost=4).
         sub_string(S, _, _, _, "agg_cp.agg_value_reg"),
         sub_string(S, _, _, _, "in_forkable_aggregate_frame?"),
-        % Driver-direct binding: target may be already bound on entry.
-        sub_string(S, _, _, _, "bind_target_and_cost(state, "),
+        % Target is already bound; direct mode binds only typed FloatCost.
+        sub_string(S, _, _, _, "bind_cost(state, first_cost)"),
         sub_string(S, _, _, _, "split_at_aggregate_cp(state)")
     ->  pass(Test)
     ;   fail_test(Test, 'astar_shortest_path4 dispatch module missing expected shape')
@@ -2256,8 +2376,15 @@ test_intern_atoms_default_off :-
         (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
             lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
             atom_string(Code, S),
-            sub_string(S, _, _, _, 'val == "hello"'),
-            \+ sub_string(S, _, _, _, 'val == :hello')
+            % These three tests asserted a raw `val == <literal>`
+            % comparison. get_constant no longer emits one: it routes
+            % through WamRuntime.constant_match?/2, which is what added
+            % the native-[] <-> WAM-"[]" aliasing. The interning
+            % behaviour under test is unchanged and still correct — only
+            % the spelling moved, and the assertions were never updated,
+            % so all three have been red since that change.
+            sub_string(S, _, _, _, 'constant_match?(val, "hello")'),
+            \+ sub_string(S, _, _, _, 'constant_match?(val, :hello)')
         ->  pass(Test)
         ;   fail_test(Test, 'default mode wrongly emitted atom literal')
         ),
@@ -2274,8 +2401,8 @@ test_intern_atoms_on_emits_atom_literals :-
         (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
             lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
             atom_string(Code, S),
-            sub_string(S, _, _, _, 'val == :hello'),
-            \+ sub_string(S, _, _, _, 'val == "hello"')
+            sub_string(S, _, _, _, 'constant_match?(val, :hello)'),
+            \+ sub_string(S, _, _, _, 'constant_match?(val, "hello")')
         ->  pass(Test)
         ;   fail_test(Test, 'intern_atoms mode failed to emit atom literal')
         ),
@@ -2295,10 +2422,10 @@ test_intern_atoms_keeps_non_identifiers_as_strings :-
         (   wam_target:compile_predicate_to_wam(intern_test:p/1, [], WamCode),
             lower_predicate_to_elixir(p/1, WamCode, [module_name('TestMod')], Code),
             atom_string(Code, S),
-            sub_string(S, _, _, _, 'val == "Foo"'),
-            sub_string(S, _, _, _, 'val == "hello world"'),
+            sub_string(S, _, _, _, 'constant_match?(val, "Foo")'),
+            sub_string(S, _, _, _, 'constant_match?(val, "hello world")'),
             % Sanity: did NOT emit `:Foo` (would parse as a module name).
-            \+ sub_string(S, _, _, _, 'val == :Foo')
+            \+ sub_string(S, _, _, _, 'constant_match?(val, :Foo)')
         ->  pass(Test)
         ;   fail_test(Test, 'non-identifier constants wrongly emitted as atoms')
         ),
@@ -2882,7 +3009,20 @@ test_runtime_structural_unify_aliases_cons_tags :-
     Test = 'Runtime: structural unification aliases ./2 and [|]/2 cons tags',
     wam_elixir_target:compile_wam_runtime_to_elixir([], Code),
     atom_string(Code, S),
-    (   sub_string(S, _, _, _, 'step_get_structure_matches?({:str, fn_name1}, fn_name2)'),
+    % The first assertion here named a head that never existed --
+    % 'step_get_structure_matches?({:str, fn_name1}, fn_name2)'. The real
+    % predicate binds ONE variable for the identical-functor clause and
+    % adds a clause per cons spelling. Assert those, plus the call site
+    % in the structural-unify path, which is the property this test is
+    % actually about.
+    (   sub_string(S, _, _, _,
+                   'defp step_get_structure_matches?({:str, fn_name}, fn_name), do: true'),
+        sub_string(S, _, _, _,
+                   'defp step_get_structure_matches?({:str, "./2"}, "[|]/2"), do: true'),
+        sub_string(S, _, _, _,
+                   'defp step_get_structure_matches?({:str, "[|]/2"}, "./2"), do: true'),
+        sub_string(S, _, _, _,
+                   'fn1 == fn2 or step_get_structure_matches?({:str, fn1}, fn2)'),
         sub_string(S, _, _, _, 'args1 = heap_slice(state, addr1 + 1, arity)'),
         sub_string(S, _, _, _, 'args2 = heap_slice(state, addr2 + 1, arity)')
     ->  pass(Test)
@@ -3460,15 +3600,17 @@ run_tests :-
     test_kernel_docstring_documents_integer_id_path,
     test_graph_kernel_tc_emitted_in_runtime,
     test_graph_kernel_transitive_distance_emitted_in_runtime,
-    test_graph_kernel_transitive_distance_uses_per_path_visited,
+    test_graph_kernel_transitive_distance_uses_distplus_bfs,
     test_kernel_dispatch_emits_transitive_distance_module,
+    test_kernel_dispatch_transitive_distance_e2e,
     test_shared_detector_finds_transitive_distance,
     test_graph_kernel_transitive_parent_distance_emitted_in_runtime,
-    test_graph_kernel_transitive_parent_distance_no_visited_set,
+    test_graph_kernel_transitive_parent_distance_uses_bfs_parent_sets,
     test_kernel_dispatch_emits_transitive_parent_distance_module,
+    test_kernel_dispatch_transitive_parent_distance_e2e,
     test_shared_detector_finds_transitive_parent_distance,
     test_graph_kernel_transitive_step_parent_distance_emitted_in_runtime,
-    test_graph_kernel_tspd_reuses_parent_distance_walker,
+    test_graph_kernel_tspd_uses_bfs_correlated_contract,
     test_kernel_dispatch_emits_transitive_step_parent_distance_module,
     test_shared_detector_finds_transitive_step_parent_distance,
     test_graph_kernel_weighted_shortest_path_emitted_in_runtime,

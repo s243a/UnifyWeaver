@@ -1,0 +1,137 @@
+{
+ "stamp": "shadow-exploratory-tier1-not-decision-bearing",
+ "frame": "eval unchanged (mixed-region enwiki_real); only channel scorer swapped",
+ "R1_R2_by_region": {
+  "old_trunk": {
+   "stem_computing": {
+    "e5": 0.8694,
+    "S": 0.2032,
+    "A": 0.293,
+    "E": 0.3031,
+    "n": 24,
+    "gap": 0.5663,
+    "gate": 0.8227,
+    "w_mu": 0.9891
+   },
+   "society": {
+    "e5": 0.9569,
+    "S": 0.2011,
+    "A": 0.5174,
+    "E": 0.3691,
+    "n": 23,
+    "gap": 0.4395,
+    "gate": 0.9576,
+    "w_mu": 0.9917
+   },
+   "culture": {
+    "e5": 0.7271,
+    "S": 0.3637,
+    "A": 0.3375,
+    "E": 0.4878,
+    "n": 9,
+    "gap": 0.2393,
+    "gate": 0.7354,
+    "w_mu": 0.9899
+   },
+   "geography": {
+    "e5": 0.9128,
+    "S": 0.2111,
+    "A": 0.5085,
+    "E": 0.4479,
+    "n": 119,
+    "gap": 0.4043,
+    "gate": 0.9168,
+    "w_mu": 0.9924
+   },
+   "everyday": {
+    "e5": 0.774,
+    "S": 0.1421,
+    "A": 0.3026,
+    "E": 0.2749,
+    "n": 21,
+    "gap": 0.4714,
+    "gate": 0.7583,
+    "w_mu": 0.9909
+   }
+  },
+  "stem_trunk": {
+   "stem_computing": {
+    "e5": 0.8694,
+    "S": 0.5524,
+    "A": 0.7345,
+    "E": 0.7666,
+    "n": 24,
+    "gap": 0.1028,
+    "gate": 0.8884,
+    "w_mu": 0.9881
+   },
+   "society": {
+    "e5": 0.9569,
+    "S": 0.4786,
+    "A": 0.8916,
+    "E": 0.8815,
+    "n": 23,
+    "gap": 0.0653,
+    "gate": 0.9585,
+    "w_mu": 0.9902
+   },
+   "culture": {
+    "e5": 0.7271,
+    "S": 0.371,
+    "A": 0.4427,
+    "E": 0.5514,
+    "n": 9,
+    "gap": 0.1757,
+    "gate": 0.7356,
+    "w_mu": 0.9781
+   },
+   "geography": {
+    "e5": 0.9128,
+    "S": 0.3824,
+    "A": 0.8692,
+    "E": 0.9025,
+    "n": 119,
+    "gap": 0.0103,
+    "gate": 0.917,
+    "w_mu": 0.9908
+   },
+   "everyday": {
+    "e5": 0.774,
+    "S": 0.4121,
+    "A": 0.6495,
+    "E": 0.627,
+    "n": 21,
+    "gap": 0.1245,
+    "gate": 0.7616,
+    "w_mu": 0.9684
+   }
+  }
+ },
+ "deltas": {
+  "stem_computing": {
+   "gap_delta": -0.4635,
+   "w_mu_delta": -0.001,
+   "gate_delta": 0.0657
+  },
+  "society": {
+   "gap_delta": -0.3742,
+   "w_mu_delta": -0.0015,
+   "gate_delta": 0.0009
+  },
+  "culture": {
+   "gap_delta": -0.0636,
+   "w_mu_delta": -0.0118,
+   "gate_delta": 0.0002
+  },
+  "geography": {
+   "gap_delta": -0.394,
+   "w_mu_delta": -0.0016,
+   "gate_delta": 0.0002
+  },
+  "everyday": {
+   "gap_delta": -0.3469,
+   "w_mu_delta": -0.0225,
+   "gate_delta": 0.0033
+  }
+ }
+}

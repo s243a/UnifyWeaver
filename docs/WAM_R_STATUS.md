@@ -1,0 +1,167 @@
+# WAM R Target — Status
+
+Living summary of the hybrid WAM-R backend
+(`wam_r_target.pl` + `wam_r_lowered_emitter.pl`). Distinct from the
+**non-WAM** direct R compiler (`r_target.pl`). Usage guide:
+[`WAM_R_TARGET.md`](WAM_R_TARGET.md).
+
+Companion docs:
+
+- [`WAM_R_TARGET.md`](WAM_R_TARGET.md) — usage guide.
+- [`handoff/wam_r_session_handoff.md`](handoff/wam_r_session_handoff.md) — parity-campaign handoff.
+- [`WAM_RUNTIME_PARSER_STATUS.md`](WAM_RUNTIME_PARSER_STATUS.md) — R native parser default.
+- [`WAM_HYBRID_TARGETS_COMPARISON.md`](WAM_HYBRID_TARGETS_COMPARISON.md).
+
+## Role
+
+**Statistical-scripting embed.** Product of a ~30-PR builtin/parity
+campaign; a full-kernel WAM backend that lands inside an R runtime with
+a native source-term parser as the default.
+
+## Codegen surface
+
+| Module | Approx. lines |
+|---|---:|
+| `src/unifyweaver/targets/wam_r_target.pl` | ~2.0k |
+| `src/unifyweaver/targets/wam_r_lowered_emitter.pl` | ~1.0k |
+| Dedicated tests | ~7 files (~100 plunit cases; generator suite denser) |
+
+## What's shipped
+
+**All 7 shared kernels.** Full graph-kernel set from the parity
+campaign.
+
+**Rich builtins.** Broad builtin/control/aggregate coverage per the
+session handoff.
+
+**Native parser default.** `target_runtime_parser_default(wam_r,
+native(parse_term))` — R is one of only two backends (with C++) whose
+runtime-parser default is native, with the compiled
+`prolog_term_parser` available as an opt-in fallback.
+
+**Optional LMDB.** Legacy `lmdb(Path)` remains load-everything.
+Versioned `lmdb_arg1_v1(Path)` supports `lmdb_materialisation(lazy)`
+(default when omitted), `eager`, `cached` (+ `lmdb_l2_capacity`,
+default 4096), and explicit `auto` (codegen resolves via shared
+`resolve_auto_lmdb_materialisation/2`). LMDB-R-0/R-1/R-2A/R-2B complete.
+
+**Negation (fixed 2026-08-10, R-NEG-BACKTRACK).** `\+ G` returned
+**true** for some goals G that succeed — a wrong answer, not a crash.
+The discriminator was whether G left a choicepoint: first-argument
+indexing routes the first key through the `try_me_else` chain (pushing
+a CP) and later keys straight to a clause body (pushing none), so
+`\+ f(a)` was wrong while `\+ f(b)` and `\+ f(c)` were right on the
+same three-clause predicate.
+
+The defect was in the **shared compiler**, not the R runtime. `\+ G`
+lowers to `((G, !, fail) ; true)` on legacy targets, and that rewrite's
+`builtin_call !/0` cuts back to the environment frame's barrier — but
+nothing ensured the clause had a frame, and a body of just `\+ G`
+tripped none of the allocate conditions. R keeps the barrier only on the
+frame, so its cut fell back to dropping the topmost choicepoint, which
+is the wrong one precisely when G left one. C was unaffected because it
+maintains a separate `call_bases` stack.
+
+Fixed by `goals_contain_hard_cut_negation/1` in `wam_target.pl`. Note
+the cross-target conformance harness stayed green on both R arms
+throughout — the shared spec has no negation coverage (CONF-ADD-NEGATION).
+
+## Gaps (relative to Rust / Haskell / F#)
+
+- **Classic conformance (CONF-R):** opt-in adapter (`r` / `r_functions`).
+  All programs green — the six classics plus the five head-shape
+  programs (`wide`, `nested`, `buildnest`, `repeatvar`, `emptylist`).
+  `buildnest` needed a fix (CONF-FIX-R-BUILDNEST, 2026-08-10):
+  `append_build_arg` gated its bind-through on `target_reg >= 101L`,
+  i.e. X/Y registers only. That is right for `put_structure`/`put_list`,
+  where an A register is body staging and binding its previous occupant
+  aliases an unrelated live variable, and wrong for
+  `get_structure`/`get_list` write mode, where the A register holds the
+  **caller's** output variable — so a clause head could build an output
+  argument and never hand it back. Build frames now carry
+  `bind_through`, set by the get-family only; the self-cycle guard is
+  unchanged. Nesting was never broken here (R already had a
+  `read_stack`/`build_stack` pair), and one fix covered both arms. Indexing hints — including remaining A2
+  forms (`switch_on_constant_a2`, `_a2_fallthrough`, `switch_on_structure_a2`)
+  — map to the existing `SwitchOnTerm()` linear no-op (not optimized A2
+  dispatch), preserving the full try/retry/trust chain.
+- **ISO error support** meets the seven-item adoption unit after ISO-R-0/
+  2A/2B: shared config/rewrite/audit, `is/2`, six arithmetic comparisons,
+  and `succ/2` three-form (`succ_iso`/`succ_lax`), plus pre-existing
+  catch/throw. Same caveat as Python/F#: remaining concrete builtins
+  without three-form keys are out of scope for “complete for every
+  builtin.” Do not describe R as fully ISO-compatible across the entire
+  builtin surface.
+- Effective-distance cross-target matrix row populated (BENCH-R): scale-300
+  `emit_mode(functions)` + auto `category_ancestor/4` kernel, reference
+  parity match — see `docs/design/WAM_CROSS_TARGET_BENCHMARK_RESULTS.md`.
+  Further optimized by PERF-R-CA-DIRECT / IDDFS / IDCACHE / STACK / IDTABLE /
+  WAM-STEP / AGGREGATE-LOWER / AGG-BATCH / NATIVE-HOPS-0. Hosted-CI
+  NATIVE-HOPS-0 median query_ms=270 / total_ms=776 (prior AGG-BATCH
+  1111/1621; AGGREGATE-LOWER 1564/2077; IDTABLE 3412/4076).
+  PERF-R-CA-LOOPBODY, PATHMARK, ED-BOUNDARY, LOWERED-DIRECTCALL, and
+  CA-BULK-HOPS profiled/declined where measured. PERF-R-WAM-STEP
+  short-circuits `is_lax` `**/^` and unary `-`. PERF-R-AGGREGATE-LOWER
+  capability-gates scalar `sum|count|min|max` regions over `bulk_collect`
+  generators (~1.43–1.44× same-host query; steps 137817→14540).
+  PERF-R-AGG-BATCH adds typed numeric batches + vectorized closed `is_lax`
+  reduce (~1.18× same-host query over AGGREGATE-LOWER; steps unchanged at
+  14540). PERF-R-CA-BULK-HOPS found post-AGG-BATCH query time ~84% inside
+  `category_ancestor_hops_ids`; R-level membership/buffer trials did not
+  clear the ≥1.05× gate (best ~1.016×). PERF-R-NATIVE-HOPS-0 adds an
+  optional base-R `.Call` hop kernel (`R CMD SHLIB`, pure-R fallback;
+  ~1.95× same-host query over AGG-BATCH; steps unchanged at 14540).
+  PERF-R-POST-NATIVE-0 profiled the post-native residual: hops ~3–5% of
+  warm query; `run`/`step` ~84–90%, aggregate fast path ~32%, `put_reg`
+  ~23%. These are nested/inclusive measurements and are not additive.
+  Plan-cache + closed `(Batch ⊕ scalar) ** Exp` trials did not
+  clear ≥1.05× (best ~1.00–1.03×); no production change retained.
+  PERF-R-BULK-REDUCE-REGION-0: shape-gated fused bulk-reduce prototype
+  ≈2.04×; thin step-driver ≈0.97×; direct-fusion five-repetition smoke
+  ≈1.20× but ≈320 LOC (>180 soft-stop) — reverted, docs-only. The
+  official two-sequence gate was not run after the soft-stop fired.
+  PERF-R-BULK-REDUCE-PLAN-1: compact generate-time plans + generic
+  executor, **180** net production LOC after fail-closed review hardening; official 7×2 gate ≈1.24× query
+  both sequences, no total regression, 271-row parity; hosted 3-rep
+  median query_ms=160 / total_ms=687 — **retained**.
+
+## Whole-program exercise (A2, 2026-09): known / suspected deficiencies
+
+The peerhailer CLI-parser exercise (see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md)) found three JS-WAM runtime bug
+classes that are fleet-wide suspects. R's audit:
+
+| # | Deficiency | Status | Evidence / reason |
+|---|---|---|---|
+| A1 | `sub_string/5` builtin missing | **verified missing** | `sub_atom/5` exists in the library dispatch; `sub_string/5` does not |
+| A2 | Y-register clobber across `Call` of a no-`Allocate` callee | **aliasing form: verified (structural), open. Frameless-Y form: UNREACHABLE on this target's emitter path (2026-09)** | see the two sub-rows below |
+| A2a | …*aliasing form* (a big ground fact's X100+ spilling into the Y range) | **verified (structural)**, unchanged | encoding `X→+100 / Y→+200` (`wam_r_target.pl:208-209`), so X101 ≡ Y1; ids ≥ 201 read/write the topmost frame's `ys` (with the shadow-frame fallthrough, `runtime.R.mustache:289-299`) — a no-`Allocate` fact with >99 X placeholders writes into the *caller's* frame. The shadow-frame machinery protects Y reads *after the callee's own Deallocate*, not against this clobber |
+| A2b | …*frameless-Y-write form* (a callee with no frame naming a Y) | **unreachable on wam_r's own emitter path (2026-09)** | the form that broke wam_rust (D50), wam_python and wam_haskell comes from `compile_if_then_else/7` reserving the barrier Y **after** the has-environment decision — but only under `ite_use_y_level(true)`. **wam_r never enables it**: every WAM compile passes a literal `[]` (`wam_r_target.pl:1045` project writer, `:1167` items bridge, `:2541-2543` ISO audit), so the barrier branch is `BarrierReg = none`, no Y is reserved, and `->/2` compiles to the legacy `cut_ite` (`\+` doesn't even reach that path — it takes the `((G,!,fail);true)` hard-cut rewrite). Corpus evidence: compiling all 79 predicates of `examples/pkg_resolver/resolver.pl` and all 43 of `examples/cli_args/cli_args.pl` with `[]` yields **zero** `allocate`-less clauses naming a Y register; the same scan with `ite_use_y_level(true)` flags `satisfies/2` — the exact clause wam_rust tripped on. Second line of defence: `wam_parts_to_r/2` has no `get_level` clause, so the tokens become `Raw(...)`, which the dispatcher answers with `stop("unrecognized WAM instruction: ...")` — loud, never a silent frame write. **This is routing immunity, not structural immunity**: `WamRuntime$put_reg` does send every `idx >= 201` into the topmost frame's `ys`, so if wam_r ever opts into `ite_use_y_level(true)` it inherits the hazard and must first adopt the choice-point model (`ChoicePoint::levels` in wam_rust, `cpLevels` in wam_haskell, `ChoicePoint.levels` in the Python runtime). Probe: `tests/test_wam_r_frameless_ite_level.pl` (no Rscript needed) |
+| A3 | `Execute` of a builtin doesn't return to the continuation | **handled** | `Execute` falls through lowered → label → dynamic → `call_library`, and on library success takes the Proceed protocol (return to CP, halt only when CP = 0) (`runtime.R.mustache:1424-1467`) — one of the two fleet reference implementations (with C++). A builtin outside `call_library` still silently fails |
+| A4 | String fidelity | **rung 0** | no string term tag; D37's double-quoted literals intern as atoms |
+
+Pattern lane: `r_target.pl` compiles facts from `clause(Head, true)` —
+the G-A3-8 execute-at-compile-time hazard is absent; the G-A3 machinery
+has no analogue there.
+
+## Path forward
+
+1. Optional follow-up: three-form keys for additional audited builtins
+   beyond `is`/compares/`succ` (same class of work as ISO-PYTHON/ISO-FSHARP).
+2. Further ED gains likely need broader region fusion or `put_reg`/`step`
+   infrastructure — thin step-drivers remain not useful.
+
+## Document status
+
+Fleet-aligned snapshot updated for PERF-R-BULK-REDUCE-PLAN-1
+(2026-08-09): hosted row 160/687 (PLAN-1); official fresh-process gate
+≈1.24× query retained under the 180-LOC hard stop. 2026-09-01: added
+the whole-program (A2) deficiency audit; see
+[`WAM_FLEET_GAPS.md`](WAM_FLEET_GAPS.md). 2026-09-03: A2 split into its
+aliasing and frameless-Y forms after the wam_rust D50 finding; the
+frameless-Y form is **unreachable on wam_r's own emitter path** (M17
+barrier never enabled, decoder refuses `get_level` loudly) and is now
+pinned by `tests/test_wam_r_frameless_ite_level.pl`. No wam_r source
+changed. Pre-existing suite state at that date: `test_wam_r_generator.pl`
+has one failure (`r_interpreter_uses_items_ir_policy`) that reproduces
+identically on the untouched tree; sampled R suites otherwise green.

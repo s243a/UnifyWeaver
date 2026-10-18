@@ -1,0 +1,20 @@
+# SAMPLE of the multi-domain MuAttention SYM dense map μ(X|Physics) (regenerate with
+# train_mu_attention.py --pairs mu_pairs_scored_multidomain.tsv). name<TAB>μ.
+Subfields_of_physics	0.9479
+Physics	0.9285
+Electromagnetism	0.9235
+Energy	0.9139
+Electromagnetic_radiation	0.9126
+Thermodynamics	0.9116
+Classical_mechanics	0.9077
+Motion_(physics)	0.9068
+Engineering_disciplines	0.8949
+Engineering	0.8929
+Optics	0.8753
+Periodic_table	0.8842
+Acids	0.5730
+Chemistry	0.8685
+Music	0.1891
+Cooking	0.0632
+Sociology	0.3390
+Football	0.0579

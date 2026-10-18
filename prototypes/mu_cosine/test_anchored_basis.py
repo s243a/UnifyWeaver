@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""Tests for the anchored-basis attention module (DESIGN §8/§8b/§1b). Needs torch.
+Run: `python3 test_anchored_basis.py`."""
+import torch
+
+from anchored_basis import AnchoredBasis, AnchoredRelation, TypedQuery
+
+
+def test_shapes_and_simplex():
+    ab = AnchoredBasis(torch.randn(4, 384), n_atoms=5, d_query=6, d_k=64)
+    q = torch.randn(8, 6)
+    token, w = ab(q)
+    assert token.shape == (8, 384)
+    assert w.shape == (8, 4 + 5)
+    assert torch.allclose(w.sum(-1), torch.ones(8), atol=1e-5)      # simplex: weights sum to 1
+    assert (w >= 0).all()                                          # positive
+
+
+def test_anchor_values_frozen_atoms_learn():
+    ab = AnchoredBasis(torch.randn(4, 384), n_atoms=5, d_query=6, d_k=64)
+    # anchor_values is a buffer (frozen), not in parameters; atoms + keys + q_proj are
+    names = {n for n, _ in ab.named_parameters()}
+    assert "anchor_values" not in names                            # frozen value block
+    assert "atom_values" in names and "atom_keys" in names and "anchor_keys" in names
+    token, w = ab(torch.randn(8, 6))
+    token.sum().backward()
+    assert ab.atom_values.grad is not None and ab.atom_values.grad.abs().sum() > 0
+    assert ab.anchor_keys.grad is not None                         # keys are learnable (KL-calibrated)
+
+
+def test_anchor_kl_and_utilization():
+    ab = AnchoredBasis(torch.randn(4, 384), n_atoms=5, d_query=6, d_k=64)
+    _, w = ab(torch.randn(8, 6))
+    tgt = torch.full((8, 4), 0.25)                                 # uniform anchor target
+    kl = ab.anchor_kl(w, tgt)
+    assert kl.shape == () and torch.isfinite(kl)
+    u = ab.utilization(w)
+    assert len(u["anchor_mass"]) == 4 and len(u["atom_mass"]) == 5
+    total = sum(u["anchor_mass"]) + sum(u["atom_mass"])
+    assert abs(total - 1.0) < 1e-4                                 # mean mass-shares sum to 1
+
+
+def test_zero_atoms_is_k0_special_case():
+    ab = AnchoredBasis(torch.randn(4, 384), n_atoms=0, d_query=6, d_k=64)   # §8: K=0 = anchors-only
+    token, w = ab(torch.randn(8, 6))
+    assert w.shape == (8, 4) and token.shape == (8, 384)
+
+
+def test_anchored_relation_op_weights():
+    # 4 anchors mapping to 3 operators (e.g. element_of→0, subcategory→1, see_also→2, bridge→2) + 5 atoms → 3 ops
+    anchor_ops = [0, 1, 2, 2]
+    ar = AnchoredRelation(torch.randn(4, 384), anchor_ops=anchor_ops, n_ops=3, n_atoms=5, d_query=6, d_k=64)
+    q = torch.randn(8, 6)
+    op_w, w = ar(q)
+    assert op_w.shape == (8, 3) and w.shape == (8, 4 + 5)
+    assert torch.allclose(op_w.sum(-1), torch.ones(8), atol=1e-5)     # op_weights is a simplex too
+    assert (op_w >= 0).all()
+    # gradient reaches the learned atom→op mapping AND the atom basis params
+    op_w.sum().backward()
+    assert ar.atom_op_logits.grad is not None and ar.atom_op_logits.grad.abs().sum() > 0
+    assert ar.basis.atom_keys.grad is not None
+
+
+def test_anchored_relation_k0_anchors_only():
+    ar = AnchoredRelation(torch.randn(4, 384), anchor_ops=[0, 1, 2, 2], n_ops=3, n_atoms=0, d_query=6, d_k=64)
+    op_w, w = ar(torch.randn(8, 6))
+    assert op_w.shape == (8, 3) and w.shape == (8, 4)                 # K=0: only anchors, fixed mapping
+
+
+def test_symmetric_e5_tied_keys():
+    # §8c proper: query is an e5 vector (header text), anchor keys TIED to the frozen e5 values (no q_proj)
+    ar = AnchoredRelation(torch.randn(4, 384), anchor_ops=[0, 1, 2, 2], n_ops=3, n_atoms=5, symmetric=True)
+    assert ar.basis.anchor_keys is None                              # tied to frozen anchor_values
+    q = torch.randn(8, 384)                                          # query lives in e5 space (d_model)
+    op_w, w = ar(q)
+    assert op_w.shape == (8, 3) and w.shape == (8, 4 + 5)
+    assert torch.allclose(op_w.sum(-1), torch.ones(8), atol=1e-5)
+    op_w.sum().backward()
+    assert ar.basis.atom_keys.grad is not None and ar.atom_op_logits.grad is not None
+
+
+def test_typed_query_tokens():
+    tq = TypedQuery({"mu": 6, "label": 384, "header": 384}, d_k=64, core=("mu",), dropout=0.5)
+    inp = {"mu": torch.randn(8, 6), "label": torch.randn(8, 384), "header": torch.randn(8, 384)}
+    q = tq(inp)
+    assert q.shape == (8, 64)
+    # core (mu) is NOT dropped; the extras get a distinct learned type embedding
+    assert "mu" in tq.core and "label" not in tq.core
+    q.sum().backward()
+    assert tq.proj["header"].weight.grad is not None and tq.type_emb["label"].grad is not None
+    # eval mode = no dropout (deterministic)
+    tq.eval()
+    assert torch.allclose(tq(inp), tq(inp))
+
+
+if __name__ == "__main__":
+    tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for t in tests:
+        t()
+        print(f"  ok  {t.__name__}")
+    print(f"all {len(tests)} anchored_basis tests passed")

@@ -139,7 +139,7 @@ fsharp_wam_builtin_state_type :-
 "type BuiltinState =
     | FactRetry      of varId: int * remaining: string list * retPC: int
     | HopsRetry      of varId: int * remaining: int list   * retPC: int
-    | FFIStreamRetry of outRegs: int list * outVars: int list * remaining: Value list list * retPC: int
+    | FFIStreamRetry of outRegs: int list * outVars: int list * remaining: Value list list * retPC: int * returnCP: int * returnCutBar: int * returnB0Stack: int list
     /// select/3 enumeration choice point.  Each remaining candidate is
     /// a pair (selected, rest_items): on backtrack the runtime restores
     /// the CP snapshot, unifies elemReg with `selected`, and binds
@@ -381,6 +381,7 @@ fsharp_wam_instruction_type :-
     | Call           of pred: string * arity: int
     | CallResolved   of pc: int * arity: int
     | CallForeign    of pred: string * arity: int
+    | ExecuteForeign of pred: string
     | Execute        of pred: string
     | ExecutePc      of pc: int
     | Proceed
@@ -885,6 +886,12 @@ let rec evalArith (bindings: Map<int, Value>) (v: Value) : float option =
     | Str (\"/\", [a; b]) ->
         match evalArith bindings a, evalArith bindings b with
         | Some x, Some y when y <> 0.0 -> Some (x / y)
+        | _ -> None
+    | Str (\"//\", [a; b]) ->
+        // Prolog integer division: truncate quotient toward zero (SWI default,
+        // integer_rounding_function = toward_zero).
+        match evalArith bindings a, evalArith bindings b with
+        | Some x, Some y when y <> 0.0 -> Some (float (truncate (x / y)))
         | _ -> None
     | Str (\"mod\", [a; b]) ->
         match evalArith bindings a, evalArith bindings b with

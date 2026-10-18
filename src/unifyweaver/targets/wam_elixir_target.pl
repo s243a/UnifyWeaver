@@ -151,13 +151,44 @@ wam_elixir_case(get_structure,
         cond do
           match?({:unbound, _}, val) ->
             addr = state.heap_len
-            new_heap = Map.put(state.heap, addr, {:str, fn_name})
-            state
+            args_at = addr + 1
+            # RESERVE the argument cells up front. Write mode used to
+            # append each argument at heap_len as it arrived, which
+            # assumes the term stays contiguous. A NESTED term breaks
+            # that: its own functor cell is allocated at heap_len, in
+            # the middle of the enclosing term arg region, so the
+            # enclosing tail landed above the nested term and the cons
+            # cell was never completed. Reserving means a nested term
+            # allocated later goes ABOVE these cells and every argument
+            # still lands in its own slot. Same fix as the C runtime
+            # WamArgCtx stack.
+            reserved =
+              Enum.reduce(0..(arity - 1)//1,
+                          Map.put(state.heap, addr, {:str, fn_name}),
+                          fn i, h ->
+                            Map.put(h, args_at + i,
+                                    {:unbound, {:heap_ref, args_at + i}})
+                          end)
+            base =
+              state
+              |> Map.put(:heap, reserved)
+              |> Map.put(:heap_len, args_at + arity)
+            # Bind the VARIABLE the register held, not merely the
+            # register slot. In a clause head, ai is the callee A slot
+            # while the variable inside it belongs to the CALLER, so
+            # overwriting only the register left the caller output
+            # unbound: cbuild_one(X, [tk(X)|[]]) built the term and
+            # threw it away. unify handles both unbound spellings
+            # (heap_ref cell and register id) and trails the binding.
+            bound =
+              case unify(base, val, {:ref, addr}) do
+                {:ok, st} -> st
+                :fail -> base
+              end
+            bound
             |> trail_binding(ai)
-            |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
-            |> Map.put(:heap, new_heap)
-            |> Map.put(:heap_len, addr + 1)
-            |> Map.put(:stack, [{:write_ctx, arity} | state.stack])
+            |> Map.put(:regs, Map.put(bound.regs, ai, {:ref, addr}))
+            |> Map.put(:stack, [{:write_ctx, args_at, arity} | bound.stack])
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
@@ -171,13 +202,27 @@ wam_elixir_case(get_list,
         cond do
           match?({:unbound, _}, val) ->
             addr = state.heap_len
-            new_heap = Map.put(state.heap, addr, {:str, "./2"})
-            state
+            args_at = addr + 1
+            # Head and tail cells reserved up front; see get_structure.
+            reserved =
+              state.heap
+              |> Map.put(addr, {:str, "./2"})
+              |> Map.put(args_at, {:unbound, {:heap_ref, args_at}})
+              |> Map.put(args_at + 1, {:unbound, {:heap_ref, args_at + 1}})
+            base =
+              state
+              |> Map.put(:heap, reserved)
+              |> Map.put(:heap_len, args_at + 2)
+            # Same caller-output binding as get_structure above.
+            bound =
+              case unify(base, val, {:ref, addr}) do
+                {:ok, st} -> st
+                :fail -> base
+              end
+            bound
             |> trail_binding(ai)
-            |> Map.put(:regs, Map.put(state.regs, ai, {:ref, addr}))
-            |> Map.put(:heap, new_heap)
-            |> Map.put(:heap_len, addr + 1)
-            |> Map.put(:stack, [{:write_ctx, 2} | state.stack])
+            |> Map.put(:regs, Map.put(bound.regs, ai, {:ref, addr}))
+            |> Map.put(:stack, [{:write_ctx, args_at, 2} | bound.stack])
             |> Map.put(:pc, state.pc + 1)
           match?({:ref, _}, val) ->
             {:ref, addr} = val
@@ -830,9 +875,16 @@ compile_utility_helpers_to_elixir(Code) :-
     {%{state | heap: Map.put(state.heap, addr, val), heap_len: addr + 1}, addr}
   end
 
+  # An unbound heap cell holds a SELF-reference: heap[addr] is
+  # {:unbound, {:heap_ref, addr}}. A cell holding a heap_ref to a
+  # DIFFERENT address is a var-var alias and must be followed --
+  # the old `_addr` wildcard stopped on both, so an aliased variable
+  # reported itself as unbound and the next binding overwrote the
+  # alias instead of reaching its partner.
   def deref_var(state, {:unbound, {:heap_ref, addr}} = ref) do
     case Map.get(state.heap, addr) do
-      {:unbound, {:heap_ref, _addr}} -> ref
+      {:unbound, {:heap_ref, ^addr}} -> ref
+      nil -> ref
       val -> deref_var(state, val)
     end
   end
@@ -885,6 +937,19 @@ compile_utility_helpers_to_elixir(Code) :-
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
         state |> trail_binding(xn) |> put_reg(xn, arg)
         |> Map.put(:stack, new_stack) |> Map.put(:pc, new_pc)
+      # Reserved-cell form, pushed by get_structure / get_list write
+      # mode: the destination address is carried so a nested term
+      # allocated in between cannot displace the remaining arguments.
+      [{:write_ctx, dest, n} | stack_rest] when n > 0 ->
+        fresh = {:unbound, {:heap_ref, dest}}
+        new_stack =
+          if n == 1, do: stack_rest, else: [{:write_ctx, dest + 1, n - 1} | stack_rest]
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        state |> put_reg(xn, fresh)
+        |> Map.put(:heap, Map.put(state.heap, dest, fresh))
+        |> Map.put(:stack, new_stack) |> Map.put(:pc, new_pc)
+      # Legacy append form, still used by put_structure / put_list. The
+      # compiler emits nested puts args-first, so contiguity holds there.
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         addr = state.heap_len
         fresh = {:unbound, {:heap_ref, addr}}
@@ -909,6 +974,11 @@ compile_utility_helpers_to_elixir(Code) :-
             %{new_state | stack: new_stack, pc: new_pc}
           :fail -> :fail
         end
+      [{:write_ctx, dest, n} | stack_rest] when n > 0 ->
+        new_stack =
+          if n == 1, do: stack_rest, else: [{:write_ctx, dest + 1, n - 1} | stack_rest]
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | heap: Map.put(state.heap, dest, val), stack: new_stack, pc: new_pc}
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
@@ -928,6 +998,11 @@ compile_utility_helpers_to_elixir(Code) :-
             %{new_state | stack: new_stack, pc: new_pc}
           :fail -> :fail
         end
+      [{:write_ctx, dest, n} | stack_rest] when n > 0 ->
+        new_stack =
+          if n == 1, do: stack_rest, else: [{:write_ctx, dest + 1, n - 1} | stack_rest]
+        new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
+        %{state | heap: Map.put(state.heap, dest, c), stack: new_stack, pc: new_pc}
       [{:write_ctx, n} | stack_rest] when n > 0 ->
         new_stack = if n == 1, do: stack_rest, else: [{:write_ctx, n - 1} | stack_rest]
         new_pc = if is_integer(state.pc), do: state.pc + 1, else: state.pc
@@ -961,7 +1036,19 @@ compile_utility_helpers_to_elixir(Code) :-
   defp constant_lookup_key(v), do: v
 
   @doc "Unify two WAM values"
-  def unify(state, v1, v2) do
+  # Both operands are DEREFERENCED first. Without this, unify saw the
+  # caller''s raw value -- typically a register still holding
+  # {:unbound, {:heap_ref, addr}} for a cell that has since been
+  # aliased to another variable -- and the first unbound branch
+  # overwrote heap[addr] directly, silently discarding the alias. A
+  # repeated variable in a head structure (csame(p(X, X), X)) is the
+  # shape that exposes it: unify_value aliases slot 0 with slot 1, then
+  # get_value binds slot 0 over the alias and slot 1 stays unbound.
+  # unify_arg_list already derefd its args before recursing; doing it
+  # here makes that redundant rather than load-bearing.
+  def unify(state, v1_raw, v2_raw) do
+    v1 = deref_var(state, v1_raw)
+    v2 = deref_var(state, v2_raw)
     cond do
       v1 == v2 -> {:ok, state}
       constant_match?(v1, v2) -> {:ok, state}
@@ -4173,52 +4260,46 @@ defmodule WamRuntime.GraphKernel.TransitiveDistance do
           trans_dist(Mid, Y, N1),
           N is N1 + 1.
 
-  Returns all `(target, distance)` pairs reachable from `start` via
-  simple paths (per-path visited set, A->B->C and A->C are DIFFERENT
-  paths to C with distance 2 and 1, both yielded — same convention
-  CategoryAncestor uses).
-
-  Ported from the Rust kernel `collect_native_transitive_distance_results`
-  in src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
-  recursive DFS with explicit per-path visited list, push (target,
-  next_depth) on every edge to an unvisited node, recurse with the
-  target appended to visited.
-
-  Termination: each recursive step adds the target to `visited`,
-  blocking re-entry. The recursion bottoms out when the current
-  nodes neighbours are all in visited (i.e. we have walked every
-  simple path from `start`).
-
-  Why bypass WAM: same reasoning as TransitiveClosure / CategoryAncestor.
-  Adding more kernel kinds is the second-largest perf lever after
-  walker tuning (per docs/WAM_TARGET_ROADMAP.md). This kernel was
-  the simplest of the five Rust+Haskell kinds Elixir was missing —
-  shape mirrors CategoryAncestor (per-path enumeration) but without
-  the explicit Visited-list arg or max_depth bound.
+  Contract: dist+ (docs/design/WAM_TRANSITIVE_DISTANCE3_CONTRACT.md).
+  Finite BFS emits each reachable target exactly once with its minimum
+  positive edge distance. Visited tracks nodes discovered via an
+  outgoing edge — not seeded with `start` — so Source appears only for
+  a self-loop (distance 1) or the shortest nonempty cycle.
   """
 
   @doc """
-  Returns `[{target, distance}, ...]` for every distinct simple path
-  from `start`. `neighbors_fn` receives a node, returns a list of
-  `{from, to}` tuples (FactSource lookup_by_arg1 contract); only `to`
-  is read.
+  Returns `[{target, distance}, ...]` — one pair per reachable target
+  at minimum positive distance. `neighbors_fn` receives a node, returns
+  a list of `{from, to}` tuples (FactSource lookup_by_arg1 contract);
+  only `to` is read.
   """
   def collect_pairs(neighbors_fn, start) when is_function(neighbors_fn, 1) do
-    walk(neighbors_fn, start, [start], 0, [])
+    bfs(neighbors_fn, :queue.in({start, 0}, :queue.new()), MapSet.new(), [])
     |> Enum.reverse()
   end
 
-  defp walk(neighbors_fn, node, visited, depth, acc) do
-    edges = neighbors_fn.(node)
-    next_depth = depth + 1
-    Enum.reduce(edges, acc, fn {_from, target}, ac ->
-      if :lists.member(target, visited) do
-        ac
-      else
-        ac1 = [{target, next_depth} | ac]
-        walk(neighbors_fn, target, [target | visited], next_depth, ac1)
-      end
-    end)
+  defp bfs(neighbors_fn, q, visited, acc) do
+    case :queue.out(q) do
+      {:empty, _} ->
+        acc
+
+      {{:value, {node, depth}}, q1} ->
+        next_depth = depth + 1
+        {q2, visited2, acc2} =
+          Enum.reduce(neighbors_fn.(node), {q1, visited, acc}, fn {_from, target}, {qq, vv, aa} ->
+            if MapSet.member?(vv, target) do
+              {qq, vv, aa}
+            else
+              {
+                :queue.in({target, next_depth}, qq),
+                MapSet.put(vv, target),
+                [{target, next_depth} | aa]
+              }
+            end
+          end)
+
+        bfs(neighbors_fn, q2, visited2, acc2)
+    end
   end
 
   @doc """
@@ -4241,60 +4322,74 @@ defmodule WamRuntime.GraphKernel.TransitiveParentDistance do
           pd(Mid, Y, P, N1),
           N is N1 + 1.
 
-  Returns `[{target, predecessor, distance}, ...]` triples — for every
-  edge encountered during DFS from `start`, records the edge plus the
-  depth at which it was traversed. The predecessor is the immediate
-  source-side of the recorded edge (the node we stepped FROM), which
-  matches the Prolog patterns base-case binding (`pd(X, Y, X, 1)` —
-  parent equals start when one edge connects start to target).
-
-  Ported from the Rust kernel
-  `collect_native_transitive_parent_distance_results` in
-  src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
-  iterative DFS via an explicit stack, push `(target, predecessor,
-  next_depth)` per edge.
-
-  WARNING: NO cycle detection. Matches the Rust reference impl which
-  uses a stack-based DFS without a visited list. On cyclic inputs
-  this kernel **loops indefinitely**; callers must either ensure
-  acyclic input (DAGs only — e.g. typical category-parent structures)
-  or wrap with a depth-bound consumer like
-  `findall(P-N, (pd(X, Y, P, N), N < MaxD), Triples)`. If you need
-  cycle-safe behaviour AND the predecessor, the right next step is a
-  separate `transitive_parent_distance4_safe` kernel that adds a
-  visited list — not in this PR.
+  Contract: shortest-positive parents
+  (docs/design/WAM_TRANSITIVE_PARENT_DISTANCE4_CONTRACT.md).
+  Finite BFS emits every distinct `{target, parent, distance}` where
+  `distance` is dist+ and `parent` is an immediate predecessor on some
+  shortest positive path. Equal-shortest parents are all emitted.
+  Distance map tracks nodes discovered via an outgoing edge — not
+  seeded with `start` — so Source appears only for a self-loop
+  (`{source, source, 1}`) or the shortest nonempty cycle.
   """
 
   @doc """
-  Returns `[{target, predecessor, distance}, ...]` for every edge
-  encountered during DFS from `start`. `neighbors_fn` follows the
-  FactSource lookup_by_arg1 contract: receives a node, returns
-  `[{from, to}, ...]` tuples.
-
-  Edge-iteration order: matches Rusts `for next in next_nodes.iter().rev()
-  + stack.push` — edges are visited in forward order. We reverse the
-  edge list before reducing onto the stack so the first edge pops
-  first. This preserves the same enumeration order across targets,
-  which matters when callers depend on it for deterministic test
-  output.
+  Returns `[{target, predecessor, distance}, ...]` — one triple per
+  distinct shortest-parent. `neighbors_fn` receives a node, returns
+  a list of `{from, to}` tuples (FactSource lookup_by_arg1 contract);
+  only `to` is read as the neighbour.
   """
   def collect_triples(neighbors_fn, start) when is_function(neighbors_fn, 1) do
-    walk(neighbors_fn, [{start, 0}], [])
-    |> Enum.reverse()
+    bfs(neighbors_fn, :queue.in({start, 0}, :queue.new()), %{}, %{})
   end
 
-  defp walk(_, [], acc), do: acc
-  defp walk(neighbors_fn, [{node, depth} | rest], acc) do
-    edges = neighbors_fn.(node)
-    next_depth = depth + 1
-    {new_acc, new_stack} =
-      edges
-      |> Enum.reverse()
-      |> Enum.reduce({acc, rest}, fn {_from, target}, {a, s} ->
-        {[{target, node, next_depth} | a], [{target, next_depth} | s]}
-      end)
-    walk(neighbors_fn, new_stack, new_acc)
+  defp bfs(neighbors_fn, q, dist, parents) do
+    case :queue.out(q) do
+      {:empty, _} ->
+        dist
+        |> Map.keys()
+        |> Enum.sort()
+        |> Enum.flat_map(fn t ->
+          d = Map.fetch!(dist, t)
+          Map.get(parents, t, MapSet.new())
+          |> MapSet.to_list()
+          |> Enum.sort()
+          |> Enum.map(fn p -> {t, p, d} end)
+        end)
+
+      {{:value, {node, depth}}, q1} ->
+        next_depth = depth + 1
+
+        {q2, dist2, parents2} =
+          Enum.reduce(neighbors_fn.(node), {q1, dist, parents}, fn {_from, target}, {qq, dd, pp} ->
+            if atom_node?(target) do
+              case Map.get(dd, target) do
+                nil ->
+                  {
+                    :queue.in({target, next_depth}, qq),
+                    Map.put(dd, target, next_depth),
+                    Map.put(pp, target, MapSet.new([node]))
+                  }
+
+                ^next_depth ->
+                  {qq, dd, Map.update!(pp, target, &MapSet.put(&1, node))}
+
+                _ ->
+                  {qq, dd, pp}
+              end
+            else
+              # TPD4 is an atom-node relation. Mixed-domain fact rows must
+              # neither become outputs nor bridge an otherwise atom path.
+              {qq, dd, pp}
+            end
+          end)
+
+        bfs(neighbors_fn, q2, dist2, parents2)
+    end
   end
+
+  # Default lowering represents atoms as binaries; intern_atoms(true) uses
+  # BEAM atoms. Other FactSource values are outside the TPD4 node domain.
+  defp atom_node?(value), do: is_binary(value) or is_atom(value)
 
   @doc """
   Convenience for FactSource-backed graphs.
@@ -4316,51 +4411,79 @@ defmodule WamRuntime.GraphKernel.TransitiveStepParentDistance do
           tspd(Mid, Y, _IgnoredStep, P, D1),
           D is D1 + 1.
 
-  Returns `[{target, step, parent, distance}, ...]` quadruples where:
-    - target: the reachable node
-    - step: the FIRST hop taken from `start` (the immediate child of
-      `start` on the recorded path)
-    - parent: the immediate predecessor of `target`
-    - distance: total path length from `start` to `target`
-
-  Note that `step` and `parent` differ in general — `step` is anchored
-  to the start, `parent` to the target. They coincide only on direct
-  edges (depth 1).
-
-  Ported from the Rust kernel
-  `collect_native_transitive_step_parent_distance_results` in
-  src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
-  for each direct edge from `start`, emit the depth-1 quadruple, then
-  delegate to `TransitiveParentDistance.collect_triples/2` for the
-  deeper walk and decorate every returned `(target, parent, dist)`
-  triple with the current first-hop and `dist + 1`.
-
-  WARNING: NO cycle detection (inherited from TransitiveParentDistance).
-  Cyclic inputs loop indefinitely — use only on DAGs (typical
-  category-parent / ontology shapes are fine).
+  Contract: shortest-positive correlated step/parent
+  (docs/design/WAM_TRANSITIVE_STEP_PARENT_DISTANCE5_CONTRACT.md).
+  Finite level-synchronous BFS emits every distinct
+  `{target, step, parent, distance}` where `distance` is dist+ and
+  `(step, parent)` is a correlated pair on some shortest positive path.
+  Never cross-product independent Step/Parent sets. Distance map tracks
+  nodes discovered via an outgoing edge — not seeded with `start`.
   """
 
   @doc """
-  Returns `[{target, step, parent, distance}, ...]` for every edge in
-  the DFS expansion from `start`, decorated with the FIRST hop taken.
-  Reuses `WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples/2`
-  for the inner walk; the step is fixed at the first hop per outer
-  iteration.
+  Returns `[{target, step, parent, distance}, ...]` — one quadruple per
+  distinct shortest correlated pair. `neighbors_fn` receives a node,
+  returns a list of `{from, to}` tuples; only `to` is read.
   """
   def collect_quads(neighbors_fn, start) when is_function(neighbors_fn, 1) do
-    edges = neighbors_fn.(start)
-    Enum.flat_map(edges, fn {_from, next} ->
-      direct = [{next, next, start, 1}]
-      nested =
-        WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples(
-          neighbors_fn, next)
-      bumped =
-        Enum.map(nested, fn {target, parent, dist} ->
-          {target, next, parent, dist + 1}
-        end)
-      direct ++ bumped
-    end)
+    bfs(neighbors_fn, start, :queue.in({start, 0}, :queue.new()), %{}, %{})
   end
+
+  defp bfs(neighbors_fn, source, q, dist, pairs) do
+    case :queue.out(q) do
+      {:empty, _} ->
+        dist
+        |> Map.keys()
+        |> Enum.sort()
+        |> Enum.flat_map(fn t ->
+          d = Map.fetch!(dist, t)
+          Map.get(pairs, t, MapSet.new())
+          |> MapSet.to_list()
+          |> Enum.sort()
+          |> Enum.map(fn {step, parent} -> {t, step, parent, d} end)
+        end)
+
+      {{:value, {node, depth}}, q1} ->
+        next_depth = depth + 1
+
+        {q2, dist2, pairs2} =
+          Enum.reduce(neighbors_fn.(node), {q1, dist, pairs}, fn {_from, target}, {qq, dd, pp} ->
+            if atom_node?(target) do
+              cands =
+                if node === source do
+                  [{target, source}]
+                else
+                  Map.get(pp, node, MapSet.new())
+                  |> Enum.map(fn {step, _} -> {step, node} end)
+                  |> Enum.uniq()
+                end
+
+              case Map.get(dd, target) do
+                nil ->
+                  {
+                    :queue.in({target, next_depth}, qq),
+                    Map.put(dd, target, next_depth),
+                    Map.put(pp, target, MapSet.new(cands))
+                  }
+
+                ^next_depth ->
+                  {qq, dd, Map.update!(pp, target, fn set ->
+                    Enum.reduce(cands, set, &MapSet.put(&2, &1))
+                  end)}
+
+                _ ->
+                  {qq, dd, pp}
+              end
+            else
+              {qq, dd, pp}
+            end
+          end)
+
+        bfs(neighbors_fn, source, q2, dist2, pairs2)
+    end
+  end
+
+  defp atom_node?(value), do: is_binary(value) or is_atom(value)
 
   @doc """
   Convenience for FactSource-backed graphs.
@@ -4373,8 +4496,8 @@ end
 
 defmodule WamRuntime.GraphKernel.WeightedShortestPath do
   @moduledoc """
-  Native Dijkstra shortest-path kernel — bypasses WAM dispatch for
-  the canonical pattern:
+  Native Dijkstra shortest-path kernel for weighted_shortest_path3
+  (docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md).
 
       wsp(X, Y, W) :- weighted_edge(X, Y, W).
       wsp(X, Y, TotalW) :-
@@ -4382,26 +4505,13 @@ defmodule WamRuntime.GraphKernel.WeightedShortestPath do
           wsp(Mid, Y, RestW),
           TotalW is RestW + W1.
 
-  Returns `[{target, cost}, ...]` — the SHORTEST-path cost from
-  `start` to each reachable node (excluding start itself).
+  Returns `[{target, cost}, ...]` — the SHORTEST-path float cost from
+  `start` to each reachable node (excluding start itself). Source is
+  never emitted (even via self-loop / cycle). Integral sums remain floats.
 
-  Important semantic narrowing: the canonical Prolog pattern above
-  enumerates ALL paths from start to target with their summed
-  weights. This kernel computes only the SHORTEST. So:
-
-      findall(W, wsp(s, t, W), Ws)
-      ;; Prolog source: yields all path weights to t.
-      ;; Kernel:        yields a 1-element list — only the shortest.
-
-      findall(T-W, wsp(s, T, W), Pairs)
-      ;; Prolog source: yields one pair per (path, weight); same
-      ;;                target may appear multiple times.
-      ;; Kernel:        yields one pair per reachable target with
-      ;;                its shortest-path cost.
-
-      aggregate_all(min, wsp(s, t, W), MinW)
-      ;; Both produce the same answer — the kernel just computes it
-      ;; in O(E log V) instead of exponential path enumeration.
+  A reachable invalid row (non-atom destination, non-numeric / NaN /
+  Inf / negative weight) returns `:invalid` so the dispatch wrapper
+  fails the complete kernel call.
 
   Ported from the Rust kernel
   `collect_native_weighted_shortest_path_results` in
@@ -4414,8 +4524,7 @@ defmodule WamRuntime.GraphKernel.WeightedShortestPath do
   Edge predicate is 3-ary: `weighted_edges_fn(node)` receives a node
   and returns `[{from, to, weight}, ...]` triples (the weight at
   position 3, matching the FactSource lookup_by_arg1 contract for
-  arity-3 predicates). Weights must be non-negative for Dijkstras
-  correctness — the kernel does not validate this; caller responsibility.
+  arity-3 predicates).
 
   Cycle handling: Dijkstra naturally bounds termination via the dist
   map. Cycles do not loop indefinitely (a nodes dist gets updated
@@ -4423,20 +4532,24 @@ defmodule WamRuntime.GraphKernel.WeightedShortestPath do
   """
 
   @doc """
-  Returns `[{target, cost}, ...]` — shortest path cost from `start`
-  to every reachable node. `weighted_edges_fn` is a 1-arity function
-  receiving a node, returns `[{from, to, weight}, ...]` triples.
+  Returns `[{target, cost}, ...]` — shortest path float cost from
+  `start` to every reachable non-source node, or `:invalid` when a
+  reachable edge row is invalid. `weighted_edges_fn` is a 1-arity
+  function receiving a node, returns `[{from, to, weight}, ...]` triples.
   """
   def collect_path_costs(weighted_edges_fn, start)
       when is_function(weighted_edges_fn, 1) do
-    initial_dist = %{start => 0}
-    initial_heap = :gb_sets.singleton({0, start})
-    final_dist = dijkstra(weighted_edges_fn, initial_heap, initial_dist)
-    final_dist
-    |> Enum.flat_map(fn
-      {^start, _} -> []
-      {node, cost} -> [{node, cost}]
-    end)
+    initial_dist = %{start => 0.0}
+    initial_heap = :gb_sets.singleton({0.0, start})
+    case dijkstra(weighted_edges_fn, initial_heap, initial_dist) do
+      :invalid -> :invalid
+      final_dist ->
+        final_dist
+        |> Enum.flat_map(fn
+          {^start, _} -> []
+          {node, cost} -> [{node, cost * 1.0}]
+        end)
+    end
   end
 
   defp dijkstra(weighted_edges_fn, heap, dist) do
@@ -4450,21 +4563,47 @@ defmodule WamRuntime.GraphKernel.WeightedShortestPath do
         if cost > best do
           dijkstra(weighted_edges_fn, heap1, dist)
         else
-          {new_heap, new_dist} =
-            weighted_edges_fn.(node)
-            |> Enum.reduce({heap1, dist}, fn {_from, next, weight}, {h, d} ->
-              next_cost = cost + weight
-              case Map.fetch(d, next) do
-                {:ok, prev} when prev <= next_cost ->
-                  {h, d}
-                _ ->
-                  {:gb_sets.add({next_cost, next}, h), Map.put(d, next, next_cost)}
-              end
-            end)
-          dijkstra(weighted_edges_fn, new_heap, new_dist)
+          case relax_edges(weighted_edges_fn.(node), cost, heap1, dist) do
+            :invalid -> :invalid
+            {new_heap, new_dist} ->
+              dijkstra(weighted_edges_fn, new_heap, new_dist)
+          end
         end
     end
   end
+
+  defp relax_edges(edges, cost, heap, dist) do
+    Enum.reduce_while(edges, {heap, dist}, fn row, {h, d} ->
+      case row do
+        {_from, next, weight} ->
+          cond do
+            not is_binary(next) ->
+              {:halt, :invalid}
+            not valid_edge_weight?(weight) ->
+              {:halt, :invalid}
+            true ->
+              w = weight * 1.0
+              next_cost = cost + w
+              case Map.fetch(d, next) do
+                {:ok, prev} when prev <= next_cost ->
+                  {:cont, {h, d}}
+                _ ->
+                  {:cont,
+                   {:gb_sets.add({next_cost, next}, h),
+                    Map.put(d, next, next_cost)}}
+              end
+          end
+        _ ->
+          {:halt, :invalid}
+      end
+    end)
+  end
+
+  # Finite nonnegative: integers >= 0; floats via IEEE (NaN fails
+  # comparison; Inf * 0.0 is NaN so fails == 0.0).
+  defp valid_edge_weight?(w) when is_integer(w), do: w >= 0
+  defp valid_edge_weight?(w) when is_float(w), do: w >= 0.0 and w * 0.0 == 0.0
+  defp valid_edge_weight?(_), do: false
 
   @doc """
   Convenience for FactSource-backed graphs (3-arity weighted_edge
@@ -4479,8 +4618,10 @@ end
 
 defmodule WamRuntime.GraphKernel.AstarShortestPath do
   @moduledoc """
-  Native A* shortest-path kernel — bypasses WAM dispatch for the
-  canonical pattern:
+  Correctness-safe A* for astar_shortest_path4
+  (docs/design/WAM_ASTAR_SHORTEST_PATH4_CONTRACT.md).
+
+  Canonical pattern:
 
       astar(X, Y, _Dim, W) :- weighted_edge(X, Y, W).
       astar(X, Y, Dim, TotalW) :-
@@ -4488,126 +4629,162 @@ defmodule WamRuntime.GraphKernel.AstarShortestPath do
           astar(Mid, Y, Dim, RestW),
           TotalW is RestW + W1.
 
-  Goal-directed shortest-path search with a dimensionality-aware
-  heuristic. Priority: f(n) = g(n)^D + h(n)^D where D is graph
-  dimensionality. h(n) = direct semantic distance from n to target
-  (via the configured `direct_dist_fn`). Minkowski-style f-cost
-  (NOT standard Euclidean f = g + h) — by Minkowski inequality this
-  is admissible and tighter than L1 A*.
-
-  Ported from the Rust kernel
-  `collect_native_astar_shortest_path_results` in
-  src/unifyweaver/targets/wam_rust_target.pl. Identical algorithm:
-  min-heap keyed by f-cost, dist map for stale-entry skip, early
-  termination when target pops, post-filter dist map.
-
-  Dijkstra fallback: if `target` is `nil`, the heuristic returns 0
-  for every node, f-cost reduces to g(n)^D, and the search behaves
-  like Dijkstra (no early termination — explores all reachable).
-  This matches Rusts `target.is_empty()` branch.
+  Final FloatCost is always the finite Dijkstra minimum (PQ settled
+  by g-cost). Minkowski-style f(n) = g(n)^D + h(n)^D is a secondary
+  scheduling key only — never used for early-stop under unchecked f.
+  Missing h = 0.0. Source=Target → [{target, 0.0}]. Malformed
+  reachable edge or relevant heuristic → empty result (fail call).
 
   Two edge predicates per call:
     - `weighted_edges_fn(node)` -> [{from, to, weight}, ...]
-      Forward weighted edges. Same contract as
-      WeightedShortestPath.collect_path_costs/2.
     - `direct_dist_fn(node)` -> [{from, to, weight}, ...]
-      Heuristic edges from `node`. The kernel filters for the entry
-      where `to == target`; if none, defaults to 1.0 (Rusts
-      "conservative default"). When no separate `direct_dist_pred`
-      is configured, callers pass `weighted_edges_fn` here too —
-      using forward edges as the heuristic is admissible (any direct
-      edge weight is a lower bound on shortest path through it).
+      Heuristic rows for `to == target`; missing → 0.0; duplicate →
+      min valid; NaN/Inf/neg → fail.
 
-  Result shape: same as WeightedShortestPath — `[{node, g_cost}, ...]`
-  for every node whose dist was finalised before target popped, plus
-  target itself. With early termination, result size depends on
-  search depth, not graph size. Caller post-filters to target if
-  only that single result is wanted (the dispatch wrapper does this
-  when target is bound on entry).
-
-  Cycle handling: same as Dijkstra (PR #1825) — naturally bounded
-  via the dist map. No explicit visited list needed.
+  Cycle handling: naturally bounded via the dist map (stale PQ skip).
   """
 
   @doc """
-  Returns `[{node, g_cost}, ...]` — finalised shortest-path costs
-  from `start` to nodes explored by A* search. With `target` bound,
-  search terminates as soon as target pops from the heap; result
-  contains target plus all nodes finalised along the way. With
-  `target == nil`, behaves like Dijkstra (full reachable set).
-
-  `dim` is the Minkowski exponent for f-cost. Use 5 by default
-  (matches Rusts foreign_usize_config fallback for `dimensionality`).
+  Returns `[{node, g_cost}, ...]` for settled non-source nodes, or
+  `[{target, 0.0}]` when Source=Target. Search settles Target by
+  g-cost and returns at most that singleton after dispatch post-filter.
+  Source and Target must be atom terms; `dim` must be a positive integer.
   """
   def collect_path_costs(weighted_edges_fn, direct_dist_fn, start, target, dim)
       when is_function(weighted_edges_fn, 1) and is_function(direct_dist_fn, 1)
-       and is_number(dim) do
-    h_start = heuristic(direct_dist_fn, start, target)
-    initial_f = f_cost(0, h_start, dim)
-    initial_dist = %{start => 0}
-    initial_heap = :gb_sets.singleton({initial_f, 0, start})
-    final_dist = astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
-                            initial_heap, initial_dist)
-    final_dist
-    |> Enum.flat_map(fn
-      {^start, _} -> []
-      {node, cost} -> [{node, cost}]
-    end)
+       and is_integer(dim) and dim > 0 do
+    cond do
+      not valid_node?(start) or not valid_node?(target) ->
+        []
+      start == target ->
+        [{target, 0.0}]
+      true ->
+        case heuristic(direct_dist_fn, start, target) do
+          :invalid -> []
+          h_start ->
+            initial_f = f_cost(0, h_start, dim)
+            # Primary key g, secondary f (Dijkstra settle).
+            initial_heap = :gb_sets.singleton({0, initial_f, start})
+            case astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
+                            initial_heap, %{start => 0.0}) do
+              :invalid -> []
+              final_dist ->
+                final_dist
+                |> Enum.flat_map(fn
+                  {^start, _} -> []
+                  {node, cost} -> [{node, cost * 1.0}]
+                end)
+            end
+        end
+    end
   end
+  def collect_path_costs(_, _, _, _, _), do: []
 
   defp astar_loop(weighted_edges_fn, direct_dist_fn, target, dim, heap, dist) do
     case :gb_sets.is_empty(heap) do
       true -> dist
       false ->
-        {{_f_cost, g_cost, node}, heap1} = :gb_sets.take_smallest(heap)
+        {{g_cost, _f_cost, node}, heap1} = :gb_sets.take_smallest(heap)
         best = Map.fetch!(dist, node)
         cond do
           # Stale-entry skip: better path was found AFTER pushing this entry.
           g_cost > best ->
             astar_loop(weighted_edges_fn, direct_dist_fn, target, dim, heap1, dist)
 
-          # Early termination: target popped from heap. With an admissible
-          # heuristic this is guaranteed to be the shortest path to target.
-          target != nil and node == target ->
+          # Settled by g-cost (Dijkstra). Safe even if h overestimates.
+          node == target ->
             dist
 
-          # Expand neighbours.
           true ->
             edges = weighted_edges_fn.(node)
-            {new_heap, new_dist} =
-              edges
-              |> Enum.reduce({heap1, dist}, fn {_from, next, weight}, {h, d} ->
-                next_g = g_cost + weight
-                case Map.fetch(d, next) do
-                  {:ok, prev} when prev <= next_g ->
-                    {h, d}
-                  _ ->
-                    h_next = heuristic(direct_dist_fn, next, target)
-                    f_next = f_cost(next_g, h_next, dim)
-                    {:gb_sets.add({f_next, next_g, next}, h),
-                     Map.put(d, next, next_g)}
-                end
-              end)
-            astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
-                       new_heap, new_dist)
+            case relax_edges(edges, g_cost, heap1, dist, direct_dist_fn, target, dim) do
+              :invalid -> :invalid
+              {new_heap, new_dist} ->
+                astar_loop(weighted_edges_fn, direct_dist_fn, target, dim,
+                           new_heap, new_dist)
+            end
         end
     end
   end
 
-  # h(n) = direct distance from `node` to `target`. nil target means
-  # Dijkstra mode (no goal). Default 1.0 if no direct edge recorded
-  # (matches Rusts conservative default).
-  defp heuristic(_direct_dist_fn, _node, nil), do: 0
-  defp heuristic(direct_dist_fn, node, target) do
-    edges = direct_dist_fn.(node)
-    Enum.find_value(edges, 1.0, fn
-      {_from, to, w} when to == target -> w
-      _ -> false
+  defp relax_edges(edges, g_cost, heap, dist, direct_dist_fn, target, dim) do
+    Enum.reduce_while(edges, {heap, dist}, fn row, {h, d} ->
+      case row do
+        {_from, next, weight} ->
+          cond do
+            not valid_node?(next) ->
+              {:halt, :invalid}
+            not valid_edge_weight?(weight) ->
+              {:halt, :invalid}
+            true ->
+              w = weight * 1.0
+              next_g = g_cost + w
+              if not valid_edge_weight?(next_g) do
+                {:halt, :invalid}
+              else
+                case Map.fetch(d, next) do
+                  {:ok, prev} when prev <= next_g ->
+                    {:cont, {h, d}}
+                  _ ->
+                    case heuristic(direct_dist_fn, next, target) do
+                      :invalid -> {:halt, :invalid}
+                      h_next ->
+                        f_next = f_cost(next_g, h_next, dim)
+                        {:cont, {:gb_sets.add({next_g, f_next, next}, h),
+                                 Map.put(d, next, next_g)}}
+                    end
+                end
+              end
+          end
+        _ ->
+          {:halt, :invalid}
+      end
     end)
   end
 
-  # f(n) = g(n)^D + h(n)^D — Minkowski-style. NOT standard A*s g + h.
-  defp f_cost(g, h, dim), do: :math.pow(g, dim) + :math.pow(h, dim)
+  # Finite nonnegative: integers >= 0; floats via IEEE (NaN fails
+  # comparison; Inf * 0.0 is NaN so fails == 0.0).
+  defp valid_edge_weight?(w) when is_integer(w), do: w >= 0
+  defp valid_edge_weight?(w) when is_float(w), do: w >= 0.0 and w * 0.0 == 0.0
+  defp valid_edge_weight?(_), do: false
+
+  defp valid_node?(value),
+    do: is_binary(value) or (is_atom(value) and not is_nil(value))
+
+  # Missing h = 0.0. Duplicate (node,target) → min valid.
+  # Malformed relevant row → :invalid.
+  defp heuristic(direct_dist_fn, node, target) do
+    edges = direct_dist_fn.(node)
+    edges
+    |> Enum.reduce_while({:miss, nil}, fn
+      {_from, to, w}, acc when to == target ->
+        if not valid_edge_weight?(w) do
+          {:halt, :invalid}
+        else
+          wv = w * 1.0
+          case acc do
+            {:miss, _} -> {:cont, {:hit, wv}}
+            {:hit, best} when wv < best -> {:cont, {:hit, wv}}
+            other -> {:cont, other}
+          end
+        end
+      _, acc -> {:cont, acc}
+    end)
+    |> case do
+      :invalid -> :invalid
+      {:miss, _} -> 0.0
+      {:hit, best} -> best
+    end
+  end
+
+  # Secondary scheduling key only — Minkowski-style f = g^D + h^D.
+  # Overflow must not turn a finite Dijkstra result into a kernel crash.
+  defp f_cost(g, h, dim) do
+    value = :math.pow(g, dim) + :math.pow(h, dim)
+    if valid_edge_weight?(value), do: value, else: g
+  rescue
+    ArithmeticError -> g
+  end
 
   @doc """
   Convenience for FactSource-backed graphs. Both `weighted_source` and
@@ -5750,8 +5927,10 @@ end
 %    - val_reg == 3 -> push distances     (`findall(D, td(s, _, D), Ds)`)
 %    - otherwise    -> push pair tuples   (`findall(T-D, ...)` etc.)
 %
-%  Driver-direct call (no aggregate frame): binds A2 and A3 to the
-%  first solutions target and distance.
+%  Driver-direct call (no aggregate frame): filters against any bound
+%  A2/A3 values, binds the first compatible pair, and pushes an ordinary
+%  function-backed choice point for the remaining pairs.  This makes all
+%  four TD3 modes use the same retry path as the rest of the Elixir WAM.
 compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     atom_string(ModuleName, ModName),
     camel_case(ModName, CamelMod),
@@ -5772,6 +5951,10 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
 
   def run(%WamRuntime.WamState{} = state) do
     start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    # Prolog atoms are represented as binaries by the Elixir WAM.  Keep
+    # the fleet TD3 input contract explicit: an unbound or non-atom Source
+    # fails even if an external fact store happens to contain such a key.
+    unless is_binary(start_val), do: throw({:fail, state})
     edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
     neighbors_fn = fn node ->
       WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
@@ -5779,6 +5962,7 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     pairs =
       WamRuntime.GraphKernel.TransitiveDistance.collect_pairs(
         neighbors_fn, start_val)
+      |> compatible_pairs(state)
 
     if WamRuntime.in_forkable_aggregate_frame?(state) do
       # Slice the pairs based on which register the active aggregate
@@ -5798,14 +5982,7 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
       new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
       throw({:fail, new_state})
     else
-      case pairs do
-        [{first_target, first_dist} | _] ->
-          case bind_two_regs(state, first_target, first_dist) do
-            nil -> throw({:fail, state})
-            bound -> {:ok, bound}
-          end
-        [] -> throw({:fail, state})
-      end
+      stream_pairs(state, pairs)
     end
   end
 
@@ -5837,9 +6014,52 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     end
   end
 
-  # Bind both A2 (target) and A3 (distance) for the driver-direct
-  # single-solution path. Either binding failure (slot already bound
-  # to a different value) returns nil so the caller throws fail.
+  # Keep only candidates that jointly unify with the callers current A2/A3.
+  # Checking both bindings against the same immutable candidate state is
+  # important when the output registers share a variable: independent
+  # wildcard checks would accept {atom, integer} for td(S, X, X).  The
+  # filtered list is also the aggregate fast paths contribution source, so
+  # aggregates observe the same tuple-unification contract as direct retry.
+  defp compatible_pairs(pairs, state) do
+    Enum.filter(pairs, fn {candidate_target, candidate_distance} ->
+      not is_nil(bind_two_regs(state, candidate_target, candidate_distance))
+    end)
+  end
+
+  # Yield one pair and retain the pre-bind snapshot in a normal Elixir-WAM
+  # choice point. WamRuntime.next_solution/1 drives the closure on retry;
+  # backtrack_ordinary restores registers, trail, heap, CP and stack before
+  # invoking it, so every pair attempt is independent.
+  defp stream_pairs(state, []), do: throw({:fail, state})
+  defp stream_pairs(state, [{target, distance} | rest]) do
+    case bind_two_regs(state, target, distance) do
+      nil ->
+        # Covers aliased output variables such as td(S, X, X): both slots
+        # look unbound during the pre-filter, but tuple unification must fail.
+        stream_pairs(state, rest)
+
+      bound when rest == [] ->
+        {:ok, bound}
+
+      bound ->
+        iter_cp = %{
+          pc: fn restored -> stream_pairs(restored, rest) end,
+          regs: state.regs,
+          y_regs: state.y_regs,
+          heap: state.heap,
+          heap_len: state.heap_len,
+          cp: state.cp,
+          trail: state.trail,
+          trail_len: state.trail_len,
+          stack: state.stack
+        }
+
+        {:ok, %{bound | choice_points: [iter_cp | bound.choice_points]}}
+    end
+  end
+
+  # Bind both A2 (target) and A3 (distance). Either binding failure
+  # returns nil so stream_pairs/2 can continue with the next candidate.
   defp bind_two_regs(state, target, distance) do
     with {:ok, s1} <- bind_one(state, 2, target),
          {:ok, s2} <- bind_one(s1, 3, distance) do
@@ -5850,7 +6070,7 @@ compile_transitive_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
   end
 
   defp bind_one(state, reg_idx, value) do
-    case WamRuntime.get_reg_raw(state, reg_idx) do
+    case WamRuntime.get_reg(state, reg_idx) do
       {:unbound, id} ->
         {:ok,
          state
@@ -5876,20 +6096,11 @@ end
 %  WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples.
 %
 %  Three enumerated registers per solution: A2 (target), A3 (parent
-%  / immediate predecessor), A4 (distance). The kernel returns
-%  [{target, parent, distance}, ...]; the dispatch wrapper inspects
-%  the active aggregate frames :agg_value_reg at runtime to select
-%  which slice to push:
-%    - val_reg == 2 -> push targets
-%    - val_reg == 3 -> push parents
-%    - val_reg == 4 -> push distances
-%    - otherwise    -> push triple tuples (compound template)
-%
-%  Driver-direct call: bind_three_regs/4 binds A2, A3, A4 to the
-%  first solution.
-%
-%  WARNING (inherited from the kernel): NO cycle detection. Caller
-%  must ensure acyclic input or wrap with a depth-bounded consumer.
+%  / immediate predecessor), A4 (distance). Reuses the TD3 joint-
+%  compatibility filter + ordinary function-backed choicepoint stream
+%  (including aggregate aliases): filter triples against bound A2/A3/A4
+%  jointly, then stream_triples/2. Aggregate slicing projects columns
+%  from the already-filtered triple list.
 compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     atom_string(ModuleName, ModName),
     camel_case(ModName, CamelMod),
@@ -5902,18 +6113,16 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
   @moduledoc """
   Kernel-dispatched ~w/4 (auto-recognised transitive_parent_distance4
   pattern over ~w/2). Routes calls through
-  WamRuntime.GraphKernel.TransitiveParentDistance.
+  WamRuntime.GraphKernel.TransitiveParentDistance (shortest-positive
+  parents contract).
 
   Edge source must be registered via WamRuntime.FactSourceRegistry
   under the indicator "~w" before calling.
-
-  WARNING: the underlying kernel has NO cycle detection. Use this
-  only on acyclic graphs (DAGs) or wrap calls with a depth-bound
-  consumer.
   """
 
   def run(%WamRuntime.WamState{} = state) do
     start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    unless source_atom?(start_val), do: throw({:fail, state})
     edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
     neighbors_fn = fn node ->
       WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
@@ -5921,11 +6130,11 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
     triples =
       WamRuntime.GraphKernel.TransitiveParentDistance.collect_triples(
         neighbors_fn, start_val)
+      |> compatible_triples(state)
 
     if WamRuntime.in_forkable_aggregate_frame?(state) do
-      # Slice triples based on which register the active aggregate
-      # is capturing. split_at_aggregate_cp/1 walks the cp stack ONCE
-      # so per-pair contribution is O(1) (PR #1814 amortisation).
+      # Slice jointly filtered triples. Independent column projection
+      # after joint filter preserves tuple integrity for aliased outputs.
       {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
       contributions =
         case agg_cp.agg_value_reg do
@@ -5939,14 +6148,7 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
       new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
       throw({:fail, new_state})
     else
-      case triples do
-        [{first_target, first_parent, first_dist} | _] ->
-          case bind_three_regs(state, first_target, first_parent, first_dist) do
-            nil -> throw({:fail, state})
-            bound -> {:ok, bound}
-          end
-        [] -> throw({:fail, state})
-      end
+      stream_triples(state, triples)
     end
   end
 
@@ -5978,9 +6180,38 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
     end
   end
 
-  # Bind A2 (target), A3 (parent), A4 (distance) for driver-direct
-  # single-solution mode. Any binding failure (slot already bound to a
-  # different value) aborts with nil so the caller throws fail.
+  defp compatible_triples(triples, state) do
+    Enum.filter(triples, fn {t, p, d} ->
+      not is_nil(bind_three_regs(state, t, p, d))
+    end)
+  end
+
+  defp stream_triples(state, []), do: throw({:fail, state})
+  defp stream_triples(state, [{target, parent, distance} | rest]) do
+    case bind_three_regs(state, target, parent, distance) do
+      nil ->
+        stream_triples(state, rest)
+
+      bound when rest == [] ->
+        {:ok, bound}
+
+      bound ->
+        iter_cp = %{
+          pc: fn restored -> stream_triples(restored, rest) end,
+          regs: state.regs,
+          y_regs: state.y_regs,
+          heap: state.heap,
+          heap_len: state.heap_len,
+          cp: state.cp,
+          trail: state.trail,
+          trail_len: state.trail_len,
+          stack: state.stack
+        }
+
+        {:ok, %{bound | choice_points: [iter_cp | bound.choice_points]}}
+    end
+  end
+
   defp bind_three_regs(state, target, parent, distance) do
     with {:ok, s1} <- bind_one(state, 2, target),
          {:ok, s2} <- bind_one(s1, 3, parent),
@@ -5992,7 +6223,7 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
   end
 
   defp bind_one(state, reg_idx, value) do
-    case WamRuntime.get_reg_raw(state, reg_idx) do
+    case WamRuntime.get_reg(state, reg_idx) do
       {:unbound, id} ->
         {:ok,
          state
@@ -6002,6 +6233,12 @@ compile_transitive_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, C
       _ -> :error
     end
   end
+
+  # Lowered Elixir uses binaries for Prolog atoms by default and BEAM
+  # atoms when intern_atoms(true) is enabled. Both representations are
+  # valid here; numbers, variables and compound terms remain invalid as
+  # a bound Source for this graph kernel.
+  defp source_atom?(value), do: is_binary(value) or is_atom(value)
 end
 ',
     [CamelMod, CamelPred,
@@ -6017,21 +6254,11 @@ end
 %  recursive_kernel_detection.pl). Routes calls through
 %  WamRuntime.GraphKernel.TransitiveStepParentDistance.collect_quads.
 %
-%  FOUR enumerated registers per solution: A2 (target), A3 (step —
-%  the FIRST hop from start), A4 (parent — immediate predecessor of
-%  target), A5 (distance). The wrapper inspects the active aggregate
-%  frames :agg_value_reg at runtime to slice quads:
-%    - val_reg == 2 -> push targets
-%    - val_reg == 3 -> push first-hop steps
-%    - val_reg == 4 -> push parents
-%    - val_reg == 5 -> push distances
-%    - otherwise    -> push quad tuples
-%
-%  Driver-direct call: bind_four_regs/5 binds A2, A3, A4, A5 to the
-%  first solution.
-%
-%  WARNING (inherited from the kernel): NO cycle detection. Use on
-%  acyclic graphs only.
+%  FOUR enumerated registers per solution: A2 (target), A3 (step),
+%  A4 (parent), A5 (distance). Reuses the TPD4 joint-compatibility
+%  filter + ordinary function-backed choicepoint stream: filter quads
+%  against bound A2/A3/A4/A5 jointly, then stream_quads/2. Aggregate
+%  slicing projects columns from the already-filtered quad list.
 compile_transitive_step_parent_distance_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     atom_string(ModuleName, ModName),
     camel_case(ModName, CamelMod),
@@ -6044,18 +6271,16 @@ compile_transitive_step_parent_distance_dispatch_module(ModuleName, Pred, EdgePr
   @moduledoc """
   Kernel-dispatched ~w/5 (auto-recognised transitive_step_parent_distance5
   pattern over ~w/2). Routes calls through
-  WamRuntime.GraphKernel.TransitiveStepParentDistance.
+  WamRuntime.GraphKernel.TransitiveStepParentDistance (shortest-positive
+  correlated step/parent contract).
 
   Edge source must be registered via WamRuntime.FactSourceRegistry
   under the indicator "~w" before calling.
-
-  WARNING: the underlying kernel has NO cycle detection. Use this
-  only on acyclic graphs (DAGs) or wrap calls with a depth-bound
-  consumer.
   """
 
   def run(%WamRuntime.WamState{} = state) do
     start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    unless source_atom?(start_val), do: throw({:fail, state})
     edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
     neighbors_fn = fn node ->
       WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
@@ -6063,10 +6288,9 @@ compile_transitive_step_parent_distance_dispatch_module(ModuleName, Pred, EdgePr
     quads =
       WamRuntime.GraphKernel.TransitiveStepParentDistance.collect_quads(
         neighbors_fn, start_val)
+      |> compatible_quads(state)
 
     if WamRuntime.in_forkable_aggregate_frame?(state) do
-      # Slice quads on which register the active aggregate captures.
-      # split_at_aggregate_cp/1 walks cp stack ONCE (PR #1814 amortisation).
       {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
       contributions =
         case agg_cp.agg_value_reg do
@@ -6081,14 +6305,7 @@ compile_transitive_step_parent_distance_dispatch_module(ModuleName, Pred, EdgePr
       new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
       throw({:fail, new_state})
     else
-      case quads do
-        [{first_target, first_step, first_parent, first_dist} | _] ->
-          case bind_four_regs(state, first_target, first_step, first_parent, first_dist) do
-            nil -> throw({:fail, state})
-            bound -> {:ok, bound}
-          end
-        [] -> throw({:fail, state})
-      end
+      stream_quads(state, quads)
     end
   end
 
@@ -6120,9 +6337,38 @@ compile_transitive_step_parent_distance_dispatch_module(ModuleName, Pred, EdgePr
     end
   end
 
-  # Bind A2 (target), A3 (step), A4 (parent), A5 (distance) for
-  # driver-direct single-solution mode. Any binding failure aborts
-  # with nil so the caller throws fail.
+  defp compatible_quads(quads, state) do
+    Enum.filter(quads, fn {t, s, p, d} ->
+      not is_nil(bind_four_regs(state, t, s, p, d))
+    end)
+  end
+
+  defp stream_quads(state, []), do: throw({:fail, state})
+  defp stream_quads(state, [{target, step, parent, distance} | rest]) do
+    case bind_four_regs(state, target, step, parent, distance) do
+      nil ->
+        stream_quads(state, rest)
+
+      bound when rest == [] ->
+        {:ok, bound}
+
+      bound ->
+        iter_cp = %{
+          pc: fn restored -> stream_quads(restored, rest) end,
+          regs: state.regs,
+          y_regs: state.y_regs,
+          heap: state.heap,
+          heap_len: state.heap_len,
+          cp: state.cp,
+          trail: state.trail,
+          trail_len: state.trail_len,
+          stack: state.stack
+        }
+
+        {:ok, %{bound | choice_points: [iter_cp | bound.choice_points]}}
+    end
+  end
+
   defp bind_four_regs(state, target, step, parent, distance) do
     with {:ok, s1} <- bind_one(state, 2, target),
          {:ok, s2} <- bind_one(s1, 3, step),
@@ -6135,7 +6381,7 @@ compile_transitive_step_parent_distance_dispatch_module(ModuleName, Pred, EdgePr
   end
 
   defp bind_one(state, reg_idx, value) do
-    case WamRuntime.get_reg_raw(state, reg_idx) do
+    case WamRuntime.get_reg(state, reg_idx) do
       {:unbound, id} ->
         {:ok,
          state
@@ -6145,6 +6391,8 @@ compile_transitive_step_parent_distance_dispatch_module(ModuleName, Pred, EdgePr
       _ -> :error
     end
   end
+
+  defp source_atom?(value), do: is_binary(value) or is_atom(value)
 end
 ',
     [CamelMod, CamelPred,
@@ -6158,6 +6406,7 @@ end
 %  Dispatch module for the weighted_shortest_path3 pattern (3-ary
 %  predicate over a 3-ary weighted_edge/3 source). Routes calls
 %  through WamRuntime.GraphKernel.WeightedShortestPath.collect_path_costs.
+%  Contract: docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md.
 %
 %  TWO enumerated registers per solution: A2 (target), A3 (cost). The
 %  wrapper inspects the active aggregate frames :agg_value_reg at
@@ -6166,12 +6415,10 @@ end
 %    - val_reg == 3 -> push costs
 %    - otherwise    -> push pair tuples
 %
-%  Driver-direct call: bind_two_regs/3 binds A2, A3 to the first
-%  shortest-path solution.
-%
-%  Semantic narrowing (documented in the runtime kernels moduledoc):
-%  the canonical Prolog pattern enumerates ALL paths; the kernel
-%  computes only the SHORTEST. Match the Rust reference impl.
+%  Driver-direct call: filters against any bound A2/A3 values via
+%  compatible_pairs/2, then stream_pairs/2 (same ordinary multi-result
+%  retry as TD3/TPD4). Source is never in the pair list. Invalid
+%  reachable edge rows fail the complete call.
 compile_weighted_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, Code) :-
     atom_string(ModuleName, ModName),
     camel_case(ModName, CamelMod),
@@ -6185,53 +6432,44 @@ compile_weighted_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, Code)
   Kernel-dispatched ~w/3 (auto-recognised weighted_shortest_path3
   pattern over ~w/3). Routes calls through
   WamRuntime.GraphKernel.WeightedShortestPath (Dijkstra).
+  Contract: docs/design/WAM_WEIGHTED_SHORTEST_PATH3_CONTRACT.md.
 
   Edge source must be registered via WamRuntime.FactSourceRegistry
   under the indicator "~w" before calling. The registered handle
   must support arity 3 and return `[{from, to, weight}, ...]` from
   lookup_by_arg1.
 
-  Semantic narrowing: the canonical Prolog pattern enumerates all
-  paths from start to target with their summed weights; this kernel
-  computes only the SHORTEST path cost (one result per reachable
-  target). Match the Rust reference impl. See the kernel moduledoc
-  in WamRuntime.GraphKernel.WeightedShortestPath for the full
-  contract.
+  Emits one float-cost pair per reachable non-Source target.
+  Driver-direct retry uses compatible_pairs/stream_pairs like TD3.
   """
 
   def run(%WamRuntime.WamState{} = state) do
     start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
+    unless is_binary(start_val), do: throw({:fail, state})
     edge_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
     weighted_edges_fn = fn node ->
       WamRuntime.FactSource.lookup_by_arg1(edge_handle, node, state)
     end
-    pairs =
-      WamRuntime.GraphKernel.WeightedShortestPath.collect_path_costs(
-        weighted_edges_fn, start_val)
-
-    if WamRuntime.in_forkable_aggregate_frame?(state) do
-      # Slice (target, cost) on which register the aggregate captures.
-      # split_at_aggregate_cp/1 walks cp stack ONCE (PR #1814 fix).
-      {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
-      contributions =
-        case agg_cp.agg_value_reg do
-          2 -> Enum.map(pairs, fn {t, _w} -> t end)
-          3 -> Enum.map(pairs, fn {_t, w} -> w end)
-          _ -> pairs
+    case WamRuntime.GraphKernel.WeightedShortestPath.collect_path_costs(
+           weighted_edges_fn, start_val) do
+      :invalid -> throw({:fail, state})
+      pairs0 ->
+        pairs = pairs0 |> compatible_pairs(state)
+        if WamRuntime.in_forkable_aggregate_frame?(state) do
+          {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
+          contributions =
+            case agg_cp.agg_value_reg do
+              2 -> Enum.map(pairs, fn {t, _w} -> t end)
+              3 -> Enum.map(pairs, fn {_t, w} -> w end)
+              _ -> pairs
+            end
+          new_accum = agg_cp.agg_accum ++ contributions
+          new_agg_cp = %{agg_cp | agg_accum: new_accum}
+          new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
+          throw({:fail, new_state})
+        else
+          stream_pairs(state, pairs)
         end
-      new_accum = agg_cp.agg_accum ++ contributions
-      new_agg_cp = %{agg_cp | agg_accum: new_accum}
-      new_state = %{state | choice_points: above ++ [new_agg_cp | below]}
-      throw({:fail, new_state})
-    else
-      case pairs do
-        [{first_target, first_cost} | _] ->
-          case bind_two_regs(state, first_target, first_cost) do
-            nil -> throw({:fail, state})
-            bound -> {:ok, bound}
-          end
-        [] -> throw({:fail, state})
-      end
     end
   end
 
@@ -6260,6 +6498,38 @@ compile_weighted_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, Code)
       error ->
         IO.puts("Predicate ~w CRASHED: #{inspect(error)}")
         :fail
+    end
+  end
+
+  defp compatible_pairs(pairs, state) do
+    Enum.filter(pairs, fn {candidate_target, candidate_cost} ->
+      not is_nil(bind_two_regs(state, candidate_target, candidate_cost))
+    end)
+  end
+
+  defp stream_pairs(state, []), do: throw({:fail, state})
+  defp stream_pairs(state, [{target, cost} | rest]) do
+    case bind_two_regs(state, target, cost) do
+      nil ->
+        stream_pairs(state, rest)
+
+      bound when rest == [] ->
+        {:ok, bound}
+
+      bound ->
+        iter_cp = %{
+          pc: fn restored -> stream_pairs(restored, rest) end,
+          regs: state.regs,
+          y_regs: state.y_regs,
+          heap: state.heap,
+          heap_len: state.heap_len,
+          cp: state.cp,
+          trail: state.trail,
+          trail_len: state.trail_len,
+          stack: state.stack
+        }
+
+        {:ok, %{bound | choice_points: [iter_cp | bound.choice_points]}}
     end
   end
 
@@ -6297,20 +6567,14 @@ end
 %  calls through WamRuntime.GraphKernel.AstarShortestPath. Reads
 %  TWO FactSources at runtime (weighted_edge + direct_dist edges)
 %  via the registry, plus three argument registers:
-%    - A1: start (must be bound to an atom)
-%    - A2: target (atom for goal-directed mode; unbound for Dijkstra
-%      fallback)
-%    - A3: dim (number on entry overrides default; unbound uses
-%      compile-time Dim from kernel config)
-%    - A4: cost (typically unbound; gets bound on success)
+%    - A1: start (must be bound to an atom term)
+%    - A2: target (must be bound to an atom term)
+%    - A3: dim (must be a strictly positive integer)
+%    - A4: cost (free or bound to an exactly matching float)
 %
-%  TWO enumerated registers per solution: A2 (target, only if it
-%  was unbound on entry) and A4 (cost). When target is bound on
-%  entry, the kernel returns AT MOST ONE solution (the goal cost).
-%
-%  Driver-direct call: bind_two_regs/4 binds A2 and A4 (skipping
-%  A2 if already bound) to the first solution.
-compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPred, Dim, Code) :-
+%  The kernel returns at most one solution and the wrapper binds A4.
+%  Aggregate-frame routing and direct-call lifecycle remain unchanged.
+compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPred, _Dim, Code) :-
     atom_string(ModuleName, ModName),
     camel_case(ModName, CamelMod),
     atom_string(Pred, PredStr),
@@ -6332,27 +6596,15 @@ compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPr
       if no separate direct_dist_pred was configured at compile time)
   """
 
-  @default_dim ~w
-
   def run(%WamRuntime.WamState{} = state) do
     start_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 1))
-    target_raw = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
-    dim_raw = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 3))
+    target_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 2))
+    dim_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 3))
+    cost_val = WamRuntime.deref_var(state, WamRuntime.get_reg(state, 4))
 
-    # target: nil = unbound (Dijkstra mode); else the atom/binary.
-    target_val =
-      case target_raw do
-        {:unbound, _} -> nil
-        v -> v
-      end
-
-    # dim: numeric override on entry; else the compile-time default.
-    dim_val =
-      case dim_raw do
-        {:unbound, _} -> @default_dim
-        n when is_number(n) -> n
-        _ -> @default_dim
-      end
+    unless valid_node?(start_val) and valid_node?(target_val) and
+           is_integer(dim_val) and dim_val > 0 and valid_cost_arg?(cost_val),
+      do: throw({:fail, state})
 
     weighted_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
     direct_handle = WamRuntime.FactSourceRegistry.lookup!("~w")
@@ -6367,15 +6619,11 @@ compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPr
       WamRuntime.GraphKernel.AstarShortestPath.collect_path_costs(
         weighted_fn, direct_fn, start_val, target_val, dim_val)
 
-    # Post-filter: when target was bound on entry, surface only its
-    # entry from the dist map (matches Rust dispatchs `results.retain`
-    # behaviour). When target was unbound, return the full set
-    # (Dijkstra mode).
-    pairs =
-      case target_val do
-        nil -> pairs
-        t -> Enum.filter(pairs, fn {n, _} -> n == t end)
-      end
+    # Surface only the bound target and enforce Prologs typed float
+    # unification before either ordinary or aggregate-frame routing.
+    pairs = Enum.filter(pairs, fn {n, cost} ->
+      n == target_val and cost_compatible?(cost_val, cost)
+    end)
 
     if WamRuntime.in_forkable_aggregate_frame?(state) do
       {above, agg_cp, below} = WamRuntime.split_at_aggregate_cp(state)
@@ -6391,8 +6639,8 @@ compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPr
       throw({:fail, new_state})
     else
       case pairs do
-        [{first_target, first_cost} | _] ->
-          case bind_target_and_cost(state, target_val, first_target, first_cost) do
+        [{_first_target, first_cost} | _] ->
+          case bind_cost(state, first_cost) do
             nil -> throw({:fail, state})
             bound -> {:ok, bound}
           end
@@ -6429,24 +6677,21 @@ compile_astar_shortest_path_dispatch_module(ModuleName, Pred, EdgePred, DirectPr
     end
   end
 
-  # If target was bound on entry, A2 is already set — skip rebinding.
-  # Always bind A4 (cost).
-  defp bind_target_and_cost(state, nil, first_target, first_cost) do
-    # Target was unbound on entry — bind both A2 and A4.
-    with {:ok, s1} <- bind_one(state, 2, first_target),
-         {:ok, s2} <- bind_one(s1, 4, first_cost) do
-      s2
-    else
-      _ -> nil
-    end
-  end
-  defp bind_target_and_cost(state, _bound_target, _first_target, first_cost) do
-    # Target was bound on entry — only bind A4.
+  defp bind_cost(state, first_cost) do
     case bind_one(state, 4, first_cost) do
       {:ok, s} -> s
       _ -> nil
     end
   end
+
+  defp valid_node?(value),
+    do: is_binary(value) or (is_atom(value) and not is_nil(value))
+
+  defp valid_cost_arg?({:unbound, _}), do: true
+  defp valid_cost_arg?(value), do: is_float(value)
+
+  defp cost_compatible?({:unbound, _}, _candidate), do: true
+  defp cost_compatible?(bound, candidate), do: bound === candidate
 
   defp bind_one(state, reg_idx, value) do
     case WamRuntime.get_reg_raw(state, reg_idx) do
@@ -6465,7 +6710,6 @@ end
      PredStr, EdgePredStr, DirectPredStr,
      EdgeKey,
      DirectKey,
-     Dim,
      EdgeKey,
      DirectKey,
      CamelPred]).

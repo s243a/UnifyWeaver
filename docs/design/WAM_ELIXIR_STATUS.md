@@ -20,6 +20,9 @@ Companion docs:
 - `WAM_CROSS_TARGET_BENCHMARK_RESULTS.md` — per-target perf comparison
   numbers; Elixir is now competitive on the chain workload (see
   Performance below).
+- [`../WAM_HYBRID_TARGETS_COMPARISON.md`](../WAM_HYBRID_TARGETS_COMPARISON.md)
+  — fleet comparison (Elixir is the architectural reference baseline;
+  sibling STATUS docs for Haskell/Rust/LLVM/C++/F#).
 
 ## Series Overview
 
@@ -65,6 +68,17 @@ The rewrite is text-level at project-write time (see `iso_errors_rewrite_text/4`
 
 **Member enumeration.** User-source `em/2` (2-clause ISO member) backtracks via `try_me_else`/`retry_me_else`/`trust_me`. The builtin `member/2` remains deterministic (boolean check). Cons-cell representations `./2` and `[|]/2` are treated as aliases in `step_get_structure_ref`.
 
+**Var-var aliasing through a head (fixed 2026-08-09, CONF-FIX-ELIXIR-REPEATVAR).** `unify/3` acted on the operands the caller handed it, without dereferencing. Typically that was a register still holding `{:unbound, {:heap_ref, addr}}` for a cell that had since been aliased to another variable, and the first unbound branch overwrote `heap[addr]` directly, discarding the alias. `deref_var/2` compounded it: its heap-ref clause matched `{:unbound, {:heap_ref, _addr}}` with a wildcard, so it stopped on an *alias* as readily as on the SELF-reference that actually marks an unbound cell — an aliased variable reported itself as unbound. `unify/3` now dereferences both operands up front, and `deref_var/2` only stops on a self-reference. A repeated variable inside a head structure (`csame(p(X, X), X)`) is the shape that exposed it: `unify_value` aliased slot 0 with slot 1, then `get_value` bound slot 0 over the alias and slot 1 stayed unbound. Found by the `repeatvar` conformance program; guarded additionally by `repeated_head_variable_aliases_both_slots` in `tests/test_wam_elixir_classic_programs.pl`.
+
+**Write-mode construction (fixed 2026-08-09/10).** A clause head that BUILDS an output argument — `cbuild_one(X, [tk(X)|[]])` called with its second argument unbound — was broken in two ways, both invisible to the conformance suite until its one write-mode check moved from `=/2` to `==/2`.
+
+1. **The caller's variable was never bound** (CONF-FIX-ELIXIR-BUILD). `get_structure`/`get_list` write mode overwrote `state.regs[ai]` with a fresh `{:ref, addr}` and trailed the *register*. In a clause head `ai` is the callee's A slot while the variable inside it belongs to the **caller**, so the built term was simply discarded. Both now bind through `unify/3`, which already handles the two unbound spellings and trails. Flat construction went from false to true on this alone.
+2. **Nested terms clobbered the enclosing one** (CONF-FIX-ELIXIR-BUILDNEST). Write mode appended each argument at `heap_len` as it arrived, which assumes the term stays contiguous. A nested term allocates its own functor cell at `heap_len`, in the middle of the enclosing term's argument region, so the enclosing cons tail landed above the nested term and the cons cell was never completed. `get_structure`/`get_list` now RESERVE their argument cells up front and push `{:write_ctx, dest, n}` carrying the destination address; the `step_unify_*` handlers write at `dest` and advance it. This is the C runtime's `WamArgCtx` treatment expressed in Elixir's map-heap terms.
+
+The reserved form is a **third** `write_ctx` shape and only the get-family emits it. `put_structure`/`put_list` keep the appending `{:write_ctx, n}` form — their `set_*` handlers never consume the counter at all, and the compiler emits nested puts args-first, so contiguity does hold there. Both consumer clauses sit side by side in each `step_unify_*`.
+
+Both fixes had to be made **twice**, in the interpreter runtime and in the lowered emitter, because the conformance arm builds with `emit_mode(lowered)`. Fixing only the interpreter changed nothing observable.
+
 **Indexed dispatch.** All WAM first-argument and second-argument indexing instructions are lowered: `switch_on_constant`, `switch_on_constant_a2`, `switch_on_constant_fallthrough`, `switch_on_constant_a2_fallthrough`, `switch_on_term`, `switch_on_term_a2`, `switch_on_structure`, `switch_on_structure_a2`. Type-based dispatch for `switch_on_term` distinguishes unbound variables, constants, list cons-cells (`./2`/`[|]/2`), and structures via heap lookup.
 
 **End-to-end coverage.** 50 tests in `tests/test_wam_elixir_classic_programs.pl`:
@@ -97,7 +111,13 @@ These choices are load-bearing and worth understanding before working on the tar
 
 **Heap as Map keyed by integer address.** Compounds are `{:ref, addr}` where `state.heap[addr] = {:str, "name/arity"}` and args at `heap[addr+1..addr+arity]` — contiguous. This contiguity assumption was the source of the `bagof_with_quantifier` bug (interleaved nested-put_structure broke it); the `args_first_emission` flag in the WAM compiler (now default per PR #2285) ensures args are emitted before nested structures.
 
-**Lowered mode is the default.** Per-predicate `clause_<Name><N>` functions, no per-instruction fetch loop, BEAM TCO via tail-calls. Interpreter mode (`emit_mode(interpreter)`) still works but is not exercised by the e2e tests.
+**Lowered mode is the production path in tests.** Per-predicate
+`clause_<Name><N>` functions, no per-instruction fetch loop, BEAM TCO
+via tail-calls. Codegen’s unresolved default is still
+`emit_mode(interpreter)` (`wam_elixir_resolve_emit_mode/2`); classic
+programs / conformance / e2e pass **`emit_mode(lowered)`**
+explicitly. Do not confuse “tests use lowered” with “codegen default
+is lowered.”
 
 **Side-stack catcher frames.** `catch/3` snapshots regs/y_regs/stack/trail-mark/cp-count into `state.catcher_frames`. `throw/1` raises `{:wam_throw, term, heap, heap_len}` as a BEAM throw — bundling the heap is critical for compound thrown terms (deep_copy creates cells in a state that gets discarded before the throw fires).
 
@@ -123,5 +143,15 @@ In rough priority order:
 **Apostrophes in the Prolog runtime template are deadly.** The Elixir runtime is embedded inside Prolog `format(string(...), '...', [])` calls; the format string is delimited by single quotes. Any apostrophe inside body comments (`don't`, `caller's`) terminates the Prolog string early and produces an unhelpful "Operator expected" error several columns past the offender. Rephrase to avoid contractions and possessives in every new comment block.
 
 **args-first emission is the safer default.** The WAM compiler's pre-PR-#2285 nested-compound emission interleaved outer-arg `set_variable` instructions with nested `put_structure` emission, breaking heap contiguity for any target that assumes args follow the functor cell. Defaulting args-first prevents the class of bug prospectively on Rust and Haskell too — even though no existing test exercised the shape.
+
+**A test that asserts emitted source text rots silently.** All six long-standing failures in `tests/test_wam_elixir_target.pl` were fixed on 2026-08-10 without touching the target at all — every one was the test, not the product:
+
+- two asserted an older spelling of `unify/3`'s functor check (`{{:str, fn_name}, {:str, fn_name}}`, a repeated variable requiring identical functors). Adding cons-tag aliasing replaced that with distinct binders plus `fn1 == fn2 or step_get_structure_matches?/2` — strictly stronger, and the assertion was never updated;
+- three asserted `val == "hello"` for `get_constant`, which now routes through `WamRuntime.constant_match?/2` (the change that added native-`[]` ↔ WAM-`"[]"` aliasing). The interning behaviour under test was correct throughout;
+- one was a skip-detection bug: the real-LMDB e2e script *does* print `[SKIP] real Elmdb dependency unavailable: ...`, but Mix emits its `Shall I install Hex? ... [Yn] ` prompt with no trailing newline, so the marker lands mid-line and a `string_concat/3` anchored at line start never matched. A correct skip was reported as `status=exit(0) pass=0 fail=0`.
+
+The lesson generalises past Elixir — the same class made two WAM-C kernel-generation tests red since the repository import. A test that greps generated source is only as good as its last update, and it fails *closed*, so it looks like a product defect forever. Prefer asserting behaviour; when asserting text is genuinely the point, expect to update it with the code it mirrors.
+
+**Ground conformance queries hide binding bugs.** Every query in the shared conformance spec is ground, so a clause head is always *matched* and never used to *bind* the caller's term. Elixir was green on all six classic programs while `unify/3` silently discarded var-var aliases. The bug only surfaced once a program was added whose check needs `==/2` — `=/2` re-unifies and happily binds the leftover slot, reporting success either way.
 
 **The lowered emitter has two copies of `allocate`/`deallocate`.** The runtime template version (`wam_elixir_target.pl`) is used by the interpreter mode; the inline-emitted version (`wam_elixir_lowered_emitter.pl`) is what lowered mode actually runs. Changes to env-frame discipline must touch both.

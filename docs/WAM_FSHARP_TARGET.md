@@ -16,6 +16,10 @@ you want full WAM semantics (backtracking, unification with shared
 variables, list-spine pattern matching) and don't mind the
 interpreter overhead.
 
+Living status (shipped / gaps / path forward):
+[WAM_FSHARP_STATUS.md](WAM_FSHARP_STATUS.md). Parity vs Haskell/Rust:
+[design/WAM_FSHARP_PARITY_AUDIT.md](design/WAM_FSHARP_PARITY_AUDIT.md).
+
 The target lives in:
 
 - [src/unifyweaver/targets/wam_fsharp_target.pl](../src/unifyweaver/targets/wam_fsharp_target.pl)

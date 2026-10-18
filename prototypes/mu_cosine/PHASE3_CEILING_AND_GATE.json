@@ -1,0 +1,60 @@
+{
+ "stamp": "shadow-exploratory-tier1-not-decision-bearing",
+ "scope_item4": "gate = learned combiner of FROZEN cached channel scores; only combiner weights learnable. Bounds 'best combination of channels as they currently are', NOT the mu approach.",
+ "P3_gate_arms": {
+  "current": {
+   "loco": 0.1495,
+   "loco_sd": 0.0178,
+   "in_domain": 0.2739,
+   "we_final_in_domain": 0.7619
+  },
+  "softmax4": {
+   "loco": 0.2151,
+   "loco_sd": 0.0193,
+   "in_domain": 0.3552,
+   "we_final_in_domain": 0.2
+  },
+  "twotimescale": {
+   "loco": 0.1511,
+   "loco_sd": 0.0144,
+   "in_domain": 0.2791,
+   "we_final_in_domain": 0.7508
+  },
+  "softmax4_tt": {
+   "loco": 0.2151,
+   "loco_sd": 0.0193,
+   "in_domain": 0.3552,
+   "we_final_in_domain": 0.2
+  },
+  "drop_mu": {
+   "loco": 0.2474,
+   "loco_sd": 0.0226,
+   "in_domain": 0.2592,
+   "we_final_in_domain": 0.943
+  },
+  "drop_all4": {
+   "loco": 0.1848,
+   "loco_sd": 0.0137,
+   "in_domain": 0.2066,
+   "we_final_in_domain": 0.385
+  },
+  "hardzero_mu": {
+   "in_domain": 0.3244,
+   "e5_alone_reference": 0.3244,
+   "recovers_e5": true
+  }
+ },
+ "P3_behavioral_ceiling": {
+  "coverage_query_url": 1.0,
+  "distinct_urls": 2870,
+  "urls_in_multiple_trees": 39,
+  "multi_filing_rate": 0.0136,
+  "held_queries": 200,
+  "ambiguous_labels_in_held": 3,
+  "mean_T_size": 1.015,
+  "top1_errors": 173,
+  "errors_into_behavioral_T": 1,
+  "share_defensible_BEHAVIORAL": 0.0058,
+  "retracted_proxy_estimate": "0.6%@0.90 / 4.6%@0.85 / 27.2%@0.80 (e5 geometry)"
+ }
+}

@@ -1,0 +1,356 @@
+<!-- SPDX-License-Identifier: MIT OR Apache-2.0 -->
+<!-- Copyright (c) 2026 John William Creighton (s243a) -->
+
+# Proposal: package-management logic as a transpilable Prolog spec
+
+**Status:** proposal (no code). Follows from the argparser maturity demonstration
+(`examples/cli_args/`, A1–A4: one Prolog spec → four verified builds) and the
+Babashka-as-shell-host discussion. Candidate for incubation here and extraction
+to a submodule/repo once it grows past a demonstration.
+
+---
+
+## 1. The thesis
+
+Dependency resolution is a logic-programming problem wearing an imperative
+costume. "Find versions of these packages such that every dependency range is
+satisfied, no two selections conflict, and pins are honored" is a relation —
+version constraints, transitive closure, conflict exclusion, search with
+backtracking. Every package manager reimplements this by hand (apt grew a
+solver; aptitude and 0install embedded SAT solvers; Nix/Guix went functional
+to escape the problem). Written as Prolog relations, the resolver **is** its
+own specification: `resolve(Requests, Catalog, Selection)` either holds or
+doesn't, and SWI-Prolog executes the spec directly.
+
+What UnifyWeaver adds — and what nobody else's resolver has — is that the spec
+is **transpilable and oracle-verifiable**. The argparser exercise proved the
+pipeline end-to-end: one frozen Prolog reference, projected into TypeScript /
+vanilla JS / annotated JS / ClojureScript / the JS WAM interpreter, each build
+gated by the production corpus and a 5,067-line seeded differential at zero
+divergences. The same discipline applies verbatim here: SWI is the executable
+oracle; the differential harness is the correctness gate; the transpiled
+artifact ships wherever the shell lives.
+
+## 2. The three use cases, in increasing ambition
+
+### 2a. Declarative Linux environment setup (the near one)
+
+A machine spec as facts:
+
+```prolog
+want(git).  want(nodejs, '>=18').  want(swipl).
+prefer(source(nodejs), nodesource).
+```
+
+The resolver produces a **plan** — an ordered list of actions
+(`install(apt, git)`, `add_repo(nodesource)`, `install(apt, nodejs)`) — and a
+thin host-side executor runs it. Crucially, we do **not** replace apt/dnf/npm:
+we sit above them as the planning layer, the way `bb.edn` tasks or Ansible sit
+above shells, but with the plan derived relationally instead of scripted. The
+plan itself is inspectable data (print it, diff it, dry-run it) — the same
+"debuggability first" ethos that motivated the annotated-JS target for
+peerhailer in the original exploratory doc.
+
+### 2b. The shell host (where Babashka earns its place)
+
+The executor and CLI want to live in a shell-friendly host. Two projections of
+the same spec:
+
+- **node** — the proven path today (`wam_javascript`, mixed mode, 2–2.5× tier;
+  or the pattern lane where the logic is deterministic).
+- **Babashka** — a single static binary, ~10 ms startup, `babashka.fs` /
+  `babashka.process` built in: the natural body for a `setup-env` command on a
+  fresh machine that has no node yet. The CLJS lane already carries whole
+  programs; bb specifically needs one bounded verification pass (the A3-ported
+  lowering has only been exercised under nbb — its bb/JVM spellings exist but
+  are unproven; see the CLJS port report).
+
+Because both are projections of one spec, the plan a bb script computes on a
+bare VM and the plan the node daemon computes are provably the same plans —
+that is the transpilable-spec advantage, identical in shape to the argparser's
+"one contract, every host" result.
+
+### 2c. Remote package-management logic (the peerhailer connection)
+
+This is the part that turns "another project" into a peerhailer feature. Once
+the resolver is a host-neutral artifact, **where it runs becomes a deployment
+choice**:
+
+- A hail daemon can compute a plan **for a remote peer**: the peer ships its
+  state (installed-package facts) as data; resolution happens wherever it's
+  cheapest/trusted; the signed plan travels back over the routed channel
+  peerhailer already provides. Logic moves, or facts move — both are just
+  terms.
+- Fleet setup becomes: one spec, N peers, each peer's executor applying its
+  own derived plan — with peerhailer's identity/approval machinery (the
+  `route approve` / sealed-sender work) providing exactly the trust layer a
+  "remote machine will now run installs" story needs.
+- The catalog problem maps onto work already landed/in flight: package
+  metadata is a large fact base queried by bound name — precisely the
+  **GP-LMDB indexed fact store** shape (seek-indexed lookups without loading
+  the catalog; the dependency-free backend for bare machines, the LMDB backend
+  where the native dep is acceptable).
+
+## 2d. The concretizing case: frozen-base (Puppy-style) resolution
+
+Post-proposal context (TrixiePup64 / Woof-CE discussion) sharpened P0 into a
+specific unsolved problem. Frugal/layered distros assemble an **immutable
+curated base** (SFS layers, `apt-mark hold` on its packages) under a writable
+save layer. Stock apt then structurally cannot answer the questions users
+actually have:
+
+1. *Is X installable **without touching the base**?* (apt proposes upgrading
+   held foundations, or refuses unhelpfully)
+2. *If not — which held package is the ceiling, and what would have to move?*
+   (the version-ceiling **explanation**; apt reports "held broken packages")
+3. *Then give me X + its non-base dependency closure as a **self-contained
+   layer** (SFS-style) instead* — install without evolving the base at all.
+4. *If I remove X, which of its separately-installed deps become orphans?*
+   (PPM's lifecycle-aware trim, done relationally)
+
+All four are the SAME clauses queried differently — `base/1` facts partition
+the package universe, resolution closes over non-base candidates, a failure
+branch names the blocking held package, and the closure-minus-base IS the
+layer manifest. This is the P0 contract-corpus scenario set, and it is why
+this resolver is not redundant with apt: it reasons about a boundary apt is
+built to ignore. (Historical echo: Puppy's abandoned `Pkg` project and PPM's
+dependency heuristics were circling exactly this in bash.)
+
+### 2e. Graduated freeze semantics: holds have REASONS (P0.5 direction)
+
+Follow-on insight (from the TrixiePup discussion): a hold is a boolean, but
+freezing is not — and the reason determines upgrade safety. TrixiePup's
+practical problem is arguably that it freezes too much precisely because apt
+cannot represent WHY anything is frozen. Model it: `base(Pkg-Ver, Reason)`,
+
+| Reason | meaning | safe to upgrade? |
+|---|---|---|
+| `layer_shadow` | files live in read-only SFS; save-layer upgrade duplicates/shadows | yes, at a computable cost (shadow bytes) |
+| `abi_anchor` | other base packages built against this version | only as a **coordinated set** |
+| `puppy_modified` | Woof-CE patched/trimmed/replaced it | not without re-applying modifications |
+| `footprint` | held only for savefile size | yes, if cost accepted |
+| `blanket` | held with no specific constraint | probably — the over-freezing category |
+
+New queries from the same clauses: `safe_upgrade(Pkg, NewVer, Cost)` and
+`upgrade_set(Pkg, NewVer, Set)` — the minimal reverse-dependency closure that
+must move together (apt's `full-upgrade` computed minimally + explainably).
+"Why is this frozen?" becomes a query instead of forum lore.
+
+Crucially, most reasons are **derivable, not hand-annotated**: `abi_anchor`
+from reverse-dep degree + constraint tightness over the catalog; `layer_shadow`
+from the SFS manifest; only `puppy_modified` needs Woof-CE build metadata
+(`DISTRO_PKGS_SPECS`, trim lists). A blanket hold is then detectable as "held
+with no derivable reason" — the over-freezing diagnosis, computed.
+
+Related bounded task — **done**: the dormant `Pkg` project was mined as a
+requirements source; see `PKG_MINING_NOTES.md` (485 lines, code-cited: 8
+adopt / 3 adapt / 3 already-covered / 1 out-of-scope, top-10 ranked list).
+Headline finds: Pkg's own orphan-cleanup was DEAD CODE because its flat
+install record never distinguished requested-vs-dependency (validating our
+`requested/1`/`installed/1` split); its blacklist accidentally blocked
+REMOVAL of blacklisted-but-installed packages (why `excluded/1` must stay
+decoupled from removal safety); DEVX-layer detection via a `which gcc` proxy
+(validating mount-table-driven `in_layer/2`, §2f); repo federation is a
+priority-ordered per-repo fallback chain, not a flat bag.
+
+### 2f. Two dependency graphs: declared vs linked (check_deps/ListDD lineage)
+
+Further Puppy research (check_deps.sh, ListDD, ldd, resolvedeps.sh) shows the
+ecosystem always ran on TWO graphs, and P0 models only the first:
+
+1. **Declared** — package-level metadata (`depends/4`): human-curated, often
+   incomplete or wrong; what apt reasons over.
+2. **Linked** — what binaries actually require: ELF `DT_NEEDED` sonames,
+   mechanically extractable (`readelf -d`), ground truth for dynamic linkage;
+   what Puppy's checkers worked from when metadata failed.
+
+Model additions (P0.5/P2 direction):
+- `needs_soname(Pkg-Ver, Soname)` / `provides_soname(Pkg-Ver, Soname)` —
+  derivable at scan/build time; natural rows for the GP-LMDB catalog store.
+- `soname_provider(Soname, Candidates)` — the "libXfixes.so.3 → which
+  package?" lookup Puppy users did by forum search, as a join.
+- `verify_closure(Layer, Report)` — cross-check a declared-deps
+  `layer_closure` at soname level: declared-but-unlinked (trimmable bloat)
+  and linked-but-undeclared (the metadata bugs check_deps existed to catch).
+  The graphs audit each other; neither alone suffices.
+- **Named layers, not one base**: resolvedeps.sh's filter chain
+  (`no_dupes_no_builtins_no_devx_no_blacklisted`) shows the exclusion set is
+  layered — base SFS, devx SFS, blacklist. Generalize `base/1` to
+  `in_layer(PkgOrSoname, LayerName)` with closures computed relative to the
+  loaded-layer set.
+- **Honest limits, modeled**: ELF analysis misses dlopen, plugins
+  (GStreamer/GTK/Python), data files, exec'd helpers, and symbol-version ABI
+  breaks. Soname facts are labeled *detected dynamic linkage* — never claimed
+  as the complete runtime closure.
+
+(check_deps.sh source lives in the Woof-CE rootfs skeleton
+`/usr/local/petget/check_deps.sh`, not the Pkg repo — a separate targeted
+recon if we want its exact aggregation/exclusion rules.)
+
+### 2g. Time-indexed catalogs: version selection UNDER the ceiling
+
+The manual workflow that motivated this (user report): see the missing `.so`,
+search Debian's **Contents index** for the exact package containing it, then
+install a version *behind* the current snapshot that still fits the frozen
+base — two things apt structurally cannot do:
+
+1. **Soname → package reverse lookup**: apt doesn't do it (separate
+   `apt-file` tooling; PPM users did it in a browser). For us it's
+   `soname_provider/2`, and Debian's `Contents-<arch>.gz` (path → package,
+   huge, queried by bound key) is its ingestion source — exactly the shape of
+   the D43 seek-indexed fact store. Ingest once; the browser session becomes
+   an O(log n) seek.
+2. **Cross-snapshot resolution**: apt reasons over ONE Packages snapshot.
+   Debian keeps every version (snapshot.debian.org). Give catalog facts a
+   snapshot dimension — `package(Name, Ver, Snap)`, `depends(..., Snap)` —
+   and "newest version of P satisfying C whose closure fits under `base/1`"
+   ranges over history. The §2d ceiling explanation gains its natural
+   follow-up: *blocked at today's version — but snapshot 2024-06's fits.*
+
+The full manual flow compiles to one query chain:
+`missing_sonames` → `soname_provider` (multi-snapshot Contents facts) →
+`resolve_layered` (candidate pinned) → `layer_closure`.
+
+### 2h. The symbol level, and the fact sources nobody's solver reads
+
+Snapshots answered: the archives EXIST — snapshot.debian.org (whole archive,
+several captures daily, since ~2005; apt can install FROM one dated snapshot
+but cannot search ACROSS them), snapshot.ubuntu.com, Launchpad's every-built-
+.deb, archive.debian.org. §2g's time-indexed catalog is published data
+awaiting its first relational consumer.
+
+Below the soname graph sits a third: **symbols**. A soname can match while a
+versioned symbol doesn't (`version 'GLIBC_2.34' not found`). Facts:
+`needs_symbol(Bin, Sym, SymVer)` / `exports_symbol(Lib-Ver, Sym, SymVer)` —
+and Debian already publishes the database: per-library **`.symbols` files**
+(symbol → minimal introducing version; what dpkg-shlibdeps consumes). This
+transforms §2e's `upgrade_set`: a base-lib upgrade is safe for a dependent iff
+the new version exports a SUPERSET of the symbols that dependent actually
+uses — usually a stable subset, so the true coordinated set is far smaller
+than declared reverse-deps (the pessimism that makes TrixiePup over-freeze).
+When blocked, the explanation is exact: *installed X links foo_frob@LIBFOO_2.35,
+absent from the proposed version.* Set containment over facts — native Prolog.
+
+Further published sources for the spec's fact schema: libabigail/abidiff ABI
+diffs (`abi_breaks/4`, stricter than symbols); the Debian security tracker's
+CVE JSON (§2g's advisory annotation); file conflicts derived from the Contents
+index already ingested; Provides/virtual packages; Essential/priority flags.
+Lineage note, honestly: Debian's EDOS/Mancoosi work and `dose-debcheck`
+formalized installability long ago — our contribution is unifying ALL layers
+(declared / soname / symbol / ABI / time / advisories) in ONE queryable,
+explaining, transpilable spec rather than one standalone checker per layer.
+
+### 2i. Maintainer scripts and platform seams: classify the imperative residue
+
+Two places the declarative model meets imperative reality (user-raised):
+pre/post-install scripts, and platform-assumption seams (graphics, audio,
+IPC/dbus, init — Xorg/Wayland, systemd-vs-not).
+
+**Maintainer scripts.** Stripping them when upgrading frozen packages is
+sometimes right and sometimes breaks things — because "the script" bundles
+distinct EFFECTS. Most content is debhelper-generated boilerplate from a small
+template vocabulary, so it classifies: `maintscript(Pkg-Ver, Phase, Class)`,
+Class ∈ ldconfig | alternatives(N) | sysusers(U) | systemd_enable(Unit) |
+cache(Kind) | conffile_move | custom(Hash). The strip/keep decision becomes a
+relation `script_action(Class, Platform, Action)`:
+- **bake_at_build** — file-producing effects run once in a chroot against the
+  target base while BUILDING the layer; outputs baked into the SFS. Scripts
+  belong to layer-build time, not live-install time, in the layered model.
+- **noop_on_platform** — e.g. systemd_enable with no systemd; but the class
+  lets us check whether the package's FUNCTION needs the unit → conflict, not
+  silent no-op.
+- **run_on_target** — genuinely environmental (user creation).
+- **needs_review(custom)** — unrecognized code surfaces for review/sandbox,
+  never silently stripped NOR silently trusted. The irreducible residue,
+  explicit.
+
+**Platform seams.** `platform_provides(Platform, Capability)` facts (Puppy:
+no systemd; init flavor; display/audio stacks) vs derived package
+assumptions — from deps (systemd-sysv → hard), Contents artifacts (.service
+units, udev rules, dbus activation — weak alone), and maintscript classes.
+`platform_conflicts(Pkg, Platform, Assumptions)` grades each assumption WITH
+ITS EVIDENCE: `assumes(P, systemd, evidence(depends(systemd_sysv)))` strong;
+`evidence(ships_unit_file)` weak (inert without systemd). Evidence-graded
+facts let decisions demand strong evidence while surfacing weak signals —
+heuristics that admit they are heuristics.
+
+Feedback into §2e: much base over-freezing is platform divergence, not ABI —
+freezing was the blunt instrument for "this package's assumptions don't hold
+here." With 2i's facts, that reason becomes explicit and per-package.
+
+## 3. Why Prolog is the right spec language here (concretely)
+
+| resolver need | Prolog form |
+|---|---|
+| dependency ranges | facts + arithmetic guards (`depends(a-'1.2', b, '>=2.0,<3')`) |
+| transitive closure | the textbook relation; already a compiled pattern fleet-wide |
+| conflict exclusion | negation/constraints (`\+ conflicts(Sel)`) |
+| version search / backtracking | native WAM execution — the thing the hybrid tier exists for |
+| "explain why not" | failure branches ARE the explanation; enumerate near-misses |
+| pins, priorities, preferences | clause order + first-solution semantics, visible in source |
+
+The "explain" row deserves emphasis: imperative solvers bolt explanation on;
+a relational resolver gets "what would have to change for this to succeed" by
+querying the spec differently. That is a user-facing feature, not an
+implementation nicety.
+
+## 4. Honest constraints (what must be true / built first)
+
+1. **Backtracking lives in the WAM tier.** The pattern lane we hardened is
+   det/semidet (the argparser never backtracks). A resolver searches. So the
+   resolver core targets `wam_javascript` (proven, profiled, D41/D42 mixed
+   mode) — while plan *emission* and the CLI can use the pattern lane.
+2. **A bb-hosted resolver needs one of:** (a) the pattern-lane CLJS build, if
+   the resolver is written in a det style with explicit candidate enumeration
+   (possible but fights the grain), or (b) `wam_clojure` — which the D39 fleet
+   census found has **no conformance arm at all**. Standing up that arm is the
+   prerequisite, and it's on the fleet-gaps board already (CONF-CLOJURE).
+3. **Version-ordering builtins.** Debian/semver comparison is fiddly and
+   host-visible; it should be a small, oracle-tested builtin family (the
+   `sub_string`/string-tag playbook: add to runtime + probe vs SWI), not
+   ad-hoc string math in the spec.
+4. **Executor security.** A plan that installs software, applied remotely, is
+   an attack surface. The proposal's line: plans are data, signed and reviewed
+   through peerhailer's existing approval machinery; executors are dumb
+   (apply-only, no logic); the resolver never shells out.
+5. **Scope discipline.** This is a *planner over existing package managers*,
+   not a new package format, store, or Nix competitor. Guix proves the
+   "package logic in a real language" idea works; our differentiator is the
+   spec that transpiles and verifies, not a new ecosystem.
+
+## 5. Placement: incubate here, extract when it grows
+
+Same lifecycle as `examples/cli_args/`:
+
+- **Incubate as `examples/pkg_resolver/`** in UnifyWeaver — it exercises the
+  compiler (that's why it belongs here first), reuses the differential
+  methodology, and stays honest via the SWI oracle.
+- **Extract to a submodule/repo** when it acquires users or a release cadence
+  — the examples directory's frozen-reference + generated-builds layout maps
+  cleanly onto a standalone repo with UnifyWeaver as a build dependency.
+- **peerhailer integration last**: peerhailer consumes the artifact (a
+  resolver module + plan schema), never the Prolog toolchain.
+
+## 6. Phased plan (each phase independently valuable, argparser-style)
+
+| phase | deliverable | gate |
+|---|---|---|
+| **P0** | `resolver.pl`: minimal relation (packages, ranges, depends, conflicts, pins) + a toy catalog + plan emission, running under SWI | a plunit contract corpus (the "17 tests" of this project) written FIRST, from real-world resolution scenarios incl. at least one requiring backtracking and one unsatisfiable-with-explanation |
+| **P1** | `wam_javascript` build via the A2 playbook (build.sh, shim, JSONL runner) | corpus green + a seeded differential vs SWI over generated request/catalog pairs, 0 divergences |
+| **P2** | catalog as a GP-LMDB indexed fact store; scale test (a real distro's package index imported to facts) | bound-lookup bytes-read proof; resolution wall-time on the full catalog |
+| **P3** | bb host (via CONF-CLOJURE + wam_clojure arm, or det-style CLJS) for the bare-machine `setup-env` story | same corpus + differential under bb |
+| **P4** | peerhailer remote flow: facts-over-the-wire, plan-over-the-wire, signed via existing approval machinery | end-to-end demo: spec on host A, state from host B, plan applied on B |
+
+P0+P1 alone would be a compelling second demonstration program for the
+compiler — one that *backtracks*, which `cli_args` deliberately never did, and
+would therefore exercise the WAM tier the way the argparser exercised the
+pattern tier.
+
+## 7. Decision requested
+
+1. Green-light P0/P1 as the next demonstration program (Opus lane, argparser
+   playbook)?
+2. Priority of the bb path — i.e., does CONF-CLOJURE + the wam_clojure arm get
+   pulled forward, or does bb wait for P3?
+3. Name. Working name: **`uw-resolve`** (the artifact peerhailer would consume
+   could keep its own name later).

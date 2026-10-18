@@ -1,0 +1,129 @@
+{
+  "label": "vnext-frontend-milestone-fixture",
+  "status": "experimental-test-fixture",
+  "production": false,
+  "note": "TEST-ONLY, NON-RELEASE. Not a production registry and deliberately carries no registry_version: versions belong to sealed release registries. Entries cover only the representative examples in DESIGN_process_expression_patterns.md needed to exercise the parser/elaborator seam. Signatures here are NOT language contracts.",
+  "entries": {
+    "pearltrees": {"kind": "reference", "type": "corpus"},
+    "simplewiki": {"kind": "reference", "type": "corpus"},
+    "haiku": {"kind": "reference", "type": "judge"},
+    "haiku.fast": {"kind": "reference", "type": "judge"},
+    "gpt-5.5-low": {"kind": "reference", "type": "judge"},
+    "gpt-5.5": {"kind": "reference", "type": "judge"},
+
+    "unbounded_depth": {"kind": "reference", "type": "depth_limit"},
+    "bounded_depth": {
+      "kind": "call",
+      "type": "depth_limit",
+      "args": ["int"]
+    },
+
+    "principal_tree": {
+      "kind": "call",
+      "type": "substrate[C]",
+      "args": ["corpus"],
+      "binds": {"C": 0}
+    },
+    "full_dag": {
+      "kind": "call",
+      "type": "substrate[C]",
+      "args": ["corpus"],
+      "binds": {"C": 0}
+    },
+
+    "lineage_at": {"kind": "reference", "type": "relation_family"},
+
+    "lineage_op": {
+      "kind": "call",
+      "type": "abstract_lineage_process[S]",
+      "args": ["substrate[C]"],
+      "binds": {"S": 0},
+      "note": "Per the specification lineage_at is the relation_family reference and lineage_op is the coarse operator with type abstract_lineage_process[S]. S is an expression-valued index, carried in memory as the experimental TermIndex node. Fields mirror the §4.1/§13 examples; the coarse form deliberately inserts NO defaults, because lineage_op(S) is 'ground but underconstrained' and hop-decay-shaped defaults would silently answer the interpretation question.",
+      "fields": {
+        "family_spec": {"type": "atom"},
+        "estimand": {"type": "atom"},
+        "impl": {"type": "atom"},
+        "decay": {"type": "real"},
+        "hop_origin": {"type": "int"},
+        "direction": {"type": "atom"},
+        "depth": {"type": "depth_limit"},
+        "note": {"type": "string"}
+      }
+    },
+
+    "hop_decay_targets": {
+      "kind": "call",
+      "type": "target_factory[S,hop_decay]",
+      "args": ["substrate[C]"],
+      "binds": {"S": 0},
+      "fields": {
+        "decay": {"type": "real", "required": true},
+        "hop_origin": {"type": "int"},
+        "direction": {"type": "atom"},
+        "depth": {"type": "depth_limit"}
+      }
+    },
+
+    "default_probe": {
+      "kind": "call",
+      "type": "cross_view",
+      "args": [],
+      "note": "TEST-ONLY probe for default insertion. Deliberately not a lineage entry, so default mechanics cannot be mistaken for lineage semantics.",
+      "fields": {
+        "decay": {"type": "real", "default": "0.85"},
+        "depth": {"type": "depth_limit", "default": "unbounded_depth"}
+      }
+    },
+
+    "list_probe": {
+      "kind": "call",
+      "type": "cross_view",
+      "args": [],
+      "note": "TEST-ONLY probe for homogeneous list elements.",
+      "fields": {"weights": {"type": "list[real]"}}
+    },
+
+    "order_probe": {
+      "kind": "call",
+      "type": "cross_view",
+      "args": [],
+      "note": "TEST-ONLY probe proving default resolution does not depend on JSON field order: the authored field s binds S, and the default for x needs that binding even though x is declared first.",
+      "fields": {
+        "x": {"type": "substrate[S]", "default": "principal_tree(pearltrees)"},
+        "s": {"type": "substrate[S]", "required": true}
+      }
+    },
+
+    "margin": {
+      "kind": "call",
+      "type": "score_descriptor",
+      "args": [],
+      "fields": {
+        "t": {"type": "real", "required": true},
+        "epsilon": {"type": "float64"}
+      }
+    },
+
+    "cross_substrate": {
+      "kind": "call",
+      "type": "cross_view",
+      "args": ["substrate[C]", "substrate[C]"]
+    },
+
+    "judge_view": {
+      "kind": "call",
+      "type": "judge_scope[J]",
+      "args": ["judge"],
+      "binds": {"J": 0},
+      "note": "Exercises a punctuated registered name in an index position."
+    },
+
+    "rebinding_probe": {
+      "kind": "call",
+      "type": "cross_view",
+      "args": ["substrate[C]", "corpus"],
+      "binds": {"C": 1},
+      "note": "TEST-ONLY. Argument unification binds C from argument 0; the binds declaration then tries to rebind it from argument 1. A mismatch must fail rather than silently overwrite the ownership constraint."
+    }
+  }
+}

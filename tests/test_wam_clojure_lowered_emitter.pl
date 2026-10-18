@@ -13,6 +13,10 @@ multi_clause_wam("test_choice/1:\ntry_me_else test_choice_alt\nget_constant a, A
 
 unsupported_wam("test_switch/1:\nswitch_on_constant a:test_a, default:test_default\nproceed\n").
 
+aggregate_wam("test_findall/1:\nallocate\nget_variable X2, A1\nput_variable Y1, Y1\nbegin_aggregate collect, Y1, X2\nput_value Y1, A1\ncall fact/1, 1\nend_aggregate Y1\ndeallocate\nproceed\n").
+
+aggregate_witness_wam("test_bagof/1:\nallocate\nget_variable X2, A1\nput_variable Y1, Y1\nbegin_aggregate bagof, Y1, X2, 'Y3'\nput_value Y1, A1\ncall fact/1, 1\nend_aggregate Y1\ndeallocate\nproceed\n").
+
 test(deterministic_predicate_is_lowerable) :-
     simple_fact_wam(WamCode),
     wam_clojure_lowerable(test_fact/1, WamCode, Reason),
@@ -25,6 +29,14 @@ test(multi_clause_all_clauses_lowerable) :-
     multi_clause_wam(WamCode),
     wam_clojure_lowerable(test_choice/1, WamCode, Reason),
     assertion(Reason == multi_clause_n).
+
+test(aggregate_predicates_remain_runtime_mediated) :-
+    aggregate_wam(WamCode),
+    assertion(\+ wam_clojure_lowerable(test_findall/1, WamCode, _)).
+
+test(aggregate_witness_predicates_remain_runtime_mediated) :-
+    aggregate_witness_wam(WamCode),
+    assertion(\+ wam_clojure_lowerable(test_bagof/1, WamCode, _)).
 
 test(multi_clause_emits_empty_lowered_prefix) :-
     once((
@@ -108,10 +120,13 @@ test(structure_read_entry_is_direct_lowered_in_prefix) :-
         WamCode = "test_read_struct/1:\nget_structure f/2, A1\nunify_constant a\nunify_variable X1\nproceed\n",
         wam_clojure_lowerable(test_read_struct/1, WamCode, deterministic),
         lower_predicate_to_clojure(test_read_struct/1, WamCode, [], Code),
-        has(Code, "runtime/enter-unify-mode"),
+        % get_structure delegates to the runtime helper the interpreter's own
+        % step/1 uses, rather than inlining a second copy of the read/write
+        % mode logic here (which is how the missing WRITE mode survived on the
+        % lowered path alone). The unify-* entries stay inlined.
+        has(Code, "runtime/op-get-structure"),
+        has(Code, "runtime/normalize-literal-term"),
         has(Code, "runtime/pop-unify-item"),
-        has(Code, "runtime/structure-term?"),
-        has(Code, "runtime/interned-equal?"),
         has(Code, "runtime/unify-values")
     )).
 
@@ -120,9 +135,9 @@ test(list_read_entry_is_direct_lowered_in_prefix) :-
         WamCode = "test_read_list/1:\nget_list A1\nunify_constant head\nunify_constant []\nproceed\n",
         wam_clojure_lowerable(test_read_list/1, WamCode, deterministic),
         lower_predicate_to_clojure(test_read_list/1, WamCode, [], Code),
-        has(Code, "runtime/enter-unify-mode"),
-        has(Code, "runtime/list-functor-term"),
-        has(Code, "runtime/structure-term?"),
+        % get_list likewise delegates: op-get-list is op-get-structure with the
+        % list functor, so the two paths cannot drift apart again.
+        has(Code, "runtime/op-get-list"),
         has(Code, "runtime/pop-unify-item"),
         has(Code, "runtime/unify-values")
     )).

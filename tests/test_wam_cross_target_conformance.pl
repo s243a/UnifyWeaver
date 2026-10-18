@@ -55,6 +55,8 @@
               [write_wam_haskell_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_python_target',
               [write_wam_python_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_javascript_target',
+              [write_wam_javascript_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_go_target',
               [write_wam_go_project/3]).
 :- use_module('../src/unifyweaver/targets/wam_rust_target',
@@ -69,6 +71,12 @@
 :- use_module(library(pairs)).
 :- use_module('../src/unifyweaver/targets/wam_cpp_target',
               [write_wam_cpp_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_kotlin_target',
+              [write_wam_kotlin_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_fsharp_target',
+              [write_wam_fsharp_project/3]).
+:- use_module('../src/unifyweaver/targets/wam_r_target',
+              [write_wam_r_project/3]).
 
 % ============================================================
 % Target registry + known-divergence (xfail) registry
@@ -79,19 +87,24 @@ conformance_target(elixir).
 conformance_target(wat).
 conformance_target(haskell).
 conformance_target(python).
+conformance_target(javascript).
 conformance_target(go).
 conformance_target(rust).
 conformance_target(c).
 conformance_target(cpp).
+conformance_target(kotlin).
+conformance_target(kotlin_functions).
+conformance_target(fsharp).
+conformance_target(fsharp_functions).
+conformance_target(r).
+conformance_target(r_functions).
 
 %% ct_default_target(Target): runs unless CONFORMANCE_TARGETS overrides.
 %  Only scala and elixir run by default. Every other registered backend
-%  (wat, haskell, python, go, rust, c, cpp) is conformant — each passes the
-%  whole spec with no ct_xfail/ct_skip entries — but stays opt-in via
+%  (wat, haskell, python, go, rust, c, cpp, kotlin, kotlin_functions,
+%  fsharp, fsharp_functions, r, r_functions) is opt-in via
 %  CONFORMANCE_TARGETS because it builds a per-program project with an
-%  external toolchain (wat2wasm+node / cabal / python3 / go / cargo / gcc /
-%  g++) that a default run should not require or pay for. Haskell is the
-%  slowest (a cabal compile per program); audited green 2026-06.
+%  external toolchain. Kotlin/F#/R stay opt-in (slow toolchains / Rscript).
 ct_default_target(scala).
 ct_default_target(elixir).
 
@@ -276,6 +289,171 @@ ct_default_target(elixir).
 %  is now recursive and cons-aware ($unify_addrs). Both are conformant;
 %  the skips are removed.
 
+%  Kotlin (CONF-KOTLIN, 2026-07-12). Adapter registered (opt-in). All classic
+%  programs green after KT-ARITH-SLASH-FUNCTOR + KT-LIST-BACKTRACK +
+%  KT-Y-ENV-RECURSION (no remaining kotlin ct_xfail entries).
+
+%  F# (CONF-FSHARP, 2026-07-15). Adapter registered (opt-in). Measured:
+%   - Green: member, fib, ack, builtins, append, reverse on interpreter.
+%   - append / reverse ALSO green under emit_mode(functions) after
+%     FS-LIST-PARTIAL-TAIL (2026-07-15): GetValue routes through
+%     unifyVal/unifyTerms so ground Str("[|]",…) result spines unify with
+%     compact VList. Builder was already correct; open-tail
+%     `capp([a],[b],X),X=[a,b]` already passed via =/2.
+%   - fsharp_functions + builtins: FIXED FS-FUNCTIONS-BUILTINS-LOWER
+%     (2026-07-15). Stall was not cbi_eq/=/2 — parse_functor_fs soft-cut
+%     on the first "/" so put_structure `///2` (integer-div) failed mid
+%     emit of cbi_arith and lower_all_fs never finished. Last-slash parse
+%     (Scala/R/Lua shape) unblocks all three builtins lowers; =/2 already
+%     delegated to step via emit_one_fs(builtin_call). No remaining
+%     fsharp / fsharp_functions ct_xfail or ct_skip.
+
+%  ---------------------------------------------------------------
+%  Head-shape programs (wide / nested / emptylist, added 2026-08-06)
+%  ---------------------------------------------------------------
+%  These three programs were added after the WAM-Go runtime-parser
+%  bring-up (PARSE-GO) found eight defects in a backend that was
+%  registered here and green on all six classic programs. The classics
+%  are all arity <= 3 with flat list/atom arguments, so nothing
+%  exercised: argument registers above A8, a structure nested inside a
+%  cons-cell head, the cons TAIL after such a nested structure, or `[]`
+%  reached as a tail versus written as a literal.
+%
+%  Adding them immediately found live divergences in two more mature
+%  backends. Both are recorded as xfail below so the suite stays green;
+%  each has a task card in docs/WAM_FLEET_GAP_TASKS.md.
+%
+%  Measured 2026-08-06 across every backend buildable in this
+%  environment (go, python, c, cpp, rust, wat):
+%    - go, python, cpp, wat: all three programs green.
+%    - `wide` is green everywhere except the WAM-Go bug it was written
+%      for, which is fixed — so it is a pure regression guard now.
+%
+%  C / nested — FIXED 2026-08-06 (CONF-FIX-C-NESTED). ctail/3
+%  destructures `[tk(X)|R]` and then unifies the cons tail R. It returned
+%  false on `ctail([tk(a),tk(b)], a, [tk(b)])` and SIGSEGV'd the
+%  generated binary on `ctail([tk(a)], a, [])`.
+%
+%  Root cause: the C runtime carried a single S register, but the
+%  compiler emits a nested term INTERLEAVED with the enclosing term's
+%  arguments — `get_list; unify_variable; get_structure; unify_variable;
+%  unify_variable` — so the nested get_structure overwrote the pointer to
+%  the cons tail. The final unify_variable then read past the heap top
+%  (S=4 with H=4 for a one-element list): a wrong answer at -O0, a fault
+%  at -O1. Fixed by saving S with an argument countdown around nested
+%  read-mode terms (WamArgCtx in wam_runtime.h); the depth is restored on
+%  backtracking so a clause that fails mid-head leaves nothing behind.
+%  Same class as the WAM-Go write-context bug fixed in PARSE-GO.
+
+%  Rust / nested + emptylist — FIXED 2026-08-06 (CONF-FIX-RUST-NESTED,
+%  CONF-FIX-RUST-EMPTYLIST). Three separate defects, all in head
+%  unification and none list-specific:
+%
+%   1. get_structure tested is_unbound on the RAW register. A variable
+%      that is already bound is still *typed* Unbound, so an already-bound
+%      argument went down the write branch, which builds a fresh structure
+%      over the incoming value and reports success. `cnest([tk(a)], z)`
+%      therefore returned TRUE -- a head matched a list whose element it
+%      should have rejected. GetList already carried this fix and its
+%      comment; get_structure had never been given it.
+%
+%   2. The get_structure read branch for a compound held directly in a
+%      register rebuilt the functor key as format!("{}/{}", f, len).
+%      Value::Str already stores the functor arity-qualified (put_structure
+%      builds Str("s/1", ..)), so the key came out "s/1/1" and never
+%      matched. This is what made ckind/2's three-way discrimination on the
+%      inner functor match nothing at all.
+%
+%   3. unify_constant used raw equality plus an is_unbound short-circuit.
+%      Both halves were wrong for a list tail: Value::List([]) and
+%      Atom("[]") are the same term written two ways (so `cone(a,[a])`
+%      failed), and the short-circuit accepted ANY unbound tail without
+%      dereferencing or binding it (so `cone(a,[a,b])` succeeded). Now
+%      routed through unify(), which already knows both aliasings --
+%      the same treatment GetValue was given earlier.
+
+%  C / repeatvar — FIXED 2026-08-09 (card CONF-FIX-C-EQ-DEREF; the card
+%  name records where the symptom pointed, not where the bug was). It is
+%  not the nested-head class fixed in CONF-FIX-C-NESTED either — C passed
+%  all of `nested` throughout. Narrowed by binding each slot separately
+%  after `T = p(A,B), csame(T, a)`:
+%    A == a   -> FALSE      (first slot never bound)
+%    B == a   -> true
+%    A == B   -> FALSE
+%  ==/2 was innocent: `wam_term_strict_equal` derefs correctly, and the
+%  slot really was unbound. The defect was in INSTR_UNIFY_VARIABLE's READ
+%  branch, which did `*cell = H_array[S]` — a by-value copy. For a bound
+%  cell that is fine (REF/ATOM/STR/LIST each carry their own identity),
+%  but VAL_UNBOUND carries no address, so the register ended up holding
+%  its OWN fresh variable instead of an alias of the heap slot. The
+%  repeated head variable in `csame(p(X, X), X)` then aliased X with the
+%  SECOND slot (via unify_value) and bound that one from `get_value X, A2`,
+%  leaving the first slot untouched. Read mode now installs a VAL_REF at S
+%  when the cell is unbound, mirroring what the write branch already did.
+%
+%  Why `=/2` hid it and only `==/2` exposed it: `T = p(a,a)` re-unifies,
+%  so it happily binds the still-unbound first slot and succeeds. Only an
+%  identity comparison shows the binding never happened — which is exactly
+%  why crepeat/1 is written with ==/2.
+
+%  Elixir + R / buildnest — FIXED 2026-08-10. `buildnest` is the suite's
+%  only WRITE-mode program, and it only became a real check on
+%  2026-08-09: `cbuild_chk/1` used `=/2`, which re-unifies and therefore
+%  reported success even when the head never bound the caller's output at
+%  all. Switched to `==/2` while root-causing the WAM-Scala nqueens hang,
+%  and four arms went red. Scala and Kotlin were fixed then; Elixir and R
+%  are fixed now, so the harness carries no xfail again.
+%
+%  R was ONE bug, and it was the binding half, not the nesting half —
+%  the three-way probe came back cons-only FALSE, struct-only FALSE,
+%  struct-inside-cons FALSE, i.e. even flat construction failed.
+%  `append_build_arg` gated its bind-through on `target_reg >= 101L`
+%  (X/Y only). Correct for put_structure/put_list, where an A register is
+%  body staging and binding its previous occupant aliases an unrelated
+%  live variable; wrong for get_structure/get_list write mode, where the
+%  A register holds the caller's output variable. Build frames now carry
+%  `bind_through`, set by the get-family only. R already had a
+%  `read_stack`/`build_stack` pair, so nesting was never the problem —
+%  both arms share the runtime and both went green on the one fix.
+%
+%  Elixir was TWO bugs in sequence:
+%    1. the same caller-binding defect (fixed 2026-08-09): write mode
+%       overwrote `state.regs[ai]` without binding the variable it held.
+%       Flat construction went false -> true on that alone.
+%    2. nested write contexts. Write mode appended each argument at
+%       `heap_len` as it arrived, which assumes the term stays
+%       contiguous. A nested term allocates its own functor cell at
+%       `heap_len`, in the middle of the enclosing term's argument
+%       region, so the enclosing cons tail landed above the nested term
+%       and the cons cell was never completed. get_structure/get_list now
+%       RESERVE their argument cells up front and the write context
+%       carries the destination address — the C runtime's WamArgCtx
+%       treatment, expressed in Elixir's map-heap terms.
+%
+%  Scoped deliberately: the reserved-cell form is a THIRD write_ctx
+%  shape, `{:write_ctx, dest, n}`, and only the get-family emits it.
+%  put_structure/put_list keep the appending `{:write_ctx, n}` form,
+%  because their `set_*` handlers never consume the counter at all and
+%  the compiler emits nested puts args-first, so contiguity does hold
+%  there. Both consumer clauses live side by side in step_unify_*.
+%
+%  Both fixes had to be applied twice — once in the interpreter runtime
+%  and once in the lowered emitter — because the Elixir conformance arm
+%  builds with `emit_mode(lowered)`. Fixing only the interpreter changed
+%  nothing observable, which is the same trap CONF-FIX-FSHARP-LOWERED-
+%  GETVALUE recorded.
+
+%  R (CONF-R). Adapter registered (opt-in via CONFORMANCE_TARGETS=r[,r_functions]).
+%  runtime_parser(off) is pinned so generation is deterministic: classic
+%  queries use 0-arity wrappers (no CLI term parsing); R's default is
+%  native(parse_term), which is unused on the wrapper path.
+%
+%  Measured maturity (interpreter + functions): all classic programs green
+%  after R-SWITCH-INDEX-CONFORMANCE. Both switch_on_constant_fallthrough
+%  and switch_on_term_a2 map to the existing SwitchOnTerm() no-op so the
+%  complete try/retry/trust chain retains every backtracking alternative.
+%  No new runtime/indexing machinery.
+
 % ============================================================
 % Toolchain probes
 % ============================================================
@@ -285,10 +463,17 @@ ct_toolchain(elixir, [elixir]).
 ct_toolchain(wat,    [wat2wasm, node]).
 ct_toolchain(haskell, [ghc, cabal]).
 ct_toolchain(python, [python3]).
+ct_toolchain(javascript, [node]).
 ct_toolchain(go,     [go]).
 ct_toolchain(rust,   [cargo]).
 ct_toolchain(c,      [gcc]).
 ct_toolchain(cpp,    ['g++']).
+ct_toolchain(kotlin, [gradle]).
+ct_toolchain(kotlin_functions, [gradle]).
+ct_toolchain(fsharp, [dotnet]).
+ct_toolchain(fsharp_functions, [dotnet]).
+ct_toolchain(r, ['Rscript']).
+ct_toolchain(r_functions, ['Rscript']).
 
 ct_available(scala) :-
     ct_enabled(scala),
@@ -326,10 +511,20 @@ test(scala,  [condition(ct_available(scala))])  :- run_target_conformance(scala)
 test(elixir, [condition(ct_available(elixir))]) :- run_target_conformance(elixir).
 test(wat,    [condition(ct_available(wat))])    :- run_target_conformance(wat).
 test(python, [condition(ct_available(python))]) :- run_target_conformance(python).
+test(javascript, [condition(ct_available(javascript))]) :- run_target_conformance(javascript).
 test(go,     [condition(ct_available(go))])     :- run_target_conformance(go).
 test(rust,   [condition(ct_available(rust))])   :- run_target_conformance(rust).
 test(c,      [condition(ct_available(c))])      :- run_target_conformance(c).
 test(cpp,    [condition(ct_available(cpp))])    :- run_target_conformance(cpp).
+test(kotlin, [condition(ct_available(kotlin))]) :- run_target_conformance(kotlin).
+test(kotlin_functions, [condition(ct_available(kotlin_functions))]) :-
+    run_target_conformance(kotlin_functions).
+test(fsharp, [condition(ct_available(fsharp))]) :- run_target_conformance(fsharp).
+test(fsharp_functions, [condition(ct_available(fsharp_functions))]) :-
+    run_target_conformance(fsharp_functions).
+test(r, [condition(ct_available(r))]) :- run_target_conformance(r).
+test(r_functions, [condition(ct_available(r_functions))]) :-
+    run_target_conformance(r_functions).
 
 :- end_tests(wam_cross_target_conformance).
 
@@ -739,6 +934,41 @@ ct_teardown(python, python_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 % ============================================================
+% Adapter: JavaScript / Node
+%   (0-arity wrapper -> `node generated_program.js <key>` -> true/false)
+%
+% write_wam_javascript_project/3 emits js/wam_runtime.js + js/generated_program.js.
+% Node is interpreted, so there is NO build step — ct_build is pure generation,
+% ct_run is a fast `node generated_program.js <wrapper>/0` per query. The CLI
+% shim prints true/false and exits 0/1. Opt-in via CONFORMANCE_TARGETS=javascript.
+% ============================================================
+
+ct_build(javascript, Preds, Queries, javascript_ctx(Dir, Map)) :-
+    ct_tmp_dir('tmp_ct_javascript', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_javascript_project(AllPreds,
+        [emit_mode(interpreter), module_name(wam_ct)], Dir).
+
+ct_run(javascript, javascript_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    directory_file_path(Dir, 'js', JsDir),
+    run_proc_out(node, ['generated_program.js', KeyStr], JsDir, _Exit, OutStr),
+    (   sub_string(OutStr, _, _, _, "unknown predicate")
+    ->  Bool = error(unknown_predicate)
+    ;   split_string(OutStr, "\n", " \t\r", Lines0),
+        exclude([L]>>(L == ""), Lines0, Lines),
+        last(Lines, Last),
+        (   Last == "true" ->  Bool = true ;   Bool = false )
+    ).
+
+ct_teardown(javascript, javascript_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
 % Adapter: Go  (0-arity wrapper -> `./bin <key>` -> true/false)
 %
 % write_wam_go_project/3 compiles predicate INDICATORS itself, but its
@@ -903,7 +1133,7 @@ ct_build(c, Preds, Queries, c_ctx(Dir, Map)) :-
     c_runner_driver(AllPreds, DriverSrc),
     directory_file_path(Dir, 'driver.c', DriverPath),
     setup_call_cleanup(open(DriverPath, write, S), write(S, DriverSrc), close(S)),
-    run_proc(gcc, ['-O1', '-o', 'runner', 'driver.c', 'lib.c', 'wam_runtime.c'],
+    run_proc(gcc, ['-O1', '-o', 'runner', 'driver.c', 'lib.c', 'wam_runtime.c', '-lm'],
              Dir, BExit, BErr),
     ( BExit =:= 0 -> true ; throw(c_build_failed(BExit, BErr)) ).
 
@@ -960,6 +1190,187 @@ ct_run(cpp, cpp_ctx(Dir, Map), K, A, Bool) :-
     ; throw(cpp_run_failed(KeyAtom, Status)) ).
 
 ct_teardown(cpp, cpp_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: Kotlin  (0-arity wrapper -> gradle run --args=<key> -> true/false)
+%
+% write_wam_kotlin_project/3 emits a Gradle Kotlin project. The human-facing
+% Main prints "Ran <pred>" + registers; for conformance we pass
+% conformance_main(true) so Main uses WamRuntime.tryRun and prints true/false
+% (additive — default Main output for existing e2e tests is unchanged).
+%
+% Two opt-in targets share this adapter:
+%   kotlin            — emit_mode(interpreter)
+%   kotlin_functions  — emit_mode(functions) (native-first + WAM fallback)
+% Classic multi-clause programs with last-call execute (member/append/acc-reverse)
+% and deterministic mid-body call + arithmetic (fib/ack) lower under
+% kotlin_functions (EMIT-KOTLIN-4/5). Nondeterministic mid-body call declines.
+% ============================================================
+
+ct_build(kotlin, Preds, Queries, kotlin_ctx(Dir, Map)) :-
+    kotlin_ct_build(interpreter, Preds, Queries, Dir, Map).
+
+ct_build(kotlin_functions, Preds, Queries, kotlin_ctx(Dir, Map)) :-
+    kotlin_ct_build(functions, Preds, Queries, Dir, Map).
+
+kotlin_ct_build(EmitMode, Preds, Queries, Dir, Map) :-
+    ct_tmp_dir('tmp_ct_kotlin', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_kotlin_project(AllPreds,
+        [module_name(wam_ct),
+         emit_mode(EmitMode),
+         conformance_main(true)], Dir),
+    run_proc(gradle, ['-q', 'compileKotlin'], Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(kotlin_build_failed(BExit, BErr)) ).
+
+ct_run(kotlin, Ctx, K, A, Bool) :-
+    kotlin_ct_run(Ctx, K, A, Bool).
+ct_run(kotlin_functions, Ctx, K, A, Bool) :-
+    kotlin_ct_run(Ctx, K, A, Bool).
+
+kotlin_ct_run(kotlin_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    format(atom(ArgsOpt), '--args=~w', [KeyStr]),
+    run_proc_out(gradle, ['-q', 'run', ArgsOpt], Dir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr),
+    bool_of_string(Out, Bool).
+
+ct_teardown(kotlin, kotlin_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+ct_teardown(kotlin_functions, kotlin_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: F#  (0-arity wrapper -> `dotnet run -- <key>` -> true/false)
+%
+% write_wam_fsharp_project/3 emits a .NET F# exe. The default Program.fs is
+% a TSV/LMDB benchmark driver; for conformance we pass conformance_main(true)
+% so Program.fs uses tryRun (dispatchCall) and prints true/false (additive —
+% default human-facing benchmark output for existing smokes is unchanged).
+%
+% Two opt-in targets share this adapter:
+%   fsharp            — emit_mode(interpreter)
+%   fsharp_functions  — emit_mode(functions) (native-first + WAM fallback)
+% Opt-in via CONFORMANCE_TARGETS=fsharp[,fsharp_functions].
+% ============================================================
+
+ct_build(fsharp, Preds, Queries, fsharp_ctx(Dir, Map)) :-
+    fsharp_ct_build(interpreter, Preds, Queries, Dir, Map).
+
+ct_build(fsharp_functions, Preds, Queries, fsharp_ctx(Dir, Map)) :-
+    fsharp_ct_build(functions, Preds, Queries, Dir, Map).
+
+fsharp_ct_build(EmitMode, Preds, Queries, Dir, Map) :-
+    setenv('DOTNET_CLI_TELEMETRY_OPTOUT', '1'),
+    setenv('DOTNET_NOLOGO', '1'),
+    ct_tmp_dir('tmp_ct_fsharp', Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_fsharp_project(AllPreds,
+        [module_name(wam_ct),
+         no_kernels(true),
+         emit_mode(EmitMode),
+         conformance_main(true)], Dir),
+    run_proc(dotnet, ['build', '--nologo', '-v', 'q'], Dir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(fsharp_build_failed(BExit, BErr)) ).
+
+ct_run(fsharp, Ctx, K, A, Bool) :-
+    fsharp_ct_run(Ctx, K, A, Bool).
+ct_run(fsharp_functions, Ctx, K, A, Bool) :-
+    fsharp_ct_run(Ctx, K, A, Bool).
+
+fsharp_ct_run(fsharp_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    % --no-build: ct_build already gated compilation. Do NOT pass --nologo
+    % here: on some SDK versions it is forwarded as argv[0] even after `--`,
+    % which makes tryRun look up the wrong predicate key. DOTNET_NOLOGO=1
+    % (set in fsharp_ct_build) suppresses the banner instead.
+    run_proc_out(dotnet, ['run', '--no-build', '--', KeyStr],
+                 Dir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr),
+    bool_of_string(Out, Bool).
+
+ct_teardown(fsharp, fsharp_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+ct_teardown(fsharp_functions, fsharp_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+
+% ============================================================
+% Adapter: R  (0-arity wrapper -> `Rscript generated_program.R <key>` -> true/false)
+%
+% write_wam_r_project/3 emits DESCRIPTION + R/wam_runtime.R +
+% R/generated_program.R. The default Rscript main is a human/bench CLI; for
+% conformance we pass conformance_main(true) so main prints only true/false
+% via WamRuntime$run_predicate (additive — default CLI unchanged).
+%
+% runtime_parser(off) is pinned: classic queries use 0-arity wrappers so CLI
+% term parsing is unused; pinning off keeps generation deterministic (R's
+% default is native(parse_term)).
+%
+% Two opt-in targets share this adapter:
+%   r            — emit_mode(interpreter)
+%   r_functions  — emit_mode(functions) (native-first + WAM fallback)
+% No compile step — ct_build writes the project; ct_run sources from R/.
+% Opt-in via CONFORMANCE_TARGETS=r[,r_functions].
+% ============================================================
+
+ct_build(r, Preds, Queries, r_ctx(Dir, Map)) :-
+    r_ct_build(interpreter, Preds, Queries, Dir, Map).
+
+ct_build(r_functions, Preds, Queries, r_ctx(Dir, Map)) :-
+    r_ct_build(functions, Preds, Queries, Dir, Map).
+
+r_ct_build(EmitMode, Preds, Queries, Dir, Map) :-
+    % Distinct prefix per emit mode: both modes write R/generated_program.R
+    % (no compile-artifact isolation), so a shared tmp_ct_r stamp collision
+    % would silently overwrite the other mode's sources.
+    format(atom(TmpPrefix), 'tmp_ct_r_~w', [EmitMode]),
+    ct_tmp_dir(TmpPrefix, Dir),
+    synth_wrappers(Queries, WPreds, Map),
+    maplist(strip_pred, Preds, BarePreds),
+    append(WPreds, BarePreds, AllPreds0),
+    maplist(qualify_user, AllPreds0, AllPreds),
+    write_wam_r_project(AllPreds,
+        [module_name(wam_ct),
+         emit_mode(EmitMode),
+         runtime_parser(off),
+         conformance_main(true)], Dir),
+    % Syntax gate: source under Rscript -e (sys.nframe()>0 skips CLI main).
+    directory_file_path(Dir, 'R', RDir),
+    run_proc('Rscript', ['-e', 'source("generated_program.R")'],
+             RDir, BExit, BErr),
+    ( BExit =:= 0 -> true ; throw(r_build_failed(BExit, BErr)) ).
+
+ct_run(r, Ctx, K, A, Bool) :-
+    r_ct_run(Ctx, K, A, Bool).
+ct_run(r_functions, Ctx, K, A, Bool) :-
+    r_ct_run(Ctx, K, A, Bool).
+
+r_ct_run(r_ctx(Dir, Map), K, A, Bool) :-
+    memberchk((K-A)-WName, Map),
+    format(atom(KeyAtom), '~w/0', [WName]), atom_string(KeyAtom, KeyStr),
+    directory_file_path(Dir, 'R', RDir),
+    % cwd = R/ so wam_runtime.R resolves next to generated_program.R
+    % (sys.frame(1)$ofile is unreliable under Rscript path invocation).
+    % Keep bool_of_string strict: empty/garbage stdout must fail the run
+    % (→ error(run_failed)), not collapse to false — that would mask
+    % crashes as correct negatives.
+    run_proc_out('Rscript', ['generated_program.R', KeyStr],
+                 RDir, _Exit, OutStr),
+    normalize_space(string(Out), OutStr),
+    bool_of_string(Out, Bool).
+
+ct_teardown(r, r_ctx(Dir, Map)) :-
+    cleanup_dir(Dir), abolish_wrappers(Map).
+ct_teardown(r_functions, r_ctx(Dir, Map)) :-
     cleanup_dir(Dir), abolish_wrappers(Map).
 
 %% c_copy_runtime_header(+Dir) — copy the static wam_runtime.h into Dir.

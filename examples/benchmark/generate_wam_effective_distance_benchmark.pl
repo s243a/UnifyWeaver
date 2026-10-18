@@ -205,7 +205,9 @@ wam_lines_to_merged_rust([Line|Rest], PC, Instrs, Labels, FinalPC) :-
                 '    all_labels.insert("~w".to_string(), ~w);', [LabelName, PC]),
             Labels = [LabelInsert|RestLabels],
             wam_lines_to_merged_rust(Rest, PC, Instrs, RestLabels, FinalPC)
-        ;   wam_rust_target:wam_line_to_rust_instr(CleanParts, unknown/0, [], RustInstr),
+        ;   % R1: keep call/execute/builtin_call by name: optimize_benchmark_code
+            % and resolve_targets below rewrite those forms themselves.
+            wam_rust_target:wam_line_to_rust_instr(CleanParts, unknown/0, [rust_named_calls(true)], RustInstr),
             format(string(InstrEntry), '        ~w,', [RustInstr]),
             NPC is PC + 1,
             Instrs = [InstrEntry|RestInstrs],
@@ -275,7 +277,7 @@ mod instructions;
 mod state;
 
 use value::Value;
-use instructions::Instruction;
+use instructions::{Functor, Instruction, Reg};
 use state::WamState;
 
 #[derive(Debug)]
@@ -367,8 +369,8 @@ fn append_fact2(
                         format!("{}_g_{}_{}", pred_name, key, i + 1)));
                 }
             }
-            code.push(Instruction::GetConstant(Value::Atom(key.clone()), "A1".to_string()));
-            code.push(Instruction::GetConstant(Value::Atom(b.clone()), "A2".to_string()));
+            code.push(Instruction::GetConstant(Value::Atom(key.clone()), Reg::a(1)));
+            code.push(Instruction::GetConstant(Value::Atom(b.clone()), Reg::a(2)));
             code.push(Instruction::Proceed);
         }
     }
@@ -441,7 +443,7 @@ fn append_fact1(
         let fact_label = format!("{}_{}", pred_name, i);
         dispatch.push((Value::Atom(val.clone()), fact_label.clone()));
         labels.insert(fact_label, code.len() + 1);
-        code.push(Instruction::GetConstant(Value::Atom(val.clone()), "A1".to_string()));
+        code.push(Instruction::GetConstant(Value::Atom(val.clone()), Reg::a(1)));
         code.push(Instruction::Proceed);
     }
 
@@ -479,6 +481,9 @@ fn resolve_benchmark_targets(code: &mut Vec<Instruction>, labels: &HashMap<Strin
             }
             Instruction::TryMeElse(label) => {
                 labels.get(label).copied().map(Instruction::TryMeElsePc)
+            }
+            Instruction::TryMeElseArgs(label, arity) => {
+                labels.get(label).copied().map(|pc| Instruction::TryMeElsePcArgs(pc, *arity))
             }
             Instruction::RetryMeElse(label) => {
                 labels.get(label).copied().map(Instruction::RetryMeElsePc)
@@ -925,7 +930,7 @@ fn main() {
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
-            vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
+            vm.set_reg("A4", Value::list(vec![Value::Atom(cat.clone())]));
             let cat_id = vm.intern_atom(cat);
             let root_id = vm.intern_atom(&root);
             let visited_ids = vec![cat_id];
@@ -942,7 +947,7 @@ fn main() {
             vm.set_reg("A1", Value::Atom(cat.clone()));
             vm.set_reg("A2", Value::Atom(root.clone()));
             vm.set_reg("A3", Value::Unbound("Hops".to_string()));
-            vm.set_reg("A4", Value::List(vec![Value::Atom(cat.clone())]));
+            vm.set_reg("A4", Value::list(vec![Value::Atom(cat.clone())]));
             let mut solutions = 0u32;
             let mut first = true;
             loop {
@@ -965,7 +970,7 @@ fn main() {
                 // A3 gets overwritten by recursive calls, but the original
                 // Unbound("Hops") variable is bound via bind_var.
                 if let Some(hops_val) = vm.bindings.get("Hops").cloned()
-                    .or_else(|| vm.regs.get(3).cloned().map(|v| vm.deref_var(&v))) {
+                    .or_else(|| vm.regs().get(3).cloned().map(|v| vm.deref_var(&v))) {
                     let hops = match &hops_val {
                         Value::Integer(h) => *h as f64,
                         Value::Float(h) => *h,

@@ -2,23 +2,42 @@ package {{package_name}}
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"os/exec"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 )
 
 var (
 	_ = fmt.Sprintf
+	_ = math.NaN
 	_ = os.ReadFile
 	_ = exec.Command
 	_ = runtime.GOMAXPROCS
+	_ = strconv.ParseInt
 	_ = strings.Split
 	_ sync.Locker = (*sync.Mutex)(nil)
 )
 
 {{step_method}}
 
-{{helper_methods}}
+{{run_loop}}
+
+{{aggregate}}
+
+{{foreign_registry}}
+
+{{atom_fact2_sources}}
+
+{{foreign_results}}
+
+{{native_kernels}}
+
+{{execute_foreign}}
+
+{{seek_fact_source}}
+
