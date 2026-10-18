@@ -4,7 +4,9 @@
 %
 % Truth tests: a bare operand as a condition -- `if (x)`, `if (!seen)`,
 % `while (i)`, `if (c[$1])`, `if ($1)`, and the patterns `NF { }`, `!NF { }`,
-% `$2 { }`. All were parse errors. awk's truth value: a number is true when
+% `$2 { }`, and a bare variable pattern (`f { }`, `!seen { }`). All were parse
+% errors. A variable the program never mentions elsewhere is uninitialised: false
+% (`END { if (zz) … }` declined). awk's truth value: a number is true when
 % nonzero, a string when non-empty, and a strnum (a field, input-derived text)
 % numerically when its text looks numeric ("0", "0.0" false) and by emptiness
 % otherwise ("x", "0x" true) -- @wam_strnum_truth. gawk 5.1.0 (LC_ALL=C).
@@ -28,8 +30,8 @@ test(parses) :-
         program([], [rule(truth_pat(special('NF')), _)], [])),
     plawk_parse_string("!$2 { print }\n",
         program([], [rule(not_pat(truth_pat(field(2))), _)], [])),
-    plawk_parse_string("{ if (!seen) print }\n",
-        program([], [rule(always, [if(scalar_if(not(truth(var(seen)))), _, [])])], [])),
+    plawk_parse_string("{ if (!seen) print; seen = 1 }\n",
+        program([], [rule(always, [if(scalar_if(not(truth(var(seen)))), _, []), _])], [])),
     % a comparison still parses as one
     plawk_parse_string("$2 > 1 { print }\n",
         program([], [rule(field_cmp(2, gt, 1), _)], [])),
@@ -60,6 +62,36 @@ test(number_and_string_conditions, [condition(clang_available)]) :-
 
 test(loop_conditions, [condition(clang_available)]) :-
     run("{ i = 3; while (i) { i--; c++ } } END { print c }\n", "24\n"),
+    !.
+
+test(variable_pattern_parses) :-
+    plawk_parse_string("{ x = $2 } x { print }\n",
+        program([], [_, rule(truth_pat(var(x)), _)], [])),
+    plawk_parse_string("!seen { print; seen = 1 }\n",
+        program([], [rule(not_pat(truth_pat(var(seen))), _)], [])),
+    % never assigned: folds to false
+    plawk_parse_string("END { if (zz) print 1 }\n",
+        program([], [], [end([if(scalar_if(truth(int(0))), _, [])])])),
+    % assigned somewhere: left alone
+    plawk_parse_string("{ if (u) print 1; u = 1 }\n",
+        program([], [rule(always, [if(scalar_if(truth(var(u))), _, []), _])], [])),
+    !.
+
+% each slot kind: a strnum by its text, a string by emptiness, a number by value
+test(variable_patterns, [condition(clang_available)]) :-
+    run("{ x = $2 } x { print $1 }\n", "b\nc\ne\nf\n"),
+    run("{ x = $2 } !x { print $1 }\n", "a\n\nd\ng\n"),
+    run("{ s = $2 \"\" } s { print $1 }\n", "a\nb\nc\nd\ne\nf\n"),
+    run("{ t = $2 * 1.5 } t { print $1 }\n", "b\nf\n"),
+    run("$2 == \"x\" { f = 1 } f { print $1 }\n", "c\nd\ne\nf\ng\n"),
+    run("x { print $1 } { x = $2 }\n", "\nd\nf\ng\n"),
+    run("!seen { print; seen = 1 }\n", "a 0\n"),
+    !.
+
+test(never_assigned_is_false, [condition(clang_available)]) :-
+    run("END { if (zz) print \"y\"; else print \"n\" }\n", "n\n"),
+    run("END { if (!zz) print \"y\" }\n", "y\n"),
+    run("zz { print \"never\" }\n", ""),
     !.
 
 :- end_tests(plawk_truthiness).
