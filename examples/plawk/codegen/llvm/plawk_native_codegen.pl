@@ -21380,6 +21380,29 @@ plawk_scalar_action_sequence_pairs([delete_assoc(var(ArrayName), var(Name)) | Re
     [Pair],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+% `delete arr["k"]` / `delete arr[$1]` (a literal, field or SUBSEP key) in this
+% walker -- an END statement, an END loop body: the key is interned as the writes
+% intern it (plawk_cond_elem_key/9, which declines a field key in END). An
+% awk-semantics table only; a positional table's literal key is a raw position.
+plawk_scalar_action_sequence_pairs([delete_assoc(var(ArrayName), Key) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { Key \= var(_),
+      plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      \+ plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
+      format(atom(Base), '~w_assoc_~w', [Prefix, OpIndex]),
+      plawk_cond_elem_key(Key, Slots, Values0, FieldSeparator, Prefix, Base, KeyId,
+          Globals, KeyLines),
+      !,
+      plawk_assoc_delete_kind(ArrayName, DelKind),
+      plawk_assoc_elem_void_line(delete, TableIndex, KeyId, DelKind, DeleteLine),
+      append(KeyLines, [DeleteLine], Lines),
+      atomic_list_concat(Lines, '\n', IR),
+      plawk_join_nonempty_ir(Globals, GlobalIR),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_assoc_increment_action(Action, ArrayName-KeyIndex),
