@@ -7878,7 +7878,7 @@ plawk_compound_action(foreach_loop(_, _)).
 plawk_arith_elem_reads(T, Ctx, Slots, Vs, Plan, FS, Base, I0, I, T1, G, L) :-
     (   T = assoc(_, _)
     ->  (   Ctx == arith
-        ->  plawk_cond_elem_operand(T, Slots, Vs, Plan, FS, Base, I0, I, T1, G, L)
+        ->  plawk_arith_elem_operand(T, Slots, Vs, Plan, FS, Base, I0, I, T1, G, L)
         ;   T1 = T, I = I0, G = [], L = []
         )
     ;   compound(T)
@@ -7889,6 +7889,27 @@ plawk_arith_elem_reads(T, Ctx, Slots, Vs, Plan, FS, Base, I0, I, T1, G, L) :-
         T1 =.. [F | Args1]
     ;   T1 = T, I = I0, G = [], L = []
     ).
+
+%% plawk_arith_elem_operand(+Elem, ..., -Leaf, -Globals, -Lines) is semidet.
+%  An element read as an operand of arithmetic. A STRING-kind table's element
+%  (`a[k] = $2 ""`) reads there as awk's strtod of its text -- the same reading a
+%  strnum element gets -- so it takes the ssa_strnum leaf. (Only a COMPARISON
+%  tells the two kinds apart; that path is plawk_cond_cmp_operand/11.) Every other
+%  element goes through plawk_cond_elem_operand/11.
+plawk_arith_elem_operand(assoc(var(A), Key), Slots, Vs, Plan, FS, Base, I0, I,
+        Leaf, Globals, Lines) :-
+    plawk_string_array(A),
+    \+ plawk_assoc_plan_posarray_array(Plan, A),
+    !,
+    plawk_assoc_table_index(Plan, A, TableIndex),
+    format(atom(EBase), '~w_e~w', [Base, I0]),
+    plawk_cond_elem_key(Key, Slots, Vs, FS, Base, EBase, KeyId, Globals, KeyLines),
+    format(atom(Ref), '%~w_val', [EBase]),
+    plawk_numeric_elem_read_lines(text, A, TableIndex, Ref, get, KeyId, Leaf, ReadLines),
+    append(KeyLines, ReadLines, Lines),
+    I is I0 + 1.
+plawk_arith_elem_operand(Elem, Slots, Vs, Plan, FS, Base, I0, I, Leaf, G, L) :-
+    plawk_cond_elem_operand(Elem, Slots, Vs, Plan, FS, Base, I0, I, Leaf, G, L).
 
 plawk_arith_elem_reads_args([], _Ctx, _Slots, _Vs, _Plan, _FS, _Base, I, I, [], [], []).
 plawk_arith_elem_reads_args([A | As], Ctx, Slots, Vs, Plan, FS, Base, I0, I,
@@ -10977,7 +10998,7 @@ plawk_scalar_typed_slots(Rules, Names, Slots) :-
           member(ActionE0, ActionsT),
           plawk_scalar_nested_action(ActionE0, ActionE),
           plawk_scalar_action_update(ActionE, Name, add(Elem)),
-          plawk_strnum_elem_operand(Elem)
+          plawk_arith_text_elem_operand(Elem)
         ),
         ElemAccs),
     append(StrnumAccs0, ElemAccs, StrnumAccs1),
@@ -10999,6 +11020,17 @@ plawk_strnum_elem_operand(assoc(var(A), _Key)) :-
     plawk_strnum_text_array(A).
 plawk_strnum_elem_operand(ssa_strnum(Ref)) :-
     atom(Ref).
+
+%% plawk_arith_text_elem_operand(+Expr) is semidet.
+%  An element that ARITHMETIC reads as awk's strtod of its text: a strnum table's,
+%  a string-kind table's (`a[k] = $2 ""`; the two differ only in a comparison), or
+%  the ssa_strnum leaf either becomes once read (plawk_arith_elem_operand/11).
+plawk_arith_text_elem_operand(Elem) :-
+    plawk_strnum_elem_operand(Elem),
+    !.
+plawk_arith_text_elem_operand(assoc(var(A), _Key)) :-
+    atom(A),
+    plawk_string_array(A).
 
 %% plawk_scalar_nested_action(+Action, -Inner) is nondet.
 %
@@ -20582,10 +20614,11 @@ plawk_f64_scalar_read_operand_expr(ssa_f64(Ref)) :-
     atom(Ref).
 % an element of a strnum table and its ssa_strnum leaf (array plan item 5(d)):
 % only as an arithmetic operand -- plawk_expr_is_double/1 is true of a binary tree
-% over one, never of the bare element, so `x = a[k]` is not a double copy
+% over one, never of the bare element, so `x = a[k]` is not a double copy. A
+% string-kind table's element reads the same way in arithmetic.
 plawk_f64_scalar_read_operand_expr(assoc(var(A), _Key)) :-
     atom(A),
-    plawk_strnum_text_array(A).
+    plawk_text_array(A).
 plawk_f64_scalar_read_operand_expr(ssa_strnum(Ref)) :-
     atom(Ref).
 plawk_f64_scalar_read_operand_expr(float_const(Mantissa, Denominator)) :-
@@ -22897,7 +22930,11 @@ plawk_i64_expr_ir(nf, FieldSeparator, Base, _GlobalBase, ValueIR, [], [CallIR]) 
 %  what an entry must NOT do: mention `%line`, or assume a record exists.
 plawk_record_i64_read(nf, RecValueIR, FieldSeparator, Base, CallIR) :-
     llvm_emit_atom_field_count(RecValueIR, FieldSeparator, Base, CallIR).
+% a FIELD's length only: `length(n)` of a numeric scalar is left length(var(n)) by
+% the read substitution (its text is a number formatting), and must decline here
+% rather than spell var(n) into the IR
 plawk_record_i64_read(length(FieldIndex), RecValueIR, FieldSeparator, Base, CallIR) :-
+    integer(FieldIndex),
     llvm_emit_atom_field_length(RecValueIR, FieldIndex, FieldSeparator, Base, CallIR).
 % A record-reading i64 leaf over the RETAINED last record, in an expression that runs
 % in END. ONE clause for every entry in plawk_record_i64_read/5: materialise the
@@ -23340,10 +23377,11 @@ plawk_arith_field_operand(field(Index)) :-
 % A substituted strnum read (x = $2; `x + 1`): its numeric value is a strtod
 % reading too, so it makes the tree double for the same reason a field does.
 plawk_arith_field_operand(ssa_strnum(_Value)).
-% an element of a strnum table, which the mixed walker reads as ssa_strnum
+% an element of a strnum or string-kind table, which the mixed walker reads as
+% ssa_strnum (plawk_arith_elem_operand/11)
 plawk_arith_field_operand(assoc(var(A), _Key)) :-
     atom(A),
-    plawk_strnum_text_array(A).
+    plawk_text_array(A).
 
 %% plawk_f64_print_expr(+Expr) is semidet.
 %
