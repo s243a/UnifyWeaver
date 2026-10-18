@@ -11912,9 +11912,13 @@ plawk_mixed_update_action(Action) :-
     plawk_rule_body_print_action(Action).
 % `delete arr[x]` with a scalar-variable key is admitted into the mixed chain
 % (resolved to the scalar's slot value at the walker, gated on a string/strnum
-% slot there). Field / string-literal / integer-literal delete keys stay in the
-% pure-assoc chain; a numeric-scalar key declines at the walker's slot gate.
+% slot there); a numeric-scalar key declines at the walker's slot gate. A field,
+% literal or SUBSEP key is admitted too -- the walker interns it as the writes do
+% (plawk_cond_elem_key/9) -- so `if ($2 > 5) delete c[$1]` lowers here; a rule the
+% pure-assoc chain takes whole is still taken there first.
 plawk_mixed_update_action(delete_assoc(var(_ArrayName), var(_Name))).
+plawk_mixed_update_action(delete_assoc(var(_ArrayName), Key)) :-
+    plawk_cond_elem_key_comps(Key, _Comps).
 % `split($N, arr, "sep")` -- fills a positional str table (the walker's split row).
 % Same source/separator shapes as the pure-assoc chain's split.
 plawk_mixed_update_action(split_into(field(KeyIndex), var(_ArrayName), string(Sep))) :-
