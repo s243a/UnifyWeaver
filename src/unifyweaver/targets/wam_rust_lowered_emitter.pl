@@ -977,16 +977,21 @@ emit_one(execute(PredStr), I, ForeignPreds) :-
 % --- If-then-else (structured; see wam_ite_structurer) ---
 % The condition runs in an immediately-invoked closure so its `return
 % false` means "condition failed"; inside then/else, `return false`
-% returns from the lowered function. Rust's get_reg derefs through the
-% binding table, so unwinding the trail before the else branch restores
-% any partial bindings the condition made. No register snapshot is needed:
-% the unwind restores Y registers but not A/X (R0b), and
+% returns from the lowered function. Before the else branch the machine is
+% rolled back to the state before the condition (`lowered_ite_rollback`,
+% bug-fix batch 1 B5): the environment stack snapshot (a `call` in the
+% condition whose callee failed left the callee's frame on top, so the else
+% branch used to read its Y registers from the wrong frame), the condition's
+% bindings, and any choice points the condition left. No register snapshot
+% is needed: A/X registers are not restored (R0b), and
 % rust_ite_else_ax_check/2 (called from emit_instrs/3) checks that the else
 % path writes every A/X register before reading it.
 emit_one(ite(Cond, Then, Else), I, ForeignPreds) :- !,
     nb_getval(rust_ite_ctr, N0), N is N0 + 1, nb_setval(rust_ite_ctr, N),
     string_concat(I, "    ", I2),
     format("~wlet _ite_mark~w = vm.trail.len();~n", [I, N]),
+    format("~wlet _ite_stack~w = vm.stack.clone();~n", [I, N]),
+    format("~wlet _ite_cps~w = vm.choice_points.len();~n", [I, N]),
     format("~wlet _ite_cond~w = (|vm: &mut WamState| -> bool {~n", [I, N]),
     emit_instrs(Cond, I2, ForeignPreds),
     format("~w    true~n", [I]),
@@ -994,7 +999,7 @@ emit_one(ite(Cond, Then, Else), I, ForeignPreds) :- !,
     format("~wif _ite_cond~w {~n", [I, N]),
     emit_instrs(Then, I2, ForeignPreds),
     format("~w} else {~n", [I]),
-    format("~w    vm.unwind_trail_to(_ite_mark~w);~n", [I, N]),
+    format("~w    vm.lowered_ite_rollback(_ite_mark~w, _ite_stack~w, _ite_cps~w);~n", [I, N, N, N]),
     emit_instrs(Else, I2, ForeignPreds),
     format("~w}~n", [I]).
 emit_one(Instr, I, _) :-

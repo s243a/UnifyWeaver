@@ -5104,6 +5104,26 @@ impl WamState {
     /// after the unwind must have captured it before the rolled-back code
     /// ran (as include/3, partition/4 and predsort/3 do) or restore it
     /// itself (`restore_regs`, as catch/3 and `lo_restore_clause` do).
+    /// Bug-fix batch 1 (B5): roll back a failed condition of a lowered
+    /// if-then-else before its else branch runs. `mark`, `stack` and `cps`
+    /// were taken before the condition. A `call` in the condition runs the
+    /// callee in a nested `run()`; when the callee fails, that run's last
+    /// backtrack restored the stack snapshot of one of the CALLEE's choice
+    /// points, so the topmost environment frame was the callee's and the else
+    /// branch read its Y registers from it. Restoring the stack snapshot puts
+    /// the caller's frame (with its pre-condition Y values) back on top; the
+    /// condition's Y-register trail entries are then redundant (and the
+    /// callee's would land in the wrong frame), so only its bindings are
+    /// undone. Choice points the condition left (a callee that succeeded
+    /// before a later condition goal failed) are removed, as a failed
+    /// condition leaves none in Prolog.
+    pub fn lowered_ite_rollback(&mut self, mark: usize, stack: Arc<Vec<StackEntry>>, cps: usize) {
+        self.choice_points.truncate(cps);
+        self.stack = stack;
+        self.unwind_trail_bindings_only(mark);
+        self.trail.truncate(mark);
+    }
+
     pub fn unwind_trail_to(&mut self, mark: usize) {
         while self.trail.len() > mark {
             let entry = match self.trail.pop() {

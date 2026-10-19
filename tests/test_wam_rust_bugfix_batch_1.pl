@@ -234,6 +234,29 @@ bb_program(dyn_db_log, 'B4', findall(Y, dyn_log(Y), L), L,
            ( assertz(dyn_seen(0)), assertz((dyn_q(Y) :- member(Y, [1, 2, 3]), \+ dyn_seen(Y), assertz(dyn_log(Y)))),
              ( dyn_q(Z), assertz(dyn_seen(2)), Z > 5 ; true ) )).
 
+% --- B5: lowered ITE condition with a failing call --------------------
+%
+% The condition calls a predicate that allocates an environment and fails;
+% the else branch reads the caller's permanent variables (the R0b case
+% naf_temp: SWI got(a,b), lowered entry no solution).
+bb_program(lite_naf, 'B5', lite_naf(a, b, R), R, true).
+bb_clause(lite_naf, (lite_naf(X, Y, R) :- \+ lite_clob(X), R = got(X, Y))).
+bb_clause(lite_naf, (lite_clob(X) :- lite_w(k1, k2, X), lite_w(X, k3, k4), fail)).
+bb_clause(lite_naf, lite_w(_, _, _)).
+bb_program(lite_ite, 'B5', lite_ite(a, b, R), R, true).
+bb_clause(lite_ite, (lite_ite(X, Y, R) :- ( lite_deep(X, Z) -> R = yes(Z) ; R = no(X, Y) ))).
+bb_clause(lite_ite, (lite_deep(X, Z) :- lite_w(X, Z, k5), lite_v(Z, W), W == q)).
+bb_clause(lite_ite, lite_v(_, p)).
+% A callee that succeeds (and leaves its choice points) before a later goal
+% of the condition fails; then a nested if-then-else whose condition fails
+% inside the else branch.
+bb_program(lite_part, 'B5', lite_part(a, R), R, true).
+bb_clause(lite_part, (lite_part(X, R) :- ( lite_two(X, Z), Z > 1 -> R = big(Z) ; R = small(X) ))).
+bb_clause(lite_part, (lite_two(X, Z) :- lite_w(X, Z, k6), Z = 1)).
+bb_clause(lite_part, lite_two(b, 0)).
+bb_program(lite_nested, 'B5', lite_nested(a, b, R), R, true).
+bb_clause(lite_nested, (lite_nested(X, Y, R) :- ( lite_clob(X) -> R = one ; ( lite_deep(Y, _) -> R = two ; R = three(X, Y) ) ))).
+
 bb_dynamic(dyn_w/1).
 bb_dynamic(dyn_rl/2).
 bb_dynamic(dyn_c/1).
@@ -293,6 +316,10 @@ bb_lowered_required(esc_head).
 bb_lowered_required(esc_atoms_then).
 bb_lowered_required(esc_quote_const).
 bb_lowered_required(esc_pred_name).
+bb_lowered_required(lite_naf).
+bb_lowered_required(lite_ite).
+bb_lowered_required(lite_part).
+bb_lowered_required(lite_nested).
 
 % ---------------------------------------------------------------------
 % Installation

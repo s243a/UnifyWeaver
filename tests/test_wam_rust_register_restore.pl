@@ -549,11 +549,9 @@ rr_lowered_out_of_scope(findall_fail,   lowered_aggregates_unsupported).
 rr_lowered_out_of_scope(findall_some,   lowered_aggregates_unsupported).
 rr_lowered_out_of_scope(nested_findall, lowered_aggregates_unsupported).
 rr_lowered_out_of_scope(nested_fail,    lowered_aggregates_unsupported).
-%  A lowered if-then-else condition whose `call` fails leaves the callee's
-%  environment frame on the stack (the lowered `call` restores neither the
-%  stack nor E), so the else branch reads its Y registers from the callee's
-%  frame. A lowered-tier defect independent of the register trail.
-rr_lowered_out_of_scope(naf_temp, lowered_ite_keeps_failed_callee_frame).
+%  (naf_temp's lowered entry, excluded until bug-fix batch 1 B5 made the
+%  lowered if-then-else restore the stack snapshot before its else branch, is
+%  checked again.)
 
 %% rr_lowered_required(?Name)
 %  Programs whose query predicate MUST be lowered in functions mode, so the

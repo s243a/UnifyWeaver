@@ -325,3 +325,52 @@ predicate), `dyn_ctl` (disjunction, `\+`, if-then-else in the body),
 `findall/3` with a side effect each), `dyn_db` and `dyn_db_log` (the body sees
 the continuation's asserts; its own asserts persist). SWI runs the
 line-reader through the shims of `test_wam_rust_stream_swi_parity.pl`.
+
+## B5 (D144): lowered if-then-else, a failing call in the condition
+
+**Symptom.** In a lowered predicate, `lite_naf(X, Y, R) :- \+ lite_clob(X), R = got(X, Y)`
+(the R0b audit's `naf_temp`; `lite_clob/1` allocates an environment and
+fails) returned no solution through its lowered entry (SWI `got(a,b)`); an
+if-then-else whose condition calls such a predicate took the else branch
+with the wrong values (`lite_ite`), also through the functions-mode
+interpreted entry, which reaches the lowered function through `lowered_call`.
+`tests/test_wam_rust_register_restore.pl` excluded `naf_temp`'s lowered entry
+for this reason (`lowered_ite_keeps_failed_callee_frame`).
+
+**Root cause.** The lowered if-then-else (`emit_one(ite(...))`,
+`wam_rust_lowered_emitter.pl:979` on base) runs the condition in a closure
+and, when it fails, only unwinds the trail (`:990`). A `call` in the
+condition (`:1192`) runs the callee in a nested `vm.run()` under a backtrack
+floor; when the callee fails, that run's last `backtrack` restored the stack
+snapshot of one of the CALLEE's choice points (its clause choice point, taken
+after its `Allocate`), so the topmost environment frame was the callee's.
+The else branch then read its Y registers (`X`, `Y` above) from the callee's
+frame, and the unwind applied the condition's Y-register trail entries to
+that frame too.
+
+**Fix.** The lowered ITE takes the environment stack (an `Arc` snapshot,
+O(1)) and the choice-point depth with the trail mark before the condition,
+and the else branch starts with `vm.lowered_ite_rollback(mark, stack, cps)`
+(`state.rs.mustache`): the stack snapshot comes back (the caller's frame on
+top, with its Y values from before the condition), the condition's bindings
+are undone (`unwind_trail_bindings_only` + truncate: its Y-register entries
+are redundant after the snapshot, and the callee's would land in the wrong
+frame), and choice points the condition left (a callee that succeeded before
+a later condition goal failed) are removed, as a failed condition leaves none
+in Prolog. The then branch is unchanged. R0b's emit-time check that the else
+path reads no A/X register before writing it still holds (A/X are not
+restored either way). `naf_temp`'s lowered entry is checked again.
+
+**Tests.** `lite_naf` (the R0b case), `lite_ite` (condition calls a predicate
+that allocates and fails; else reads both arguments), `lite_part` (a callee
+succeeds, then a later condition goal fails), `lite_nested` (a failing
+condition inside an else branch). All four query predicates must be lowered
+(`bb_lowered_required/1`).
+
+| | interpreter | functions | lowered entry (default / `Sym = String`) |
+| --- | --- | --- | --- |
+| before | 4/4 | `lite_ite` wrong (no output) | `lite_naf`, `lite_ite`, `lite_nested` wrong (no solution) on both builds |
+| after | 4/4 | 4/4 | 4/4 on both builds |
+
+`tests/test_wam_rust_register_restore.pl`: `naf_temp` lowered entry, before
+`swi got(a,b)`, `rust ''`; after, matches.
