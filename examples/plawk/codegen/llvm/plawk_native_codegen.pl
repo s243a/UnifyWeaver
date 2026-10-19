@@ -7863,6 +7863,9 @@ plawk_arith_parent(T, [L, R]) :-
     !.
 plawk_arith_parent(add(var(N), X), [X]) :-
     atom(N).
+% `length(a[k])`: the element is read first, as its text leaf (a text table's)
+plawk_arith_parent(length(X), [X]) :-
+    X = assoc(_, _).
 
 plawk_compound_action(if(_, _, _)).
 plawk_compound_action(while_loop(_, _)).
@@ -11071,7 +11074,10 @@ plawk_scalar_string_names(Rules, Strings) :-
           plawk_trim_control_tails(Actions0, Actions),
           member(Action0, Actions),
           plawk_scalar_nested_action(Action0, Action),
-          plawk_scalar_action_update(Action, Name, set_str(_Src))
+          (   plawk_scalar_action_update(Action, Name, set_str(_Src))
+          ;   Action = set(var(Name), assoc(var(A), _)),   % a string-kind element copy
+              atom(A), plawk_string_array(A)
+          )
         ),
         Names0),
     sort(Names0, Strings0),
@@ -12733,6 +12739,11 @@ plawk_assoc_print_field_spec(assoc(var(Arr), Lit), lookupn(Arr, Comps)) :-
     atom(Arr),
     plawk_assoc_literal_key_comps(Lit, Comps).
 
+% `print length(arr[$N])` -- the length of a text element (planned only for a
+% str-valued table; a numeric element's text is a number formatting, so it
+% declines).
+plawk_assoc_print_field_spec(length(assoc(var(Arr), field(N))), llength(Arr, N)) :-
+    atom(Arr), integer(N), N > 0.
 % A scalar accumulator read in a per-record print.
 plawk_assoc_print_field_spec(var(Name), svar(Name)) :-
     atom(Name).
@@ -12782,6 +12793,10 @@ plawk_assoc_arith_operand(assoc(var(Arr), string(S)), alookup_lit(Arr, Text)) :-
 % StrArrays is the set of str-valued (atom-id) tables, used to pick the value
 % kind for an integer-key element read.
 plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, fld(N), fld(N)).
+plawk_assoc_print_plan_field(Tables, StrArrays, _PosArrays, llength(Arr, N),
+        llength(TableIndex, N)) :-
+    memberchk(Arr, StrArrays),
+    nth0(TableIndex, Tables, Arr).
 plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, record, record).
 plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, strlit(V), strlit(V)).
 % A field-keyed element read resolves its array to a table index AND its value
@@ -13001,6 +13016,28 @@ plawk_assoc_print_one_field(lookup(TableIndex, N, Kind), Base, Index, FieldSep, 
     format(atom(KeyIR), '%~w_kid', [P]),
     plawk_assoc_kind_value_print_line(Kind, TableIndex, KeyIR, PrL),
     Lines = [SliceL, PtrL, LenL, KidL, PrL].
+% `print length(arr[$N])`: read the text element (0 when absent, which reads "")
+% and print its byte length.
+plawk_assoc_print_one_field(llength(TableIndex, N), Base, Index, FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(SliceL),
+        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [P, N, FieldSep]),
+    format(atom(PtrL), '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [P, P]),
+    format(atom(LenL), '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [P, P]),
+    format(atom(KidL),
+        '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)', [P, P, P]),
+    format(atom(KeyIR), '%~w_kid', [P]),
+    format(atom(ValIR), '%~w_val', [P]),
+    plawk_assoc_elem_call_line(ValIR, i64, i64, get, TableIndex, KeyIR, GetL),
+    format(atom(StrL), '  %~w_s = call i8* @wam_sv_cstr(i64 ~w)', [P, ValIR]),
+    format(atom(NL), '  %~w_n = call i64 @strlen(i8* %~w_s)', [P, P]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_n)', [P, P, P]),
+    Lines = [SliceL, PtrL, LenL, KidL, GetL, StrL, NL, FmtL, PrL].
 % `print arr[$i,$j,...]` -- a multi-dimensional element read. The N components
 % are joined with SUBSEP and interned by the runtime helper (the same key the
 % arr[...]++ counter builds), then the table's i64 value at that key prints.
@@ -19309,6 +19346,9 @@ plawk_rule_body_print_field(length(field(_))).
 % `length(s)` before substitution: becomes sv_len(Ref) for a text slot; any other
 % slot stays length(var(_)), which no emitter takes, so the program declines
 plawk_rule_body_print_field(length(var(V))) :- atom(V).
+% an element's length: read by the element pre-read (plawk_arith_parent/2)
+plawk_rule_body_print_field(length(assoc(var(A), _Key))) :- atom(A).
+plawk_rule_body_print_field(length(ssa_strnum(Ref))) :- atom(Ref).
 plawk_rule_body_print_field(sv_len(_Ref)).
 plawk_rule_body_print_field(match_expr(field(_), _Regex)).
 plawk_rule_body_print_field(special('RSTART')).
@@ -20081,6 +20121,11 @@ plawk_substitute_scalar_reads(field_var(Name, Offset), Slots, Values, Substitute
     ;   Substituted = field_var(Name, Offset)
     ).
 % `length(s)` of a string / strnum slot: the byte length of its text (sv_len).
+% `length(a[k])` once the element pre-read made it a text leaf: its text's length
+% (a numeric element's leaf stays length(ssa...) / length(ssa_f64...), which no
+% emitter takes, so it declines)
+plawk_substitute_scalar_reads(length(ssa_strnum(Ref)), _Slots, _Values, sv_len(Ref)) :-
+    !.
 plawk_substitute_scalar_reads(length(var(Name)), Slots, Values, Substituted) :-
     !,
     (   nth0(SlotIndex, Slots, Slot),
@@ -20352,6 +20397,8 @@ plawk_i64_binary_primary_expr(length(field(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_i64_binary_primary_expr(sv_len(_Ref)).
 plawk_i64_binary_primary_expr(length(var(V))) :- atom(V).
+plawk_i64_binary_primary_expr(length(assoc(var(A), _Key))) :- atom(A).
+plawk_i64_binary_primary_expr(length(ssa_strnum(Ref))) :- atom(Ref).
 plawk_i64_binary_primary_expr(index(field(FieldIndex), string(Needle))) :-
     FieldIndex >= 0,
     string(Needle).
@@ -20364,6 +20411,8 @@ plawk_i64_scalar_primary_expr(length(field(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_i64_scalar_primary_expr(sv_len(_Ref)).
 plawk_i64_scalar_primary_expr(length(var(V))) :- atom(V).
+plawk_i64_scalar_primary_expr(length(assoc(var(A), _Key))) :- atom(A).
+plawk_i64_scalar_primary_expr(length(ssa_strnum(Ref))) :- atom(Ref).
 plawk_i64_scalar_primary_expr(index(field(FieldIndex), string(Needle))) :-
     FieldIndex >= 0,
     string(Needle).
@@ -20489,6 +20538,15 @@ plawk_scalar_action_update(add(var(Name), ssa_strnum(Ref)), Name, add(ssa_strnum
 plawk_scalar_action_update(set(var(Name), Elem), Name, set(Elem)) :-
     atom(Name),
     plawk_strnum_elem_operand(Elem).
+% ... and of a STRING-kind element (`a[k] = $2 ""; x = a[k]`): x is a string
+% (plawk_scalar_string_names/2), and the walker's copy row reads the element as
+% ssa_str, copied as any string copy is
+plawk_scalar_action_update(set(var(Name), assoc(var(A), Key)), Name,
+        set(assoc(var(A), Key))) :-
+    atom(Name), atom(A),
+    plawk_string_array(A).
+plawk_scalar_action_update(set(var(Name), ssa_str(Ref)), Name, set(ssa_str(Ref))) :-
+    atom(Name), atom(Ref).
 % a bare copy of an element already read (only produced for the iterated element of
 % an END for-in, which is present by construction -- arrays PR 3d-2)
 plawk_scalar_action_update(set(var(Name), ssa(Ref)), Name, set(ssa(Ref))) :-
@@ -20695,6 +20753,22 @@ plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _Out
 % A bare copy of a strnum element into a strnum slot (`x = a[$1]`, array plan item
 % 5(d)): read the element (absent -> id 0, which reads "") into an ssa_strnum leaf,
 % then the copy duplicates it (plawk_str_copy_ir/7). Any other target declines.
+% ... and of a STRING-kind element into a string slot: the element's text value
+% (absent -> 0, "") read as ssa_str, then copied by plawk_str_copy_ir/7.
+plawk_scalar_action_sequence_pairs([set(var(Name), assoc(var(A), Key)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { memberchk(scalar_string(Name), Slots),
+      plawk_string_array(A),
+      !,
+      format(atom(RBase), '~w_ec~w', [Prefix, OpIndex]),
+      plawk_cond_cmp_operand(assoc(var(A), Key), Slots, Values0, AssocPlan,
+          FieldSeparator, RBase, 0, _, ssa_text(Ref, 2), Globals, Lines),
+      plawk_join_nonempty_ir(Globals, GlobalIR),
+      atomic_list_concat(Lines, '\n', IR)
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs([set(var(Name), ssa_str(Ref)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([set(var(Name), assoc(var(A), Key)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { memberchk(scalar_strnum(Name), Slots),
