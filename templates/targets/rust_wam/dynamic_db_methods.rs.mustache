@@ -552,6 +552,9 @@
             Some(clauses) => clauses.clone(),
             None => return false,
         };
+        // The choice points below this depth are the caller's; a cut in a
+        // clause body removes everything this call pushes above it.
+        let clause_cp_depth = self.choice_points.len();
         for idx in start_idx..clauses.len() {
             let cp_trail = self.trail.len();
             let cp_heap = self.heap.len();
@@ -559,8 +562,33 @@
             let cp_stack = self.stack.clone();
             let mut var_map = std::collections::HashMap::new();
             let clause = Self::copy_term_walk(&mut self.var_counter, &mut var_map, &clauses[idx]);
-            if self.dynamic_apply_clause_solution(&clause, 0) {
-                if idx + 1 < clauses.len() {
+            let (head, body) = match self.dynamic_clause_head_body(&clause) {
+                Some(parts) => parts,
+                None => continue,
+            };
+            // None: the clause does not match; Some(None): a fact matched;
+            // Some(Some((solver, cut))): a rule whose body has a solution.
+            let mut outcome: Option<Option<(SuspendedBody, bool)>> = None;
+            let mut cut_failed = false;
+            if self.dynamic_unify_head_args(&head) {
+                match body {
+                    None => outcome = Some(None),
+                    Some(body) => match self.dynamic_body_first(&body) {
+                        DynBodyStart::Solution(gen, cut) => outcome = Some(Some((gen, cut))),
+                        DynBodyStart::Failed(cut) => cut_failed = cut,
+                        DynBodyStart::Thrown => {
+                            self.unwind_trail_to(cp_trail);
+                            self.heap.truncate(cp_heap);
+                            self.restore_regs(&cp_regs);
+                            self.stack = cp_stack;
+                            return false;
+                        }
+                    },
+                }
+            }
+            if let Some(rule) = outcome {
+                let cut = rule.as_ref().map_or(false, |(_, c)| *c);
+                if idx + 1 < clauses.len() && !cut {
                     self.choice_points.push(ChoicePoint {
                         next_pc: cont_pc,
                         saved_args: cp_regs.clone(),
@@ -569,6 +597,7 @@
                         trail_len: cp_trail,
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
+                            suspended: None,
                             name: "dynamic_call".to_string(),
                             args: vec![Value::Atom(key.clone().into())],
                             data: vec![Value::Integer((idx + 1) as i64), Value::Integer(cont_pc as i64)],
@@ -577,7 +606,11 @@
                         levels: Vec::new(),
                     });
                 }
-                if self.dynamic_clause_has_body(&clause) {
+                if let Some((gen, _)) = rule {
+                    // Bug-fix batch 1 (B4): the body's solver stays suspended
+                    // in this choice point; a redo resumes it
+                    // (dynamic_rule_body_resume) instead of solving the body
+                    // again from its start.
                     self.choice_points.push(ChoicePoint {
                         next_pc: cont_pc,
                         saved_args: cp_regs,
@@ -586,9 +619,10 @@
                         trail_len: cp_trail,
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
+                            suspended: Some(gen),
                             name: "dynamic_rule_body".to_string(),
-                            args: vec![clause.clone()],
-                            data: vec![Value::Integer(1), Value::Integer(cont_pc as i64)],
+                            args: Vec::new(),
+                            data: vec![Value::Integer(cont_pc as i64), Value::Integer(clause_cp_depth as i64)],
                         }),
                         cut_barrier: self.cut_barrier,
                         levels: Vec::new(),
@@ -601,120 +635,113 @@
             self.heap.truncate(cp_heap);
             self.restore_regs(&cp_regs);
             self.stack = cp_stack;
+            if cut_failed {
+                // A cut ran in the body before it failed: the predicate's
+                // later clauses are pruned too.
+                return false;
+            }
         }
         false
     }
 
-    fn dynamic_clause_has_body(&self, clause: &Value) -> bool {
-        matches!(self.dynamic_clause_head_body(clause), Some((_, Some(_))))
+    /// Adopt solution `sol` of a body solved on a copy of this machine: its
+    /// bindings, trail, heap and registers, with this machine's choice
+    /// points, control registers and environment stack, and the shared
+    /// state `side`. The copy was taken from this machine (after the head
+    /// unification), so its trail and heap extend this machine's: entries
+    /// below this machine's marks are unchanged while the dynamic call's
+    /// choice point exists.
+    fn adopt_solution(&mut self, sol: Box<WamState>, side: SideState) {
+        let mut sol = sol;
+        std::mem::swap(&mut sol.choice_points, &mut self.choice_points);
+        sol.cp = self.cp;
+        sol.pc = self.pc;
+        sol.cut_barrier = self.cut_barrier;
+        sol.backtrack_floor = self.backtrack_floor;
+        sol.pending_cut_barrier = self.pending_cut_barrier.take();
+        sol.pending_level = self.pending_level.take();
+        sol.stack = self.stack.clone();
+        sol.code = self.code.clone();
+        sol.step_limit = self.step_limit;
+        sol.thrown_ball = None;
+        sol.put_side(side);
+        *self = *sol;
     }
 
-    fn dynamic_apply_clause_solution(&mut self, clause: &Value, solution_idx: usize) -> bool {
-        let (head, body) = match self.dynamic_clause_head_body(clause) {
-            Some(parts) => parts,
-            None => return false,
-        };
-        if !self.dynamic_unify_head_args(&head) { return false; }
-        match body {
-            None => solution_idx == 0,
-            Some(body) => self.dynamic_eval_body_solution(&body, solution_idx),
-        }
-    }
-
-    fn dynamic_eval_body_solution(&mut self, body: &Value, solution_idx: usize) -> bool {
-        let limit = solution_idx.saturating_add(1);
-        let mut solutions = self.dynamic_body_solutions(body, limit);
-        if solutions.len() <= solution_idx { return false; }
-        *self = solutions.remove(solution_idx);
-        true
-    }
-
-    fn dynamic_body_solutions(&self, body: &Value, limit: usize) -> Vec<WamState> {
-        if limit == 0 { return Vec::new(); }
-        let body = self.deref_heap(&self.deref_var(body));
-        match body {
-            Value::Atom(ref s) if s == "true" => vec![self.clone()],
-            Value::Atom(ref s) if s == "fail" || s == "false" => Vec::new(),
-            Value::Str(ref f, ref args) if (f == "," || f == ",/2") && args.len() == 2 => {
-                let mut out = Vec::new();
-                for left in self.dynamic_body_solutions(&args[0], limit) {
-                    let remaining = limit.saturating_sub(out.len());
-                    if remaining == 0 { break; }
-                    out.extend(left.dynamic_body_solutions(&args[1], remaining));
-                    if out.len() >= limit { break; }
-                }
-                out
+    /// The first solution of a dynamic clause body (the head is unified).
+    fn dynamic_body_first(&mut self, body: &Value) -> DynBodyStart {
+        let mut side = self.take_side();
+        let mut gen = BodyGen::new(self.gen_base(), body);
+        match gen.next(&mut side) {
+            GenStep::Sol(sol, cut) => {
+                self.adopt_solution(sol, side);
+                DynBodyStart::Solution(SuspendedBody(Arc::new(Mutex::new(gen))), cut)
             }
-            other => {
-                let mut vm = self.clone();
-                let cp_depth = vm.choice_points.len();
-                let mut out = Vec::new();
-                // R-1a (L3): the body goal's nested run may resume only the
-                // choice points it pushes itself. Each collected solution
-                // gets the caller's floor back.
-                let saved_floor = vm.backtrack_floor;
-                vm.backtrack_floor = cp_depth;
-                if vm.call_goal_value(&other) {
-                    loop {
-                        let mut solution = vm.clone();
-                        solution.choice_points.truncate(cp_depth);
-                        solution.backtrack_floor = saved_floor;
-                        out.push(solution);
-                        if out.len() >= limit { break; }
-                        if vm.choice_points.len() <= cp_depth { break; }
-                        if !vm.backtrack() { break; }
-                    }
-                }
-                out
+            GenStep::Done(cut) => {
+                self.put_side(side);
+                DynBodyStart::Failed(cut)
+            }
+            GenStep::Thrown(ball) => {
+                self.put_side(side);
+                self.thrown_ball = Some(ball);
+                DynBodyStart::Thrown
             }
         }
     }
 
-    fn dynamic_clause_body_is_direct_retract(&self, clause: &Value) -> bool {
-        let body = match self.dynamic_clause_head_body(clause) {
-            Some((_, Some(body))) => self.deref_heap(&self.deref_var(&body)),
-            _ => return false,
-        };
-        matches!(
-            body,
-            Value::Str(ref functor, ref args)
-                if args.len() == 1 &&
-                   Self::display_functor_name(functor, 1) == "retract"
-        )
-    }
-
-    fn dynamic_rule_body_attempt(&mut self, clause: Value, solution_idx: usize, cont_pc: usize) -> bool {
+    /// Redo of a dynamic clause body: the machine is back at the state of the
+    /// call (backtrack restored the choice point), and the suspended solver
+    /// continues from the previous solution. A cut in the body removes the
+    /// predicate's remaining clauses (the choice points above
+    /// `clause_cp_depth`).
+    fn dynamic_rule_body_resume(&mut self, gen: SuspendedBody, cont_pc: usize, clause_cp_depth: usize) -> bool {
         let cp_trail = self.trail.len();
         let cp_heap = self.heap.len();
         let cp_regs = self.save_regs();
         let cp_stack = self.stack.clone();
-        // retract/1 mutates its candidate set, so retry from the first
-        // remaining match instead of skipping by the historical index.
-        let effective_idx = if self.dynamic_clause_body_is_direct_retract(&clause) {
-            0
-        } else {
-            solution_idx
+        let mut side = self.take_side();
+        let step = {
+            let mut g = gen.0.lock().unwrap_or_else(|e| e.into_inner());
+            g.next(&mut side)
         };
-        if self.dynamic_apply_clause_solution(&clause, effective_idx) {
-            self.choice_points.push(ChoicePoint {
-                next_pc: cont_pc,
-                saved_args: cp_regs,
-                stack: cp_stack,
-                cp: self.cp,
-                trail_len: cp_trail,
-                heap_len: cp_heap,
-                builtin_state: Some(BuiltinState {
-                    name: "dynamic_rule_body".to_string(),
-                    args: vec![clause],
-                    data: vec![Value::Integer((solution_idx + 1) as i64), Value::Integer(cont_pc as i64)],
-                }),
-                cut_barrier: self.cut_barrier,
-                levels: Vec::new(),
-            });
-            self.pc = cont_pc;
-            return true;
+        match step {
+            GenStep::Sol(sol, cut) => {
+                self.adopt_solution(sol, side);
+                if cut {
+                    self.choice_points.truncate(clause_cp_depth);
+                }
+                self.choice_points.push(ChoicePoint {
+                    next_pc: cont_pc,
+                    saved_args: cp_regs,
+                    stack: cp_stack,
+                    cp: self.cp,
+                    trail_len: cp_trail,
+                    heap_len: cp_heap,
+                    builtin_state: Some(BuiltinState {
+                        suspended: Some(gen),
+                        name: "dynamic_rule_body".to_string(),
+                        args: Vec::new(),
+                        data: vec![Value::Integer(cont_pc as i64), Value::Integer(clause_cp_depth as i64)],
+                    }),
+                    cut_barrier: self.cut_barrier,
+                    levels: Vec::new(),
+                });
+                self.pc = cont_pc;
+                true
+            }
+            GenStep::Done(cut) => {
+                self.put_side(side);
+                if cut {
+                    self.choice_points.truncate(clause_cp_depth);
+                }
+                false
+            }
+            GenStep::Thrown(ball) => {
+                self.put_side(side);
+                self.thrown_ball = Some(ball);
+                false
+            }
         }
-        false
     }
 
     fn dynamic_unify_head_args(&mut self, head: &Value) -> bool {
@@ -847,6 +874,7 @@
                         trail_len: cp_trail,
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
+                            suspended: None,
                             name: "current_predicate".to_string(),
                             args: vec![
                                 Value::list(keys.clone()),
@@ -936,6 +964,7 @@
                         trail_len: cp_trail,
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
+                            suspended: None,
                             name: "dynamic_clause".to_string(),
                             args: vec![
                                 Value::Atom(key.clone().into()),
@@ -1014,6 +1043,7 @@
                         trail_len: cp_trail,
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
+                            suspended: None,
                             name: "dynamic_retract".to_string(),
                             args: vec![Value::Atom(key.clone().into()), pattern.clone()],
                             data: vec![Value::Integer(idx as i64), Value::Integer(cont_pc as i64)],

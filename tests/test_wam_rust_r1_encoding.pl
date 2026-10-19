@@ -8,9 +8,10 @@
 % Rust WAM generator's instruction encoding. Generator-level checks (no cargo):
 %
 %   * register operands: rust_reg_literal/2 emits Reg::a/x/y(n) for the
-%     canonical names and the raw encoding of `Reg::from_name` for any other
-%     name the runtime decodes (the findall template registers `_XT<N>`),
-%     and refuses the Y spellings the runtime keys by text;
+%     canonical names, Reg::x(99 - N mod 99) for the aggregate template
+%     registers `_XT<N>` (bug-fix batch 1, B6), the raw encoding of
+%     `Reg::from_name` for any other name the runtime decodes, and refuses
+%     the Y spellings the runtime keys by text;
 %   * builtin routes: the core builtins get their own route, every other name
 %     enters the cascade at the first family that names it; that is exact only
 %     while each family claims names through literal match arms alone, which
@@ -40,7 +41,9 @@ test(reg_literals) :-
                     'X150'-"Reg::x(150)", 'Y1'-"Reg::y(1)", 'Y100'-"Reg::y(100)",
                     "A2"-"Reg::a(2)",
                     % non-canonical names: the raw Reg::from_name encoding
-                    '_XT0'-"Reg(0)", '_XT7'-"Reg(0)", 'A01'-"Reg(16384)",
+                    % the template scratch registers (bug-fix batch 1, B6)
+                    '_XT0'-"Reg::x(99)", '_XT7'-"Reg::x(92)",
+                    'A01'-"Reg(16384)",
                     'X0'-"Reg(99)", 'A0'-"Reg(32767)", 'Y'-"Reg(199)",
                     'B7'-"Reg(0)", 'A+3'-"Reg(16386)" ]),
            (   rust_reg_literal(Name, Got),

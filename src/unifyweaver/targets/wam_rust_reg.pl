@@ -17,12 +17,16 @@
 % (`WamState::reg_index`, `is_y_reg_name`, `YRegs::slot`) assigns to the same
 % names, so an instruction behaves as it did when it carried the name.
 %
-% The shared compiler also emits a few names outside that pattern: the
-% findall/bagof template scratch registers `_XT<N>` (wam_target.pl
-% construct_template/7). The runtime decodes those with the generic
-% `reg_index_parse` rule (any prefix other than A/X/Y -> flat slot 0, the
-% same slot as A1). rust_reg_literal/2 reproduces that rule and emits the
-% raw encoding, `Reg(<u16>)`, so they keep exactly today's behaviour.
+% The shared compiler also emits names outside that pattern: the
+% findall/bagof/setof/aggregate_all template scratch registers `_XT<N>`
+% (wam_target.pl construct_template/7), which hold the sub-compounds of a
+% compound template while A1 holds its root. They used to decode by the
+% generic rule (any prefix other than A/X/Y -> flat slot 0, A1's slot), so
+% `set_variable _XT0` overwrote the root and the aggregate collected the
+% last sub-compound instead of the template (bug-fix batch 1, B6). They are
+% now X registers counted down from X99: `_XT<N>` is X(99 - N mod 99), the
+% same slot the runtime decoder (`reg_index_parse`) gives the name. Any
+% other non-canonical name keeps the raw encoding, `Reg(<u16>)`.
 
 :- module(wam_rust_reg, [
     rust_reg_literal/2,     % +RegName, -RustExpr
@@ -39,6 +43,8 @@ rust_reg_literal(Name, Expr) :-
     atom_codes(Name, Cs),
     (   rust_reg_canonical(Cs, Bank, N)
     ->  format(string(Expr), 'Reg::~w(~w)', [Bank, N])
+    ;   rust_xt_x_number(Cs, K)
+    ->  format(string(Expr), 'Reg::x(~w)', [K])
     ;   rust_reg_code(Name, Code)
     ->  format(string(Expr), 'Reg(~w)', [Code])
     ;   throw(error(domain_error(wam_rust_register, Name),
@@ -84,6 +90,9 @@ rust_reg_index([P, D0, D1], Idx) :-
     D0 >= 0'0, D0 =< 0'9, D1 >= 0'0, D1 =< 0'9, !,
     N is (D0 - 0'0) * 10 + (D1 - 0'0),
     rust_reg_bank_index(P, N, Idx).
+rust_reg_index(Cs, Idx) :-
+    rust_xt_x_number(Cs, K), !,
+    Idx is K + 99.
 rust_reg_index([], 0) :- !.
 rust_reg_index([P|Rest], Idx) :-
     rust_usize_parse(Rest, N),
@@ -95,6 +104,16 @@ rust_reg_index([P|Rest], Idx) :-
 rust_reg_bank_index(0'A, N, Idx) :- ( N =:= 0 -> Idx = 1000000 ; Idx is N - 1 ).
 rust_reg_bank_index(0'X, N, Idx) :- Idx is N + 99.
 rust_reg_bank_index(0'Y, N, Idx) :- Idx is N + 199.
+
+%% rust_xt_x_number(+Codes, -K) is semidet.
+%  `_XT<digits>` (a value below 2^64): the template scratch register is X<K>,
+%  K = 99 - N mod 99 (WamState::reg_index_parse).
+rust_xt_x_number([0'_, 0'X, 0'T|Ds], K) :-
+    Ds \== [],
+    forall(member(D, Ds), (D >= 0'0, D =< 0'9)),
+    number_codes(N, Ds),
+    N < 18446744073709551616,
+    K is 99 - N mod 99.
 
 % `str::parse::<usize>().unwrap_or(0)`: an optional leading '+', then one or
 % more ASCII digits, value below 2^64; anything else is 0.

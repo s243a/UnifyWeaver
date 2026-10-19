@@ -28,7 +28,8 @@
 :- use_module(wam_clause_chain, [clause_chain/2]).
 :- use_module(wam_rust_target, [escape_rust_string/2]).
 :- use_module(wam_rust_reg, [rust_reg_literal/2]).
-:- use_module(wam_text_parser, [wam_classify_constant_token/2]).
+:- use_module(wam_text_parser, [wam_classify_constant_token/2,
+                                 wam_tokenize_line/2]).
 
 % =====================================================================
 % Parsing
@@ -39,10 +40,15 @@ parse_wam_text(WamText, Instrs) :-
     split_string(S, "\n", "", Lines),
     parse_lines(Lines, Instrs).
 
+% Lines are split by the shared quote-aware tokenizer (wam_text_parser), as
+% the instruction-table path does: a quoted constant keeps its spaces and
+% commas ('say "hi"', 'a,b'), its escapes are resolved ('c\\d' is the atom
+% c\d), and the conjunction functor ",/2" stays one token. Splitting on
+% space and comma used to cut such constants apart, so the instruction no
+% longer matched instr_from_parts/2 and was silently dropped.
 parse_lines([], []).
 parse_lines([Line|Rest], Instrs) :-
-    split_string(Line, " \t,", " \t,", Parts),
-    delete(Parts, "", CleanParts),
+    wam_tokenize_line(Line, CleanParts),
     (   CleanParts == []
     ->  parse_lines(Rest, Instrs)
     ;   CleanParts = [First|_],
@@ -117,8 +123,7 @@ parse_wam_text_labeled(WamText, Instrs) :-
 
 parse_lines_labeled([], []).
 parse_lines_labeled([Line|Rest], Instrs) :-
-    split_string(Line, " \t,", " \t,", Parts),
-    delete(Parts, "", CleanParts),
+    wam_tokenize_line(Line, CleanParts),
     (   CleanParts == []
     ->  parse_lines_labeled(Rest, Instrs)
     ;   CleanParts = [First|_],
@@ -957,29 +962,36 @@ rust_arg_regs(N0, Regs) :-
 emit_one(call(PredStr, NStr), I, ForeignPreds) :-
     member(PredStr, ForeignPreds), !,
     format("~w// call ~w via foreign kernel~n", [I, PredStr]),
+    escape_rust_string(PredStr, EPred),
     format("~wif !vm.step(&Instruction::CallForeign(\"~w\".to_string(), ~w)) { return false; }~n",
-           [I, PredStr, NStr]).
+           [I, EPred, NStr]).
 emit_one(execute(PredStr), I, ForeignPreds) :-
     member(PredStr, ForeignPreds),
     sub_atom(PredStr, _, 1, ArityLen, '/'),
     sub_atom(PredStr, _, ArityLen, 0, ArityAtom),
     atom_number(ArityAtom, Arity), !,
     format("~w// execute ~w via foreign kernel~n", [I, PredStr]),
+    escape_rust_string(PredStr, EPred),
     format("~wreturn vm.step(&Instruction::CallForeign(\"~w\".to_string(), ~w));~n",
-           [I, PredStr, Arity]).
+           [I, EPred, Arity]).
 % --- If-then-else (structured; see wam_ite_structurer) ---
 % The condition runs in an immediately-invoked closure so its `return
 % false` means "condition failed"; inside then/else, `return false`
-% returns from the lowered function. Rust's get_reg derefs through the
-% binding table, so unwinding the trail before the else branch restores
-% any partial bindings the condition made. No register snapshot is needed:
-% the unwind restores Y registers but not A/X (R0b), and
+% returns from the lowered function. Before the else branch the machine is
+% rolled back to the state before the condition (`lowered_ite_rollback`,
+% bug-fix batch 1 B5): the environment stack snapshot (a `call` in the
+% condition whose callee failed left the callee's frame on top, so the else
+% branch used to read its Y registers from the wrong frame), the condition's
+% bindings, and any choice points the condition left. No register snapshot
+% is needed: A/X registers are not restored (R0b), and
 % rust_ite_else_ax_check/2 (called from emit_instrs/3) checks that the else
 % path writes every A/X register before reading it.
 emit_one(ite(Cond, Then, Else), I, ForeignPreds) :- !,
     nb_getval(rust_ite_ctr, N0), N is N0 + 1, nb_setval(rust_ite_ctr, N),
     string_concat(I, "    ", I2),
     format("~wlet _ite_mark~w = vm.trail.len();~n", [I, N]),
+    format("~wlet _ite_stack~w = vm.stack.clone();~n", [I, N]),
+    format("~wlet _ite_cps~w = vm.choice_points.len();~n", [I, N]),
     format("~wlet _ite_cond~w = (|vm: &mut WamState| -> bool {~n", [I, N]),
     emit_instrs(Cond, I2, ForeignPreds),
     format("~w    true~n", [I]),
@@ -987,7 +999,7 @@ emit_one(ite(Cond, Then, Else), I, ForeignPreds) :- !,
     format("~wif _ite_cond~w {~n", [I, N]),
     emit_instrs(Then, I2, ForeignPreds),
     format("~w} else {~n", [I]),
-    format("~w    vm.unwind_trail_to(_ite_mark~w);~n", [I, N]),
+    format("~w    vm.lowered_ite_rollback(_ite_mark~w, _ite_stack~w, _ite_cps~w);~n", [I, N, N, N]),
     emit_instrs(Else, I2, ForeignPreds),
     format("~w}~n", [I]).
 emit_one(Instr, I, _) :-
@@ -1092,7 +1104,8 @@ emit_one(get_structure(FStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     format("~w// get_structure ~w, ~w (delegate to step)~n", [I, FStr, AiStr]),
     rust_reg_literal(Ai, RAi),
-    format("~wif !vm.step(&Instruction::GetStructure(Functor::new(\"~w\"), ~w)) { return false; }~n", [I, FStr, RAi]).
+    escape_rust_string(FStr, EFStr),
+    format("~wif !vm.step(&Instruction::GetStructure(Functor::new(\"~w\"), ~w)) { return false; }~n", [I, EFStr, RAi]).
 
 emit_one(get_list(AiStr), I) :-
     rust_reg_name(AiStr, Ai),
@@ -1127,7 +1140,8 @@ emit_one(put_structure(FStr, AiStr), I) :-
     rust_reg_name(AiStr, Ai),
     format("~w// put_structure ~w, ~w (delegate to step)~n", [I, FStr, AiStr]),
     rust_reg_literal(Ai, RAi),
-    format("~wif !vm.step(&Instruction::PutStructure(Functor::new(\"~w\"), ~w)) { return false; }~n", [I, FStr, RAi]).
+    escape_rust_string(FStr, EFStr),
+    format("~wif !vm.step(&Instruction::PutStructure(Functor::new(\"~w\"), ~w)) { return false; }~n", [I, EFStr, RAi]).
 
 emit_one(put_list(AiStr), I) :-
     rust_reg_name(AiStr, Ai),
@@ -1191,9 +1205,10 @@ emit_one(deallocate, I) :-
 % here instead of resuming a choice point older than the call.
 emit_one(call(PredStr, _NStr), I) :-
     format("~w// call ~w~n", [I, PredStr]),
+    escape_rust_string(PredStr, EPred),
     format("~w{~n", [I]),
     format("~w    let saved_cp = vm.cp;~n", [I]),
-    format("~w    if let Some(&pc) = vm.labels.get(\"~w\") {~n", [I, PredStr]),
+    format("~w    if let Some(&pc) = vm.labels.get(\"~w\") {~n", [I, EPred]),
     format("~w        vm.pc = pc;~n", [I]),
     format("~w        let saved_floor = vm.backtrack_floor;~n", [I]),
     format("~w        vm.backtrack_floor = vm.choice_points.len();~n", [I]),
@@ -1206,7 +1221,8 @@ emit_one(call(PredStr, _NStr), I) :-
 
 emit_one(execute(PredStr), I) :-
     format("~w// execute ~w (tail call)~n", [I, PredStr]),
-    format("~wif let Some(&pc) = vm.labels.get(\"~w\") {~n", [I, PredStr]),
+    escape_rust_string(PredStr, EPred),
+    format("~wif let Some(&pc) = vm.labels.get(\"~w\") {~n", [I, EPred]),
     format("~w    vm.pc = pc;~n", [I]),
     format("~w    let saved_floor = vm.backtrack_floor;~n", [I]),
     format("~w    vm.backtrack_floor = vm.choice_points.len();~n", [I]),
@@ -1223,7 +1239,8 @@ emit_one(builtin_call(OpStr, NStr), I) :-
 
 emit_one(call_foreign(PredStr, ArStr), I) :-
     format("~w// call_foreign ~w ~w~n", [I, PredStr, ArStr]),
-    format("~wif !vm.step(&Instruction::CallForeign(\"~w\".to_string(), ~w)) { return false; }~n", [I, PredStr, ArStr]).
+    escape_rust_string(PredStr, EPred),
+    format("~wif !vm.step(&Instruction::CallForeign(\"~w\".to_string(), ~w)) { return false; }~n", [I, EPred, ArStr]).
 
 % --- Choicepoint / ITE related (consumed during lowering) ---
 
@@ -1266,5 +1283,6 @@ rust_val_literal(Str, RustVal) :-
     ;   Class = float(F)
     ->  format(atom(RustVal), 'Value::Float(~w)', [F])
     ;   Class = atom(Name),
-        format(atom(RustVal), 'Value::Atom("~w".into())', [Name])
+        escape_rust_string(Name, EName),
+        format(atom(RustVal), 'Value::Atom("~w".into())', [EName])
     ).

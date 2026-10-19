@@ -820,6 +820,7 @@ wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
                         builtin_state: Some(BuiltinState {
+                            suspended: None,
                             name: "indexed_atom_fact2".to_string(),
                             args: vec![Value::Atom(pred.clone().into()), Value::Atom(key.clone().into())],
                             data: vec![Value::Integer(1)],
@@ -1045,6 +1046,7 @@ wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg
                     trail_len: self.trail.len(),
                     heap_len: self.heap.len(),
                     builtin_state: Some(BuiltinState {
+                        suspended: None,
                         name: "aggregate_frame".to_string(),
                         args: vec![
                             Value::Atom(agg_type.clone().into()),
@@ -1680,6 +1682,11 @@ compile_backtrack_to_rust(Code0) :-
                 if let Some(state) = self.choice_points.pop().and_then(|cp| cp.builtin_state) {
                     if self.resume_builtin(state) {
                         return true;
+                    }
+                    // A ball thrown by the redo (a resumed dynamic rule body
+                    // can throw) aborts backtracking, as in run().
+                    if self.thrown_ball.is_some() {
+                        return false;
                     }
                 }
                 continue;
@@ -2662,6 +2669,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 trail_len: self.trail.len(),
                                 heap_len: self.heap.len(),
                                 builtin_state: Some(BuiltinState {
+                                    suspended: None,
                                     name: "member/2".to_string(),
                                     args: vec![val1.clone(), val2.clone()],
                                     data: vec![Value::Integer(1)],
@@ -3701,7 +3709,11 @@ compile_execute_term_builtin_to_rust(Code) :-
 
 compile_dynamic_db_helpers_to_rust(Code) :-
     read_template_file('templates/targets/rust_wam/dynamic_db_methods.rs.mustache', Template),
-    render_template(Template, [], Code).
+    render_template(Template, [], DbCode),
+    % Bug-fix batch 1 (B3): BodyGen hand-over, aggregate_all/3, findall/3.
+    read_template_file('templates/targets/rust_wam/meta_call_methods.rs.mustache', MetaTemplate),
+    render_template(MetaTemplate, [], MetaCode),
+    format(string(Code), "~w~n~w", [DbCode, MetaCode]).
 
 compile_execute_foreign_predicate_to_rust(Code) :-
     Code = '    /// Execute a registered foreign predicate by name/arity.
@@ -4480,6 +4492,7 @@ compile_foreign_result_helpers_to_rust(Code) :-
                     trail_len,
                     heap_len,
                     builtin_state: Some(BuiltinState {
+                        suspended: None,
                         name: "foreign_results".to_string(),
                         args: {
                             let mut args = Vec::with_capacity(result_regs.len() + 1);
@@ -5233,6 +5246,7 @@ compile_fact_table_attempt_to_rust(Code) :-
                         trail_len: cp_trail,
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
+                            suspended: None,
                             name: "fact_table".to_string(),
                             args: args.clone(),
                             data,
@@ -5315,12 +5329,14 @@ compile_resume_builtin_to_rust(Code) :-
                     // begin_aggregate form that carries them used to fall
                     // through to NoOp, so the aggregate frame was never pushed
                     // and the whole clause failed.
+                    // aggregate_all(bag(T)/set(T), ...) of no solutions is
+                    // [] (SWI-Prolog); only bagof/setof fail.
                     "bagof" | "bag" => {
-                        if acc.is_empty() { return false; }
+                        if acc.is_empty() && agg_type == "bagof" { return false; }
                         Value::list(acc)
                     }
                     "setof" | "set" => {
-                        if acc.is_empty() { return false; }
+                        if acc.is_empty() && agg_type == "setof" { return false; }
                         let mut items: Vec<Value> = acc
                             .iter()
                             .map(|v| self.deref_heap(&self.deref_var(v)))
@@ -5346,7 +5362,9 @@ compile_resume_builtin_to_rust(Code) :-
                                 }
                             };
                         }
-                        best.unwrap_or(Value::list(vec![]))
+                        // aggregate_all(max/min(E), ...) of no solutions
+                        // fails (SWI-Prolog); it used to give [].
+                        match best { Some(b) => b, None => return false }
                     }
                     "min" => {
                         let mut best: Option<Value> = None;
@@ -5365,7 +5383,9 @@ compile_resume_builtin_to_rust(Code) :-
                                 }
                             };
                         }
-                        best.unwrap_or(Value::list(vec![]))
+                        // aggregate_all(max/min(E), ...) of no solutions
+                        // fails (SWI-Prolog); it used to give [].
+                        match best { Some(b) => b, None => return false }
                     }
                     _ => return false,
                 };
@@ -5419,6 +5439,7 @@ compile_resume_builtin_to_rust(Code) :-
                             trail_len: self.trail.len(),
                             heap_len: self.heap.len(),
                             builtin_state: Some(BuiltinState {
+                                suspended: None,
                                 name: "member/2".to_string(),
                                 args: state.args.clone(),
                                 data: vec![Value::Integer((idx + 1) as i64)],
@@ -5510,6 +5531,7 @@ compile_resume_builtin_to_rust(Code) :-
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
                         builtin_state: Some(BuiltinState {
+                            suspended: None,
                             name: "indexed_atom_fact2".to_string(),
                             args: state.args.clone(),
                             data: vec![Value::Integer((idx + 1) as i64)],
@@ -5607,19 +5629,19 @@ compile_resume_builtin_to_rust(Code) :-
                 self.current_predicate_attempt(keys, start_idx, name, arity, cont_pc)
             }
             "dynamic_rule_body" => {
-                let clause = match state.args.get(0) {
-                    Some(clause) => clause.clone(),
-                    _ => return false,
-                };
-                let solution_idx = match state.data.get(0) {
+                // Bug-fix batch 1 (B4): resume the body''s suspended solver.
+                let cont_pc = match state.data.get(0) {
                     Some(Value::Integer(n)) => *n as usize,
                     _ => return false,
                 };
-                let cont_pc = match state.data.get(1) {
+                let clause_cp_depth = match state.data.get(1) {
                     Some(Value::Integer(n)) => *n as usize,
                     _ => return false,
                 };
-                self.dynamic_rule_body_attempt(clause, solution_idx, cont_pc)
+                match state.suspended {
+                    Some(gen) => self.dynamic_rule_body_resume(gen, cont_pc, clause_cp_depth),
+                    None => false,
+                }
             }
             "foreign_results" => {
                 let pred_key = match state.args.get(0) {
@@ -5986,6 +6008,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 trail_len: self.trail.len(),
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
+                    suspended: None,
                     name: "between/3".to_string(),
                     args: vec![x_raw.clone()],
                     data: vec![Value::Integer(n + 1), Value::Integer(high)],
@@ -6010,6 +6033,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 trail_len: self.trail.len(),
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
+                    suspended: None,
                     name: "select/3".to_string(),
                     args: vec![x_raw.clone(), Value::list(items.to_vec()), rest_raw.clone()],
                     data: vec![Value::Integer((idx + 1) as i64)],
@@ -6038,6 +6062,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 trail_len: self.trail.len(),
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
+                    suspended: None,
                     name: name.to_string(),
                     args: vec![n_raw.clone(), Value::list(items.to_vec()), elem_raw.clone()],
                     data: vec![Value::Integer((idx + 1) as i64)],
@@ -6066,6 +6091,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 trail_len: self.trail.len(),
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
+                    suspended: None,
                     name: "atom_concat/3".to_string(),
                     args: vec![a1_raw.clone(), a2_raw.clone(), Value::Atom(whole.into())],
                     data: vec![Value::Integer((split + 1) as i64)],
@@ -7108,6 +7134,32 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     true
                 } else { false }
             }
+            "aggregate_all/3" => self.builtin_aggregate_all(),
+            "findall/3" => self.builtin_findall(),
+            "ignore/1" => {
+                // ignore(G) :- (call(G) -> true ; true). The goal runs as
+                // call/1 runs it (call_goal_once): an opaque cut scope with a
+                // backtrack floor at the call''s entry depth, first solution
+                // only. When it fails, the bindings it made are undone and
+                // ignore/1 succeeds; a ball thrown inside it propagates.
+                // Before this arm `call ignore/1` found no label and no
+                // builtin, so ignore/1 failed.
+                let goal = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let saved_pc = self.pc;
+                let trail_mark = self.trail.len();
+                let heap_mark = self.heap.len();
+                if !self.call_goal_once(&goal) {
+                    if self.thrown_ball.is_some() { return false; }
+                    // call_goal_once restored the stack and dropped the
+                    // goal''s Y-register entries, so this undoes bindings only.
+                    self.unwind_trail_to(trail_mark);
+                    self.heap.truncate(heap_mark);
+                }
+                self.pc = saved_pc + 1;
+                true
+            }
             "\\\\+/1" => {
                 // Negation-as-failure using WAM choice point mechanism.
                 // Push a choice point that will succeed if the goal fails.
@@ -7145,6 +7197,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                             trail_len: self.trail.len(),
                             heap_len: self.heap.len(),
                             builtin_state: Some(BuiltinState {
+                                suspended: None,
                                 name: "naf_succeed".to_string(),
                                 args: vec![Value::Integer(naf_pc as i64)],
                                 data: vec![],
@@ -8688,8 +8741,9 @@ wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
         (   % Label line: "pred/2:" or "L_pred_2_2:"
             sub_string(First, _, 1, 0, ":")
         ->  sub_string(First, 0, _, 1, LabelName),
+            escape_rust_string(LabelName, ELabelName),
             format(string(LabelInsert),
-                '    labels.insert("~w".to_string(), ~w);', [LabelName, PC]),
+                '    labels.insert("~w".to_string(), ~w);', [ELabelName, PC]),
             Labels = [LabelInsert|RestLabels],
             wam_lines_to_rust(Rest, PC, PredIndicator, Options, Instrs, RestLabels)
         ;   % Instruction line
@@ -8729,10 +8783,11 @@ wam_line_to_rust_instr(["get_value", Xn, Ai], _, _, Rust) :-
         [RXn, RAi]).
 wam_line_to_rust_instr(["get_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    escape_rust_string(CFN, ECFN),
     rust_reg_literal(CAi, RAi),
     format(string(Rust),
         'Instruction::GetStructure(Functor::new("~w"), ~w)',
-        [CFN, RAi]).
+        [ECFN, RAi]).
 wam_line_to_rust_instr(["get_list", Ai], _, _, Rust) :-
     clean_comma(Ai, CAi),
     rust_reg_literal(CAi, RAi),
@@ -8771,10 +8826,11 @@ wam_line_to_rust_instr(["put_value", Xn, Ai], _, _, Rust) :-
         [RXn, RAi]).
 wam_line_to_rust_instr(["put_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    escape_rust_string(CFN, ECFN),
     rust_reg_literal(CAi, RAi),
     format(string(Rust),
         'Instruction::PutStructure(Functor::new("~w"), ~w)',
-        [CFN, RAi]).
+        [ECFN, RAi]).
 wam_line_to_rust_instr(["put_list", Ai], _, _, Rust) :-
     rust_reg_literal(Ai, RAi),
     format(string(Rust),
@@ -9030,11 +9086,13 @@ wam_line_to_rust_instr(["try_me_else", Label], Pred/Arity, Options, Rust) :-
     text_to_string(Label, LabelS),
     LabelS == Expected,
     !,
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::TryMeElseArgs("~w".to_string(), ~w)', [Label, Arity]).
+        'Instruction::TryMeElseArgs("~w".to_string(), ~w)', [ELabel, Arity]).
 wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::TryMeElse("~w".to_string())', [Label]).
+        'Instruction::TryMeElse("~w".to_string())', [ELabel]).
 % D138: the indexed dispatch chain's try/retry/trust (format_dispatch_chain/5
 % in wam_target.pl) have standard-WAM semantics -- the choice point's
 % alternative is the NEXT chain instruction and control JUMPS to the body
@@ -9042,21 +9100,26 @@ wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
 % the label as the alternative and fall through: a key shared by several
 % clauses ran off the end of the chain and returned no solutions.
 wam_line_to_rust_instr(["try", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::Try("~w".to_string())', [Label]).
+        'Instruction::Try("~w".to_string())', [ELabel]).
 wam_line_to_rust_instr(["trust_me"], _, _, "Instruction::TrustMe").
 wam_line_to_rust_instr(["trust", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::Trust("~w".to_string())', [Label]).
+        'Instruction::Trust("~w".to_string())', [ELabel]).
 wam_line_to_rust_instr(["retry_me_else", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::RetryMeElse("~w".to_string())', [Label]).
+        'Instruction::RetryMeElse("~w".to_string())', [ELabel]).
 wam_line_to_rust_instr(["retry", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::Retry("~w".to_string())', [Label]).
+        'Instruction::Retry("~w".to_string())', [ELabel]).
 wam_line_to_rust_instr(["jump", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::Jump("~w".to_string())', [Label]).
+        'Instruction::Jump("~w".to_string())', [ELabel]).
 % M144: legacy cut_ite (only emitted when ite_use_y_level is off) pops
 % the single ITE guard CP. Mis-cuts when the condition pushed inner CPs
 % - the same limitation the LLVM target had pre-M17 - but strictly
@@ -9222,8 +9285,10 @@ rust_index_entry_split(Entry, KeyStr, Label) :-
 parse_index_entry_constant(Entry, Rust) :-
     (   rust_index_entry_split(Entry, ValStr, Label)
     ->  rust_const_value(ValStr, VExpr),
-        format(string(Rust), '(~w, "~w".to_string())', [VExpr, Label])
-    ;   format(string(Rust), '(Value::Atom("~w".to_string().into()), "unknown".to_string())', [Entry])
+        escape_rust_string(Label, ELabel),
+        format(string(Rust), '(~w, "~w".to_string())', [VExpr, ELabel])
+    ;   escape_rust_string(Entry, EEntry),
+        format(string(Rust), '(Value::Atom("~w".to_string().into()), "unknown".to_string())', [EEntry])
     ).
 
 %  A structure key is `Name/Arity`; quote_wam_constant/2 quotes it when the
@@ -9233,8 +9298,10 @@ parse_index_entry_structure(Entry, Rust) :-
     ->  wam_classify_constant_token(FunctorTok, Class),
         (   Class = atom(Functor0) -> true ; Functor0 = FunctorTok ),
         escape_rust_string(Functor0, Functor),
-        format(string(Rust), '("~w".to_string(), "~w".to_string())', [Functor, Label])
-    ;   format(string(Rust), '("~w".to_string(), "unknown".to_string())', [Entry])
+        escape_rust_string(Label, ELabel),
+        format(string(Rust), '("~w".to_string(), "~w".to_string())', [Functor, ELabel])
+    ;   escape_rust_string(Entry, EEntry),
+        format(string(Rust), '("~w".to_string(), "unknown".to_string())', [EEntry])
     ).
 
 
@@ -9308,8 +9375,20 @@ rust_lowered_dispatch_keys(Code, Keys) :-
               sub_string(L, 0, 9, _, "        \""),
               sub_string(L, 9, _, 0, Rest),
               sub_string(Rest, B, _, _, "\" =>"),
-              sub_string(Rest, 0, B, _, Key) ),
+              sub_string(Rest, 0, B, _, EKey),
+              rust_unescape_string(EKey, Key) ),
             Keys).
+
+%% rust_unescape_string(+Escaped, -Text)
+%  Inverse of escape_rust_string/2 (`\\` and `\"` only).
+rust_unescape_string(Escaped, Text) :-
+    string_codes(Escaped, Cs0),
+    rust_unescape_codes(Cs0, Cs),
+    string_codes(Text, Cs).
+
+rust_unescape_codes([], []).
+rust_unescape_codes([0'\\, C|Cs], [C|Rs]) :- !, rust_unescape_codes(Cs, Rs).
+rust_unescape_codes([C|Cs], [C|Rs]) :- rust_unescape_codes(Cs, Rs).
 
 
 %% rust_builtin_route(+EscapedName, -Route) is det.
@@ -10320,8 +10399,9 @@ rust_genrec_arms(Classified, Arms, Keys) :-
               \+ memberchk(Key, Claimed),
               catch(deterministic_recursion_class(user, P/A, Class), _, fail),
               rust_genrec_shape_method(Class, Method),
+              escape_rust_string(Key, EKey),
               format(atom(Arm),
-                     '        "~w" => vm.~w(cont_pc),', [Key, Method]) ),
+                     '        "~w" => vm.~w(cont_pc),', [EKey, Method]) ),
             Pairs0),
     % de-dup on key (a predicate is classified once, but guard against repeats)
     rust_genrec_dedup(Pairs0, Pairs),
@@ -10521,10 +10601,12 @@ rust_dispatch_pure_builtin('numlist/3').
 %  first argument is bound to one of the cascade's own discriminators — with
 %  anything else the cascade returns `false` meaning "declined", which an
 %  interpreted caller must never read as "failed".
-rust_lowered_dispatch_arm(lo_cand(Key, FName, _, [], _), Arm) :- !,
+rust_lowered_dispatch_arm(lo_cand(Key0, FName, _, [], _), Arm) :- !,
+    escape_rust_string(Key0, Key),
     format(string(Arm),
 '        "~w" => vm.lowered_dispatch(~w, cont_pc),', [Key, FName]).
-rust_lowered_dispatch_arm(lo_cand(Key, FName, _, Guards, _), Arm) :-
+rust_lowered_dispatch_arm(lo_cand(Key0, FName, _, Guards, _), Arm) :-
+    escape_rust_string(Key0, Key),
     maplist(rust_lowered_guard_literal, Guards, Lits),
     atomic_list_concat(Lits, ' | ', LitStr),
     format(string(Arm),
@@ -10549,11 +10631,12 @@ rust_fact_dispatch_arm(Pred/Arity, Arm) :-
     atomic_list_concat(Reads, '\n', ReadsStr),
     findall(AN, ( member(I, Idxs), format(atom(AN), 'a~w', [I]) ), ANs),
     atomic_list_concat(ANs, ', ', ArgsVec),
+    escape_rust_string(Pred, EPred),
     format(string(Arm),
 '        "~w/~w" => {
 ~w
             Some(~w_run(vm, vec![~w], cont_pc))
-        }', [Pred, Arity, ReadsStr, FName, ArgsVec]).
+        }', [EPred, Arity, ReadsStr, FName, ArgsVec]).
 
 %% rust_pred_has_control_constructs(+Module:Pred/Arity)
 %  True if any clause body uses a backtracking-driven control construct

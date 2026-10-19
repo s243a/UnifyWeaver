@@ -809,6 +809,10 @@ pub struct BuiltinState {
     pub name: String,
     pub args: Vec<Value>,
     pub data: Vec<Value>,
+    /// Bug-fix batch 1 (B4): the suspended solver of a dynamic rule body
+    /// (`"dynamic_rule_body"`), resumed on redo. `None` for every other
+    /// builtin.
+    pub suspended: Option<SuspendedBody>,
 }
 
 /// T4 (multi_clause_n): a clause-entry snapshot captured by a lowered
@@ -825,6 +829,410 @@ pub struct ClauseSnapshot {
     stack:       Arc<Vec<StackEntry>>,
     cut_barrier: usize,
     var_counter: usize,
+}
+
+/// Bug-fix batch 1 (B3, B4): the part of the machine that a goal solved on a
+/// CLONED machine (`BodyGen`) must share with its caller instead of copying:
+/// the dynamic database, the label table, the `read/1` input and cursor, the
+/// fresh-variable counter, the step counters, the aggregate accumulator and
+/// the R0a full-save flag. It is moved into a machine before every step of a
+/// generator and moved back out after it, so a side effect of the goal
+/// (assert/retract, read/1, a fresh name) happens once and in order, as if
+/// the goal had run on the caller's machine, and cloning a machine to keep a
+/// solution does not copy the database or the label table.
+#[derive(Default)]
+pub struct SideState {
+    dynamic_db: HashMap<String, Vec<Value>>,
+    labels: HashMap<String, usize>,
+    term_input: String,
+    term_input_pos: usize,
+    var_counter: usize,
+    step_count: u64,
+    backtrack_count: u64,
+    aggregate_acc: Vec<Value>,
+    aggregate_return_pc: usize,
+    clause_cp_full_save: bool,
+}
+
+/// Outcome of the first solve of a dynamic clause body (B4).
+pub enum DynBodyStart {
+    /// A solution, adopted by the machine; the suspended solver and whether a
+    /// cut ran in the body.
+    Solution(SuspendedBody, bool),
+    /// No solution; `true` when a cut ran in the body before it failed.
+    Failed(bool),
+    /// A ball was thrown; it is in flight.
+    Thrown,
+}
+
+/// One step of a `BodyGen`.
+pub enum GenStep {
+    /// A solution: the machine as it stands after it, and whether a cut ran
+    /// in this generator's cut scope on the way to it.
+    Sol(Box<WamState>, bool),
+    /// No (more) solutions; `true` when a cut ran in this cut scope.
+    Done(bool),
+    /// A ball was thrown inside the goal.
+    Thrown(Value),
+}
+
+/// Bug-fix batch 1 (B3, B4): a resumable solver for a goal term (a dynamic
+/// clause body, the goal of aggregate_all/3 or findall/3). It yields the
+/// goal's solutions one at a time, in Prolog order, and keeps everything it
+/// needs to produce the next one (the machines of the goals still running,
+/// with their choice points), so asking for solution k+1 continues from
+/// solution k instead of solving the goal again.
+///
+/// Control constructs are taken apart here (conjunction, disjunction,
+/// if-then-else, `\+`, `call/N`, `once/1`, `ignore/1`, `!`, `M:G`); every
+/// other goal is one `GoalGen`, a machine that called it and backtracks into
+/// it. A cut cuts the alternatives of its clause body (or meta-call) to its
+/// left: `Sol(_, true)` / `Done(true)` carry that to the enclosing
+/// conjunction and disjunction, and the opaque constructs (`call/N`,
+/// `once/1`, `\+`, the if-then-else condition, a called predicate) stop it.
+pub enum BodyGen {
+    Empty,
+    Unit(Option<Box<WamState>>),
+    Cut(Option<Box<WamState>>),
+    Goal(GoalGen),
+    Opaque(Box<BodyGen>),
+    Once { inner: Box<BodyGen>, done: bool },
+    Conj { left: Box<BodyGen>, right_goal: Value, right: Option<Box<BodyGen>>, left_cut: bool, done: bool },
+    Disj { left: Box<BodyGen>, right_base: Option<(Box<WamState>, Value)>, right: Option<Box<BodyGen>> },
+    Ite { base: Option<Box<WamState>>, cond: Value, then: Value, els: Value, inner: Option<Box<BodyGen>>, done: bool },
+    Not { base: Option<Box<WamState>>, goal: Value },
+}
+
+/// One ordinary goal of a `BodyGen`: the machine that called it. The first
+/// step meta-calls the goal; each later step backtracks into the choice
+/// points the goal left above `depth` (and, for a compiled predicate, runs
+/// on to its next exit). A solution is a copy of the machine with those
+/// choice points removed and the caller's control registers put back.
+pub struct GoalGen {
+    vm: Box<WamState>,
+    goal: Value,
+    depth: usize,
+    started: bool,
+    via_label: bool,
+    done: bool,
+    floor: usize,
+    barrier: usize,
+    cp: usize,
+    pc: usize,
+    stack: Arc<Vec<StackEntry>>,
+}
+
+/// A `BodyGen` kept in a choice point (`BuiltinState::suspended`): the
+/// dynamic rule body solver of B4 resumes it on redo. Shared, not copied,
+/// when a machine is cloned; dropped with the last choice point that holds
+/// it, so a cut frees it.
+#[derive(Clone)]
+pub struct SuspendedBody(pub Arc<Mutex<BodyGen>>);
+
+impl std::fmt::Debug for SuspendedBody {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "SuspendedBody")
+    }
+}
+
+impl BodyGen {
+    /// The generator of `goal` solved from machine `base`.
+    pub fn new(base: Box<WamState>, goal: &Value) -> BodyGen {
+        let g = base.deref_heap(&base.deref_var(goal));
+        match &g {
+            Value::Atom(s) if s == "true" => return BodyGen::Unit(Some(base)),
+            Value::Atom(s) if s == "fail" || s == "false" => return BodyGen::Empty,
+            Value::Atom(s) if s == "!" => return BodyGen::Cut(Some(base)),
+            Value::Str(f, args) => {
+                let n = args.len();
+                let name = WamState::display_functor_name(f, n);
+                match (name.as_str(), n) {
+                    (",", 2) => {
+                        let right_goal = args[1].clone();
+                        return BodyGen::Conj {
+                            left: Box::new(BodyGen::new(base, &args[0])),
+                            right_goal,
+                            right: None,
+                            left_cut: false,
+                            done: false,
+                        };
+                    }
+                    (";", 2) => {
+                        let lhs = base.deref_heap(&base.deref_var(&args[0]));
+                        if let Value::Str(cf, cargs) = &lhs {
+                            if cargs.len() == 2 && WamState::display_functor_name(cf, 2) == "->" {
+                                return BodyGen::Ite {
+                                    base: Some(base),
+                                    cond: cargs[0].clone(),
+                                    then: cargs[1].clone(),
+                                    els: args[1].clone(),
+                                    inner: None,
+                                    done: false,
+                                };
+                            }
+                        }
+                        let right_base = base.clone();
+                        let right_goal = args[1].clone();
+                        return BodyGen::Disj {
+                            left: Box::new(BodyGen::new(base, &lhs)),
+                            right_base: Some((right_base, right_goal)),
+                            right: None,
+                        };
+                    }
+                    ("->", 2) => {
+                        return BodyGen::Ite {
+                            base: Some(base),
+                            cond: args[0].clone(),
+                            then: args[1].clone(),
+                            els: Value::Atom("fail".to_string().into()),
+                            inner: None,
+                            done: false,
+                        };
+                    }
+                    ("\\+", 1) => {
+                        return BodyGen::Not { base: Some(base), goal: args[0].clone() };
+                    }
+                    ("call", _) => {
+                        let target = base.deref_heap(&base.deref_var(&args[0]));
+                        let inner_goal = if n == 1 {
+                            target
+                        } else {
+                            let extra: Vec<Value> = args[1..].iter()
+                                .map(|a| base.deref_var(a))
+                                .collect();
+                            match base.extend_goal(&target, &extra) {
+                                Some(eg) => eg,
+                                None => return BodyGen::Empty,
+                            }
+                        };
+                        return BodyGen::Opaque(Box::new(BodyGen::new(base, &inner_goal)));
+                    }
+                    ("once", 1) => {
+                        let inner = BodyGen::new(base, &args[0]);
+                        return BodyGen::Once { inner: Box::new(inner), done: false };
+                    }
+                    ("ignore", 1) => {
+                        let truth = Value::Atom("true".to_string().into());
+                        let inner = BodyGen::Ite {
+                            base: Some(base),
+                            cond: args[0].clone(),
+                            then: truth.clone(),
+                            els: truth,
+                            inner: None,
+                            done: false,
+                        };
+                        return BodyGen::Once { inner: Box::new(inner), done: false };
+                    }
+                    (":", 2) => {
+                        let inner_goal = args[1].clone();
+                        return BodyGen::new(base, &inner_goal);
+                    }
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+        BodyGen::Goal(GoalGen::new(base, g))
+    }
+
+    /// The next solution (see `GenStep`). `side` holds the shared state while
+    /// no machine runs; every step moves it in and back out.
+    pub fn next(&mut self, side: &mut SideState) -> GenStep {
+        match self {
+            BodyGen::Empty => GenStep::Done(false),
+            BodyGen::Unit(slot) => match slot.take() {
+                Some(m) => GenStep::Sol(m, false),
+                None => GenStep::Done(false),
+            },
+            BodyGen::Cut(slot) => match slot.take() {
+                Some(m) => GenStep::Sol(m, true),
+                None => GenStep::Done(true),
+            },
+            BodyGen::Goal(g) => g.next(side),
+            BodyGen::Opaque(inner) => match inner.next(side) {
+                GenStep::Sol(m, _) => GenStep::Sol(m, false),
+                GenStep::Done(_) => GenStep::Done(false),
+                thrown => thrown,
+            },
+            BodyGen::Once { inner, done } => {
+                if *done {
+                    return GenStep::Done(false);
+                }
+                *done = true;
+                let step = inner.next(side);
+                **inner = BodyGen::Empty;
+                match step {
+                    GenStep::Sol(m, _) => GenStep::Sol(m, false),
+                    GenStep::Done(_) => GenStep::Done(false),
+                    thrown => thrown,
+                }
+            }
+            BodyGen::Conj { left, right_goal, right, left_cut, done } => loop {
+                if let Some(r) = right.as_mut() {
+                    match r.next(side) {
+                        GenStep::Sol(m, c) => return GenStep::Sol(m, c || *left_cut),
+                        GenStep::Done(c) => {
+                            *right = None;
+                            if c || *left_cut {
+                                *done = true;
+                                **left = BodyGen::Empty;
+                                return GenStep::Done(true);
+                            }
+                        }
+                        GenStep::Thrown(b) => {
+                            *done = true;
+                            return GenStep::Thrown(b);
+                        }
+                    }
+                }
+                if *done {
+                    return GenStep::Done(false);
+                }
+                match left.next(side) {
+                    GenStep::Sol(m, c) => {
+                        *left_cut = c;
+                        *right = Some(Box::new(BodyGen::new(m, right_goal)));
+                    }
+                    GenStep::Done(c) => {
+                        *done = true;
+                        return GenStep::Done(c);
+                    }
+                    GenStep::Thrown(b) => {
+                        *done = true;
+                        return GenStep::Thrown(b);
+                    }
+                }
+            },
+            BodyGen::Disj { left, right_base, right } => loop {
+                if let Some(r) = right.as_mut() {
+                    return r.next(side);
+                }
+                match left.next(side) {
+                    GenStep::Sol(m, c) => return GenStep::Sol(m, c),
+                    GenStep::Done(true) => {
+                        *right_base = None;
+                        return GenStep::Done(true);
+                    }
+                    GenStep::Done(false) => match right_base.take() {
+                        Some((m, g)) => {
+                            **left = BodyGen::Empty;
+                            *right = Some(Box::new(BodyGen::new(m, &g)));
+                        }
+                        None => return GenStep::Done(false),
+                    },
+                    GenStep::Thrown(b) => {
+                        *right_base = None;
+                        return GenStep::Thrown(b);
+                    }
+                }
+            },
+            BodyGen::Ite { base, cond, then, els, inner, done } => {
+                if inner.is_none() {
+                    if *done {
+                        return GenStep::Done(false);
+                    }
+                    *done = true;
+                    let m = match base.take() {
+                        Some(m) => m,
+                        None => return GenStep::Done(false),
+                    };
+                    // The condition is opaque to cut and runs to its first
+                    // solution only; the else branch starts from the machine
+                    // as it was before the condition (its side effects stay).
+                    let mut c = BodyGen::new(m.clone(), cond);
+                    let chosen = match c.next(side) {
+                        GenStep::Sol(s, _) => BodyGen::new(s, then),
+                        GenStep::Done(_) => BodyGen::new(m, els),
+                        GenStep::Thrown(b) => return GenStep::Thrown(b),
+                    };
+                    *inner = Some(Box::new(chosen));
+                }
+                match inner.as_mut() {
+                    Some(i) => i.next(side),
+                    None => GenStep::Done(false),
+                }
+            }
+            BodyGen::Not { base, goal } => {
+                let m = match base.take() {
+                    Some(m) => m,
+                    None => return GenStep::Done(false),
+                };
+                let mut g = BodyGen::new(m.clone(), goal);
+                match g.next(side) {
+                    GenStep::Sol(..) => GenStep::Done(false),
+                    GenStep::Done(_) => GenStep::Sol(m, false),
+                    thrown => thrown,
+                }
+            }
+        }
+    }
+}
+
+impl GoalGen {
+    fn new(base: Box<WamState>, goal: Value) -> GoalGen {
+        GoalGen {
+            depth: base.choice_points.len(),
+            floor: base.backtrack_floor,
+            barrier: base.cut_barrier,
+            cp: base.cp,
+            pc: base.pc,
+            stack: base.stack.clone(),
+            vm: base,
+            goal,
+            started: false,
+            via_label: false,
+            done: false,
+        }
+    }
+
+    fn next(&mut self, side: &mut SideState) -> GenStep {
+        if self.done {
+            return GenStep::Done(false);
+        }
+        let vm = &mut self.vm;
+        vm.import_side(side);
+        let ok = if !self.started {
+            self.started = true;
+            // The goal may resume only the choice points it pushes itself
+            // (R-1a floor), and a cut inside it is local to it.
+            vm.backtrack_floor = self.depth;
+            vm.cut_barrier = self.depth;
+            let goal = self.goal.clone();
+            let (ok, via_label) = vm.meta_call_first(&goal);
+            self.via_label = via_label;
+            ok
+        } else if vm.choice_points.len() <= self.depth || !vm.backtrack() {
+            false
+        } else if self.via_label {
+            // A compiled predicate resumes inside its own code; run it to its
+            // next exit (the cp == 0 sentinel its call installed).
+            vm.run()
+        } else {
+            // A builtin's (or dynamic predicate's) redo is self-contained:
+            // resume_builtin produced the next solution.
+            true
+        };
+        let ball = vm.thrown_ball.take();
+        vm.export_side(side);
+        if let Some(b) = ball {
+            self.done = true;
+            return GenStep::Thrown(b);
+        }
+        if !ok {
+            self.done = true;
+            return GenStep::Done(false);
+        }
+        let mut sol = vm.clone();
+        sol.choice_points.truncate(self.depth);
+        sol.backtrack_floor = self.floor;
+        sol.cut_barrier = self.barrier;
+        sol.cp = self.cp;
+        sol.pc = self.pc;
+        sol.stack = self.stack.clone();
+        sol.pending_cut_barrier = None;
+        sol.pending_level = None;
+        GenStep::Sol(sol, false)
+    }
 }
 
 
@@ -1193,6 +1601,7 @@ mod d121_backtrack_tests {
         // An unknown builtin name: resume_builtin returns false, so backtrack
         // must pop this CP and continue to the one below.
         let top = cp_at(&m, 9, Some(BuiltinState {
+            suspended: None,
             name: "__d121_no_such_builtin__".to_string(),
             args: vec![],
             data: vec![],
@@ -1223,6 +1632,7 @@ mod d121_backtrack_tests {
         m.choice_points.clear();
         for pc in [11, 12] {
             let cp = cp_at(&m, pc, Some(BuiltinState {
+                suspended: None,
                 name: "__d121_no_such_builtin__".to_string(),
                 args: vec![],
                 data: vec![],
@@ -2365,7 +2775,9 @@ mod r1_reg_operand_tests {
             }
         }
         // The raw encodings wam_rust_reg.pl emits for non-canonical names.
-        assert_eq!(Reg::from_name("_XT0"), Some(Reg(0)));
+        assert_eq!(Reg::from_name("_XT0"), Some(Reg::x(99)));
+        assert_eq!(Reg::from_name("_XT7"), Some(Reg::x(92)));
+        assert_eq!(Reg::from_name("_XT99"), Some(Reg::x(99)));
         assert_eq!(Reg::from_name("A01"), Some(Reg(16384)));
         assert_eq!(Reg::from_name("X0"), Some(Reg(99)));
         assert_eq!(Reg::from_name("A0"), Some(Reg(32767)));
@@ -2978,6 +3390,18 @@ impl WamState {
     fn reg_index_parse(name: &str) -> usize {
         let bytes = name.as_bytes();
         if bytes.is_empty() { return 0; }
+        // Bug-fix batch 1 (B6): the aggregate template scratch registers
+        // `_XT<N>` (wam_target.pl construct_template/7) hold sub-compounds
+        // while A1 holds the template's root; they used to fall to slot 0
+        // (A1) below, so a nested compound template collected its last
+        // sub-compound. They are X registers counted down from X99.
+        if let Some(digits) = name.strip_prefix("_XT") {
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                if let Ok(n) = digits.parse::<usize>() {
+                    return 99 - n % 99 + 99;
+                }
+            }
+        }
         let prefix = bytes[0];
         let num_str = &name[1..];
         let num: usize = num_str.parse().unwrap_or(0);
@@ -4694,6 +5118,26 @@ impl WamState {
     /// after the unwind must have captured it before the rolled-back code
     /// ran (as include/3, partition/4 and predsort/3 do) or restore it
     /// itself (`restore_regs`, as catch/3 and `lo_restore_clause` do).
+    /// Bug-fix batch 1 (B5): roll back a failed condition of a lowered
+    /// if-then-else before its else branch runs. `mark`, `stack` and `cps`
+    /// were taken before the condition. A `call` in the condition runs the
+    /// callee in a nested `run()`; when the callee fails, that run's last
+    /// backtrack restored the stack snapshot of one of the CALLEE's choice
+    /// points, so the topmost environment frame was the callee's and the else
+    /// branch read its Y registers from it. Restoring the stack snapshot puts
+    /// the caller's frame (with its pre-condition Y values) back on top; the
+    /// condition's Y-register trail entries are then redundant (and the
+    /// callee's would land in the wrong frame), so only its bindings are
+    /// undone. Choice points the condition left (a callee that succeeded
+    /// before a later condition goal failed) are removed, as a failed
+    /// condition leaves none in Prolog.
+    pub fn lowered_ite_rollback(&mut self, mark: usize, stack: Arc<Vec<StackEntry>>, cps: usize) {
+        self.choice_points.truncate(cps);
+        self.stack = stack;
+        self.unwind_trail_bindings_only(mark);
+        self.trail.truncate(mark);
+    }
+
     pub fn unwind_trail_to(&mut self, mark: usize) {
         while self.trail.len() > mark {
             let entry = match self.trail.pop() {

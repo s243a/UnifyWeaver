@@ -21,7 +21,7 @@
 % entries and made those builtins (and foldl/4,5) read their output
 % arguments at entry, which also fixed their functions-mode and
 % extended-goal divergences. Programs that differ from SWI-Prolog for other
-% reasons are listed in rr_known_divergence/3.
+% reasons are listed in rr_known_divergence/3 (none since bug-fix batch 1).
 %
 % The harness is the one of tests/test_wam_rust_baseline_fixes.pl: one source
 % of truth (rr_clause/2), asserted into user: for SWI and handed to
@@ -116,8 +116,8 @@ rr_clause(findall_fail, (rr_findall_fail(X, R) :- findall(Y, ( rr_clob_ok(X), Y 
 rr_clause(findall_some, (rr_findall_some(X, R) :- findall(Y, ( member(Y, [1, 2]), rr_clob_ok(Y) ), L), R = f(X, L))).
 rr_clause(nested_agg,   (rr_nested_agg(X, R) :- findall(c(A, C), ( member(A, [p, q]), rr_count(A, C) ), L), R = r(X, L))).
 rr_clause(nested_agg,   (rr_count(A, C) :- aggregate_all(count, ( rr_clob_ok(A), member(_, [1, 2]) ), C))).
-% the same with aggregate_all/3 written inside the findall/3 goal: a known
-% divergence (rr_known_divergence/3), unrelated to the register trail
+% the same with aggregate_all/3 written inside the findall/3 goal (compiled
+% as `call aggregate_all/3`, the runtime builtin since bug-fix batch 1, B3)
 rr_program(nested_agg_inline, aggregate, rr_nested_agg_inline(a, R), R, true).
 rr_clause(nested_agg_inline, (rr_nested_agg_inline(X, R) :- findall(c(A, C), ( member(A, [p, q]), aggregate_all(count, ( rr_clob_ok(A), member(_, [1, 2]) ), C) ), L), R = r(X, L))).
 rr_clause(nested_findall, (rr_nested_findall(X, R) :- findall(c(A, Bs), ( member(A, [p, q]), findall(B, ( rr_clob_ok(A), member(B, [1, 2]) ), Bs) ), L), R = r(X, L))).
@@ -517,13 +517,11 @@ check_once(Name) :-
 %  asserts that each one still differs, so a fix must move the program into
 %  the checked set by deleting its line here. (R0b did this for the
 %  functions-mode include/exclude/partition and both modes of foldl and
-%  include_wide: those builtins now read their output registers at entry.)
-%
-%  aggregate_all/3 written inside a findall/3 goal is compiled as
-%  `call aggregate_all/3` (it is inlined only as a clause-body goal), and the
-%  runtime has no aggregate_all/3 builtin or label, so the inner goal fails.
-rr_known_divergence(interpreter, nested_agg_inline, aggregate_all_in_findall_goal_is_a_call).
-rr_known_divergence(functions,   nested_agg_inline, aggregate_all_in_findall_goal_is_a_call).
+%  include_wide: those builtins now read their output registers at entry.
+%  Bug-fix batch 1, B3, did it for nested_agg_inline: aggregate_all/3 written
+%  inside a findall/3 goal is compiled as `call aggregate_all/3`, which is now
+%  a runtime builtin.) None is left.
+:- dynamic rr_known_divergence/3.
 
 %% rr_lowered_out_of_scope(?Name, ?Why)
 %  Programs whose DIRECT lowered entry is wrong, or does not reach the
@@ -551,11 +549,9 @@ rr_lowered_out_of_scope(findall_fail,   lowered_aggregates_unsupported).
 rr_lowered_out_of_scope(findall_some,   lowered_aggregates_unsupported).
 rr_lowered_out_of_scope(nested_findall, lowered_aggregates_unsupported).
 rr_lowered_out_of_scope(nested_fail,    lowered_aggregates_unsupported).
-%  A lowered if-then-else condition whose `call` fails leaves the callee's
-%  environment frame on the stack (the lowered `call` restores neither the
-%  stack nor E), so the else branch reads its Y registers from the callee's
-%  frame. A lowered-tier defect independent of the register trail.
-rr_lowered_out_of_scope(naf_temp, lowered_ite_keeps_failed_callee_frame).
+%  (naf_temp's lowered entry, excluded until bug-fix batch 1 B5 made the
+%  lowered if-then-else restore the stack snapshot before its else branch, is
+%  checked again.)
 
 %% rr_lowered_required(?Name)
 %  Programs whose query predicate MUST be lowered in functions mode, so the
