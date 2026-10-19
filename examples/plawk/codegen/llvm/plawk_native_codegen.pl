@@ -2268,7 +2268,7 @@ plawk_program_native_driver_ir(
     InputPath,
     DriverIR
 ) :-
-    plawk_end_actions_have_loop(EndActions),
+    plawk_end_actions_need_sequence(EndActions, Rules0),
     % A loop in the END block is only supported alongside a main rule. END-only
     % support (an empty scalar state plan, added for `END { print ... }`) makes
     % plawk_scalar_state_plan/3 succeed for Rules0 = [], which would otherwise let
@@ -2286,7 +2286,11 @@ plawk_program_native_driver_ir(
     plawk_end_loop_actions_ok(EndActions, EndRecord),
     plawk_resolve_dynrec_view_rules(Rules1, Rules1b),
     plawk_resolve_foreach_rules(FieldSeparator, Rules1b, Rules),
-    plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
+    % END assignments are typed like rule assignments: the END block joins the
+    % scalar planning as a pseudo-rule (as the mixed END route does), so
+    % `END { avg = t / NR }` gives avg a double slot, not a counter
+    append(Rules, [rule(end_planning, EndActions)], PlanRules),
+    plawk_scalar_state_plan(PlanRules, PrintFields, StatePlan),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
@@ -2443,6 +2447,30 @@ plawk_end_actions_have_loop(Actions) :-
 
 plawk_end_loop_action(while_loop(_Cond, _Body)).
 plawk_end_loop_action(do_while_loop(_Body, _Cond)).
+
+%% plawk_end_actions_need_sequence(+EndActions, +Rules) is semidet.
+%
+%  END blocks the clause above claims: one with a top-level loop, and a straight-
+%  line one with a top-level scalar ASSIGNMENT (`END { avg = t / NR; print avg }`,
+%  `END { n = length(s); print n }`) -- no other scalar END driver lowers one, so
+%  each declined. The shared sequence emitter lowers an assignment as it does in a
+%  rule body. Only in a program with no array: an array program's END has its own
+%  (mixed) drivers, which this clause's cut must not take programs from.
+plawk_end_actions_need_sequence(EndActions, _Rules) :-
+    plawk_end_actions_have_loop(EndActions),
+    !.
+plawk_end_actions_need_sequence(EndActions, Rules) :-
+    is_list(EndActions),
+    member(Action, EndActions),
+    plawk_end_assignment_action(Action),
+    !,
+    \+ ( sub_term(T, Rules-EndActions), compound(T),
+          ( T = assoc(_, _) ; plawk_array_term_effect(T, _, _) ) ).
+
+plawk_end_assignment_action(set(var(N), _)) :- atom(N).
+plawk_end_assignment_action(add(var(N), _)) :- atom(N).
+plawk_end_assignment_action(inc(var(N))) :- atom(N).
+plawk_end_assignment_action(dec(var(N))) :- atom(N).
 
 %% plawk_end_loop_print_fields(+Actions, -Fields) is det.
 %
@@ -21251,6 +21279,44 @@ plawk_scalar_action_sequence_pairs([gsub_count(CountName, Global, Regex, Repl, T
     [GsubPair, ''-CountLine],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values2, Values, FinalOpIndex, ExitLabel, NextExits).
+% A bare COPY `m = n` between numeric slots of one kind, where n is TRACKED (every
+% write to it stores the assigned mark) but not definitely assigned here: awk's
+% copy of an uninitialised value is uninitialised, so `{ n++ } END { m = n; print
+% m }` on empty input prints "" -- the generic row marked m assigned and printed 0.
+% The copy carries n's mark into m's (a plain store, as every mark write is) and
+% m takes n's value as is, so its prints keep the runtime check (a value that is an
+% op result would count as assigned). An untracked n keeps the generic row: its
+% mark would wrongly read unset.
+plawk_scalar_action_sequence_pairs([set(var(Name), var(Src)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { atom(Name), atom(Src),
+      nth0(TIndex, Slots, TSlot), plawk_slot_name(TSlot, Name),
+      nth0(SIndex, Slots, SSlot), plawk_slot_name(SSlot, Src),
+      ( TSlot = scalar_counter(_), SSlot = scalar_counter(_)
+      ; TSlot = scalar_double(_), SSlot = scalar_double(_) ),
+      nb_current(plawk_walker_tracked, Tracked), is_list(Tracked),
+      memberchk(SIndex, Tracked),
+      \+ ( plawk_walker_assigned_get(Assigned), memberchk(Src, Assigned) ),
+      plawk_slot_assigned_width(Width),
+      TIndex < Width, SIndex < Width,
+      !,
+      nth0(SIndex, Values0, SrcValue),
+      (   TIndex =:= SIndex
+      ->  IR = ''
+      ;   format(atom(B), '%~w_copy_~w', [Prefix, OpIndex]),
+          format(atom(IR),
+'  ~w_sptr = getelementptr [~w x i1], [~w x i1]* @plawk_slot_assigned, i64 0, i64 ~w
+  ~w_m = load i1, i1* ~w_sptr
+  ~w_tptr = getelementptr [~w x i1], [~w x i1]* @plawk_slot_assigned, i64 0, i64 ~w
+  store i1 ~w_m, i1* ~w_tptr',
+              [B, Width, Width, SIndex, B, B, B, Width, Width, TIndex, B, B])
+      ),
+      replace_nth0(TIndex, Values0, SrcValue, Values1),
+      NextOpIndex is OpIndex + 1
+    },
+    [''-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_scalar_action_update(Action, Name, Operation0),
@@ -22204,9 +22270,21 @@ plawk_unset_tracked_slots(Rules, StatePlan, TrackedIndices) :-
 plawk_unset_name_only_updated(Rules, Name) :-
     forall(( member(rule(_Pattern, Actions), Rules),
              plawk_trim_control_tails(Actions, ReachableActions),
-             plawk_end_actions_assigning(ReachableActions, Name, Action)
+             plawk_end_actions_assigning(ReachableActions, Name, Action),
+             \+ plawk_unset_plain_read(Action, Name)
            ),
            plawk_unset_marking_action(Action, Name)).
+
+%  Name is only READ by a plain assignment to another name (`m = n * 2`, `t += n`,
+%  the copy `m = n`): plawk_scalar_update_action_name/2 reports reads too (so a read
+%  gets a slot), but a read writes nothing, so it cannot leave n's mark stale. Only
+%  the plain shapes: a multi-write action (a getline capture, a gsub / split count,
+%  a dynrec bind) reports names it really writes, some without a mark.
+plawk_unset_plain_read(Action, Name) :-
+    functor(Action, F, A),
+    memberchk(F/A, [set/2, add/2, inc/1, dec/1]),
+    arg(1, Action, var(Writer)),
+    Writer \== Name.
 
 %  An assignment that stores the assigned mark: every update-shaped action (its
 %  emitter wrapper marks), and the `n = split(...)` / `n = gsub(...)` counts (their

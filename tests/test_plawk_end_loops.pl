@@ -179,13 +179,13 @@ test(assoc_rules_with_a_scalar_end_loop_compile) :-
     run("{ c[$1]++ } END { n = 2; while (n > 0) { print n; n-- } }\n", "2\n1\n"),
     !.
 
-% An assignment made IN END is invisible to the state plan's slot typing, so a copy
-% between kinds (`m = k`, k a string) or a double into a counter (`m = n / 4`)
-% printed 0 / 1 where gawk prints the key / 1.5. They decline now; a same-kind copy
-% and integer arithmetic still compile.
+% An assignment made IN END was invisible to the state plan's slot typing, so a
+% copy between kinds (`m = k`, k a string) or a double into a counter (`m = n / 4`)
+% printed 0 / 1 where gawk prints the key / 0.75, and then declined. The END block
+% now joins the scalar planning as a pseudo-rule, so each target gets its kind.
 test(end_assignments_keep_their_kind) :-
-    build_status("{ k = $1; n++ } END { while (i < 1) { m = k; i++ }; print m }\n", 3),
-    build_status("{ n++ } END { while (i < 1) { m = n / 4; i++ }; print m }\n", 3),
+    run("{ k = $1; n++ } END { while (i < 1) { m = k; i++ }; print m }\n", "c\n"),
+    run("{ n++ } END { while (i < 1) { m = n / 4; i++ }; print m }\n", "0.75\n"),
     run("{ n++ } END { while (i < 2) { j = i; i++ }; print i, j }\n", "2 1\n"),
     !.
 

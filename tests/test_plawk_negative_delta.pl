@@ -253,13 +253,13 @@ test(a_non_literal_assoc_delta_works_for_both_spellings, [condition(clang_availa
     run("{ c[$1] -= $2 } END { print c[\"a\"] }\n", "-1\n"),
     !.
 
-% A compound assign as an END STATEMENT declines -- for `+=`, `-=` and `++` alike,
-% so it is the END shape and not this change. Pinned as a trio so the distinction
-% stays visible.
-test(compound_assign_in_end_declines_for_every_spelling) :-
-    build_status("{ n++ } END { n += 1; print n }\n", 3),
-    build_status("{ n++ } END { n -= 1; print n }\n", 3),
-    build_status("{ n++ } END { n++; print n }\n", 3),
+% A compound assign as an END STATEMENT -- `+=`, `-=` and `++` alike. These
+% declined (no straight-line END driver lowered an assignment); the END block now
+% goes through the shared sequence emitter, as an END loop body does.
+test(compound_assign_in_end_for_every_spelling) :-
+    run("{ n++ } END { n += 1; print n }\n", "5\n"),
+    run("{ n++ } END { n -= 1; print n }\n", "3\n"),
+    run("{ n++ } END { n++; print n }\n", "5\n"),
     !.
 
 :- end_tests(plawk_negative_delta).
