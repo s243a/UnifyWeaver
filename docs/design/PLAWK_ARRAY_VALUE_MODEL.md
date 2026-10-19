@@ -410,7 +410,10 @@ each newly admitted input -- not deferred to the declaration PR.
    a slot that lost its strnum kind declines. An element inside a concatenation
    reads as its text. A STRING-kind element (`a[k] = $2 ""`) is read in a condition
    as `ssa_text(Ref, 2)` and always compares as a string (`"10" > 5` false,
-   `"x" > 5` true); it still declines in mixed-walker arithmetic. A comparison
+   `"x" > 5` true). In mixed-walker ARITHMETIC (`t += a[$1]`, `x = a[$1] * 2`)
+   it reads as awk's strtod of its text, the same `ssa_strnum` leaf a strnum
+   element takes (`plawk_arith_elem_operand/11`), and the arithmetic is double
+   (`plawk_arith_text_elem_operand/1`): "9x" adds 9, "x" adds 0. A comparison
    operand whose id is 0 -- an unassigned scalar, an absent element -- is awk's
    uninitialised value: kind 0 (number) with text "", so it is 0 against a
    numeric-looking strnum and "" otherwise (`plawk_text_operand_lines/6`). Read
@@ -431,6 +434,8 @@ each newly admitted input -- not deferred to the declaration PR.
   arithmetic, END folds, literal lookups, conditions, split pieces (item 5(d)).
 - `tests/test_plawk_text_elem_uses.pl`: element copies and the max idiom, unset
   comparison operands, elements in concatenations, string-kind conditions.
+- `tests/test_plawk_elem_text_arith.pl`: string-kind elements in rule-body
+  arithmetic (`t += a[$1]`, `x = a[$1] * 2`).
 - `tests/test_plawk_array_kinds.pl`: special-variable and unassigned keys decline;
   integer-literal keys on counted tables.
 - `tests/test_plawk_posarray_keyspace.pl`, `tests/test_plawk_literal_assoc_key.pl`:

@@ -7878,7 +7878,7 @@ plawk_compound_action(foreach_loop(_, _)).
 plawk_arith_elem_reads(T, Ctx, Slots, Vs, Plan, FS, Base, I0, I, T1, G, L) :-
     (   T = assoc(_, _)
     ->  (   Ctx == arith
-        ->  plawk_cond_elem_operand(T, Slots, Vs, Plan, FS, Base, I0, I, T1, G, L)
+        ->  plawk_arith_elem_operand(T, Slots, Vs, Plan, FS, Base, I0, I, T1, G, L)
         ;   T1 = T, I = I0, G = [], L = []
         )
     ;   compound(T)
@@ -7889,6 +7889,27 @@ plawk_arith_elem_reads(T, Ctx, Slots, Vs, Plan, FS, Base, I0, I, T1, G, L) :-
         T1 =.. [F | Args1]
     ;   T1 = T, I = I0, G = [], L = []
     ).
+
+%% plawk_arith_elem_operand(+Elem, ..., -Leaf, -Globals, -Lines) is semidet.
+%  An element read as an operand of arithmetic. A STRING-kind table's element
+%  (`a[k] = $2 ""`) reads there as awk's strtod of its text -- the same reading a
+%  strnum element gets -- so it takes the ssa_strnum leaf. (Only a COMPARISON
+%  tells the two kinds apart; that path is plawk_cond_cmp_operand/11.) Every other
+%  element goes through plawk_cond_elem_operand/11.
+plawk_arith_elem_operand(assoc(var(A), Key), Slots, Vs, Plan, FS, Base, I0, I,
+        Leaf, Globals, Lines) :-
+    plawk_string_array(A),
+    \+ plawk_assoc_plan_posarray_array(Plan, A),
+    !,
+    plawk_assoc_table_index(Plan, A, TableIndex),
+    format(atom(EBase), '~w_e~w', [Base, I0]),
+    plawk_cond_elem_key(Key, Slots, Vs, FS, Base, EBase, KeyId, Globals, KeyLines),
+    format(atom(Ref), '%~w_val', [EBase]),
+    plawk_numeric_elem_read_lines(text, A, TableIndex, Ref, get, KeyId, Leaf, ReadLines),
+    append(KeyLines, ReadLines, Lines),
+    I is I0 + 1.
+plawk_arith_elem_operand(Elem, Slots, Vs, Plan, FS, Base, I0, I, Leaf, G, L) :-
+    plawk_cond_elem_operand(Elem, Slots, Vs, Plan, FS, Base, I0, I, Leaf, G, L).
 
 plawk_arith_elem_reads_args([], _Ctx, _Slots, _Vs, _Plan, _FS, _Base, I, I, [], [], []).
 plawk_arith_elem_reads_args([A | As], Ctx, Slots, Vs, Plan, FS, Base, I0, I,
@@ -10977,7 +10998,7 @@ plawk_scalar_typed_slots(Rules, Names, Slots) :-
           member(ActionE0, ActionsT),
           plawk_scalar_nested_action(ActionE0, ActionE),
           plawk_scalar_action_update(ActionE, Name, add(Elem)),
-          plawk_strnum_elem_operand(Elem)
+          plawk_arith_text_elem_operand(Elem)
         ),
         ElemAccs),
     append(StrnumAccs0, ElemAccs, StrnumAccs1),
@@ -10999,6 +11020,17 @@ plawk_strnum_elem_operand(assoc(var(A), _Key)) :-
     plawk_strnum_text_array(A).
 plawk_strnum_elem_operand(ssa_strnum(Ref)) :-
     atom(Ref).
+
+%% plawk_arith_text_elem_operand(+Expr) is semidet.
+%  An element that ARITHMETIC reads as awk's strtod of its text: a strnum table's,
+%  a string-kind table's (`a[k] = $2 ""`; the two differ only in a comparison), or
+%  the ssa_strnum leaf either becomes once read (plawk_arith_elem_operand/11).
+plawk_arith_text_elem_operand(Elem) :-
+    plawk_strnum_elem_operand(Elem),
+    !.
+plawk_arith_text_elem_operand(assoc(var(A), _Key)) :-
+    atom(A),
+    plawk_string_array(A).
 
 %% plawk_scalar_nested_action(+Action, -Inner) is nondet.
 %
@@ -11880,9 +11912,13 @@ plawk_mixed_update_action(Action) :-
     plawk_rule_body_print_action(Action).
 % `delete arr[x]` with a scalar-variable key is admitted into the mixed chain
 % (resolved to the scalar's slot value at the walker, gated on a string/strnum
-% slot there). Field / string-literal / integer-literal delete keys stay in the
-% pure-assoc chain; a numeric-scalar key declines at the walker's slot gate.
+% slot there); a numeric-scalar key declines at the walker's slot gate. A field,
+% literal or SUBSEP key is admitted too -- the walker interns it as the writes do
+% (plawk_cond_elem_key/9) -- so `if ($2 > 5) delete c[$1]` lowers here; a rule the
+% pure-assoc chain takes whole is still taken there first.
 plawk_mixed_update_action(delete_assoc(var(_ArrayName), var(_Name))).
+plawk_mixed_update_action(delete_assoc(var(_ArrayName), Key)) :-
+    plawk_cond_elem_key_comps(Key, _Comps).
 % `split($N, arr, "sep")` -- fills a positional str table (the walker's split row).
 % Same source/separator shapes as the pure-assoc chain's split.
 plawk_mixed_update_action(split_into(field(KeyIndex), var(_ArrayName), string(Sep))) :-
@@ -20582,10 +20618,11 @@ plawk_f64_scalar_read_operand_expr(ssa_f64(Ref)) :-
     atom(Ref).
 % an element of a strnum table and its ssa_strnum leaf (array plan item 5(d)):
 % only as an arithmetic operand -- plawk_expr_is_double/1 is true of a binary tree
-% over one, never of the bare element, so `x = a[k]` is not a double copy
+% over one, never of the bare element, so `x = a[k]` is not a double copy. A
+% string-kind table's element reads the same way in arithmetic.
 plawk_f64_scalar_read_operand_expr(assoc(var(A), _Key)) :-
     atom(A),
-    plawk_strnum_text_array(A).
+    plawk_text_array(A).
 plawk_f64_scalar_read_operand_expr(ssa_strnum(Ref)) :-
     atom(Ref).
 plawk_f64_scalar_read_operand_expr(float_const(Mantissa, Denominator)) :-
@@ -21345,6 +21382,29 @@ plawk_scalar_action_sequence_pairs([delete_assoc(var(ArrayName), var(Name)) | Re
       NextOpIndex is OpIndex + 1
     },
     [Pair],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
+% `delete arr["k"]` / `delete arr[$1]` (a literal, field or SUBSEP key) in this
+% walker -- an END statement, an END loop body: the key is interned as the writes
+% intern it (plawk_cond_elem_key/9, which declines a field key in END). An
+% awk-semantics table only; a positional table's literal key is a raw position.
+plawk_scalar_action_sequence_pairs([delete_assoc(var(ArrayName), Key) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { Key \= var(_),
+      plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      \+ plawk_assoc_plan_posarray_array(AssocPlan, ArrayName),
+      format(atom(Base), '~w_assoc_~w', [Prefix, OpIndex]),
+      plawk_cond_elem_key(Key, Slots, Values0, FieldSeparator, Prefix, Base, KeyId,
+          Globals, KeyLines),
+      !,
+      plawk_assoc_delete_kind(ArrayName, DelKind),
+      plawk_assoc_elem_void_line(delete, TableIndex, KeyId, DelKind, DeleteLine),
+      append(KeyLines, [DeleteLine], Lines),
+      atomic_list_concat(Lines, '\n', IR),
+      plawk_join_nonempty_ir(Globals, GlobalIR),
+      NextOpIndex is OpIndex + 1
+    },
+    [GlobalIR-IR],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
@@ -22897,7 +22957,11 @@ plawk_i64_expr_ir(nf, FieldSeparator, Base, _GlobalBase, ValueIR, [], [CallIR]) 
 %  what an entry must NOT do: mention `%line`, or assume a record exists.
 plawk_record_i64_read(nf, RecValueIR, FieldSeparator, Base, CallIR) :-
     llvm_emit_atom_field_count(RecValueIR, FieldSeparator, Base, CallIR).
+% a FIELD's length only: `length(n)` of a numeric scalar is left length(var(n)) by
+% the read substitution (its text is a number formatting), and must decline here
+% rather than spell var(n) into the IR
 plawk_record_i64_read(length(FieldIndex), RecValueIR, FieldSeparator, Base, CallIR) :-
+    integer(FieldIndex),
     llvm_emit_atom_field_length(RecValueIR, FieldIndex, FieldSeparator, Base, CallIR).
 % A record-reading i64 leaf over the RETAINED last record, in an expression that runs
 % in END. ONE clause for every entry in plawk_record_i64_read/5: materialise the
@@ -23340,10 +23404,11 @@ plawk_arith_field_operand(field(Index)) :-
 % A substituted strnum read (x = $2; `x + 1`): its numeric value is a strtod
 % reading too, so it makes the tree double for the same reason a field does.
 plawk_arith_field_operand(ssa_strnum(_Value)).
-% an element of a strnum table, which the mixed walker reads as ssa_strnum
+% an element of a strnum or string-kind table, which the mixed walker reads as
+% ssa_strnum (plawk_arith_elem_operand/11)
 plawk_arith_field_operand(assoc(var(A), _Key)) :-
     atom(A),
-    plawk_strnum_text_array(A).
+    plawk_text_array(A).
 
 %% plawk_f64_print_expr(+Expr) is semidet.
 %

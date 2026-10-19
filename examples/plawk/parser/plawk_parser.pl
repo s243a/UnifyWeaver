@@ -2740,6 +2740,11 @@ end_action(Action) -->
 end_action(Action) -->
     assignment_action(Action),
     !.
+% `delete arr[k]` / `delete arr` as an END statement: the rule-body term
+% (delete_action//1), so it is an existing shape in a new position.
+end_action(Action) -->
+    delete_action(Action),
+    !.
 % As in BEGIN, retain getline syntax for a clean context rejection in codegen.
 end_action(unsupported_getline(end(Action))) -->
     getline_context_action(Action),
@@ -2826,7 +2831,11 @@ for_in_body([ForIn]) -->
     for_in_action(ForIn),
     !.
 for_in_body([Action]) -->
-    for_c_simple(Action).
+    for_c_simple(Action),
+    !.
+% a braceless delete -- `for (k in c) delete c[k]`, the usual way to empty an array
+for_in_body([Action]) -->
+    delete_action(Action).
 
 %% for_c_action(-Action)//
 %
@@ -3486,7 +3495,19 @@ delete_action(delete_assoc(var(Name), KeyExpr)) -->
     ws,
     assoc_key_expr(KeyExpr),
     ws,
-    "]".
+    "]",
+    !.
+% `delete arr` -- empty the whole array (POSIX 2024, every awk). It is
+% `for (k in arr) delete arr[k]`, and parses to exactly that loop, so it lowers
+% wherever that loop does (END today) and declines elsewhere. The loop variable
+% is a name no awk program can spell (a leading `$`), so it shadows nothing.
+delete_action(for_in(var(K), var(Name), [delete_assoc(var(Name), var(K))])) -->
+    "delete",
+    identifier_boundary,
+    ws,
+    table_ident(Name),
+    \+ ( ws, "[" ),
+    { atom_concat('$del_', Name, K) }.
 
 %% if_action(-Action)//
 %
