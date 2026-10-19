@@ -7108,6 +7108,30 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     true
                 } else { false }
             }
+            "ignore/1" => {
+                // ignore(G) :- (call(G) -> true ; true). The goal runs as
+                // call/1 runs it (call_goal_once): an opaque cut scope with a
+                // backtrack floor at the call''s entry depth, first solution
+                // only. When it fails, the bindings it made are undone and
+                // ignore/1 succeeds; a ball thrown inside it propagates.
+                // Before this arm `call ignore/1` found no label and no
+                // builtin, so ignore/1 failed.
+                let goal = self.get_reg_raw("A1")
+                    .map(|v| self.deref_heap(&self.deref_var(&v)))
+                    .unwrap_or(Value::Uninit);
+                let saved_pc = self.pc;
+                let trail_mark = self.trail.len();
+                let heap_mark = self.heap.len();
+                if !self.call_goal_once(&goal) {
+                    if self.thrown_ball.is_some() { return false; }
+                    // call_goal_once restored the stack and dropped the
+                    // goal''s Y-register entries, so this undoes bindings only.
+                    self.unwind_trail_to(trail_mark);
+                    self.heap.truncate(heap_mark);
+                }
+                self.pc = saved_pc + 1;
+                true
+            }
             "\\\\+/1" => {
                 // Negation-as-failure using WAM choice point mechanism.
                 // Push a choice point that will succeed if the goal fails.

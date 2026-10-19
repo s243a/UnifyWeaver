@@ -92,6 +92,38 @@ bb_program(esc_pred_name, 'B1', esc_callp(R), R, true).
 bb_clause(esc_pred_name, (esc_callp(R) :- 'esc\\pred'(R))).
 bb_clause(esc_pred_name, 'esc\\pred'(ok)).
 
+% --- B2: ignore/1 ----------------------------------------------------
+%
+% A failing goal: ignore/1 succeeds.
+bb_program(ign_fail, 'B2', ign_fail(R), R, true).
+bb_clause(ign_fail, (ign_fail(R) :- ignore(ign_none), R = ok)).
+bb_clause(ign_fail, (ign_none :- fail)).
+% First solution only.
+bb_program(ign_first, 'B2', ign_first(X), X, true).
+bb_clause(ign_first, (ign_first(X) :- ignore(ign_d(X)))).
+bb_clause(ign_first, ign_d(1)).
+bb_clause(ign_first, ign_d(2)).
+% The bindings of a goal that fails are undone.
+bb_program(ign_undo, 'B2', ign_undo(R), R, true).
+bb_clause(ign_undo, (ign_undo(R) :- ignore(ign_bind_fail(X)), ( var(X) -> R = unbound ; R = bound(X) ))).
+bb_clause(ign_undo, (ign_bind_fail(X) :- X = 1, fail)).
+% The goal is an opaque cut scope: the caller's choice points survive.
+bb_program(ign_cut, 'B2', ign_cut(X), X, true).
+bb_clause(ign_cut, (ign_cut(X) :- ign_d(X), ignore(!))).
+% Inside a findall/3 goal, meta-called, and as the last goal of a clause.
+bb_program(ign_findall, 'B2', ign_findall(L), L, true).
+bb_clause(ign_findall, (ign_findall(L) :- findall(p(X, Y), (ign_d(X), ignore(ign_e(X, Y)), ( var(Y) -> Y = none ; true )), L))).
+bb_clause(ign_findall, ign_e(2, two)).
+bb_program(ign_meta, 'B2', ign_meta(R), R, true).
+bb_clause(ign_meta, (ign_meta(R) :- G = ignore(ign_none), call(G), R = ok)).
+bb_program(ign_tail, 'B2', ign_tail(X), X, true).
+bb_clause(ign_tail, (ign_tail(X) :- X = t, ignore(ign_d(_)))).
+% Side effects of the goal happen once; a ball thrown inside propagates.
+bb_program(ign_write, 'B2', ign_write, done, true).
+bb_clause(ign_write, (ign_write :- ignore((write(a), fail)))).
+bb_program(ign_throw, 'B2', ign_throw(R), R, true).
+bb_clause(ign_throw, (ign_throw(R) :- catch(ignore(throw(oops)), E, R = caught(E)))).
+
 %% bb_dynamic(?PI)
 %  Predicates the drivers create at run time with assertz/1. Declared dynamic
 %  in user: for SWI; not compiled for Rust (the runtime's dynamic database
@@ -107,6 +139,10 @@ bb_clause(esc_pred_name, 'esc\\pred'(ok)).
 bb_lowered_out_of_scope(esc_naf_no,  lowered_call_of_builtin_fails).
 bb_lowered_out_of_scope(esc_naf_yes, lowered_call_of_builtin_fails).
 bb_lowered_out_of_scope(esc_neq,     lowered_call_of_builtin_fails).
+% ignore/1 is such a builtin: every B2 query predicate the emitter lowers
+% reaches it through a lowered `call ignore/1`.
+bb_lowered_out_of_scope(Name, lowered_call_of_builtin_fails) :-
+    bb_program(Name, 'B2', _, _, _).
 
 %% bb_lowered_required(?Name)
 %  Programs whose query predicate MUST be lowered in functions mode, so the

@@ -114,3 +114,44 @@ JSONLs and `--bench` stdout at N=40 and N=5000 `cmp`-identical to base. The
 generated resolver crate is identical to base's apart from the date lines (no
 resolver name needs escaping, and the resolver has no lowered predicates), so
 its Ir is unchanged.
+
+## B2 (D141): `ignore/1`
+
+**Symptom.** Every call of `ignore/1` failed: `ign_fail(R) :- ignore(fail_goal), R = ok`
+printed nothing (SWI `ok`), and a `findall/3` whose goal contains `ignore/1`
+returned `[]`.
+
+**Root cause.** Nothing implemented it. The shared compiler does not inline
+`ignore/1` (it inlines `once/1`, `forall/2` and `\+/1`), so it arrives as
+`call ignore/1` / `execute ignore/1`; the `Call`/`Execute` arms
+(`wam_rust_target.pl:735-783`, `:835-893`) find no label, no dynamic clauses,
+no foreign registration, and fall back to `execute_builtin`, whose meta family
+(`execute_meta_builtin`, `:7077`) has no `ignore/1` arm, so the goal fails
+(silently, unless `UW_WAM_WARN_UNKNOWN` is set). Meta-calls
+(`call(ignore(G))`) take `call_goal_key`, which ends in the same table.
+
+**Fix.** An `ignore/1` arm next to `call/N` in `execute_meta_builtin`:
+`ignore(G) :- (call(G) -> true ; true)`. The goal runs exactly as `call/1`
+runs it (`call_goal_once`: an opaque cut scope with a backtrack floor at the
+call's entry depth, first solution, the caller's environment stack restored).
+When it fails, the bindings it made are undone (`unwind_trail_to` to the mark
+taken before the call, heap truncated) and `ignore/1` succeeds; a ball thrown
+inside it is left in flight. Like `call/1` in this runtime, a conjunction goal
+is meta-called structurally and cannot retry its left conjunct (shared
+limitation of `call_goal_value`, unchanged).
+
+**Tests.** `ign_fail` (failing goal), `ign_first` (first solution only),
+`ign_undo` (bindings of the failed goal undone), `ign_cut` (`ignore(!)` keeps
+the caller's choice points), `ign_findall` (inside a `findall/3` goal),
+`ign_meta` (`call(ignore(G))`), `ign_tail` (last goal), `ign_write` (a side
+effect happens once), `ign_throw` (a ball propagates to `catch/3`).
+
+| | interpreter | functions | lowered entry |
+| --- | --- | --- | --- |
+| before | 9/9 wrong (no output, or `[]`) | 9/9 wrong | — |
+| after | 9/9 | 9/9 | not checked: every B2 query predicate the emitter lowers reaches `ignore/1` through a lowered `call ignore/1`, and a lowered `call`/`execute` of a label-less runtime builtin returns false (the defect the R−1 harness records); the functions-mode check above runs the same predicates through `lowered_call`, which falls back to the interpreter when the lowered function declines |
+
+**Gates.** Harness 76/76; the other harnesses, lib tests, conformance,
+differentials, corpora and byte identity as listed in the ledger row. The
+generated resolver crate gains only the new match arm (the resolver never
+calls `ignore/1`).
