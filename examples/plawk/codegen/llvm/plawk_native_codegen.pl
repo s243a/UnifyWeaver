@@ -26937,6 +26937,24 @@ plawk_emit_print_expr_for_context(assoc_keyid_num_str(TableIndex, SlotValue),
     format(atom(InternCall),
         '  ~w = call i64 @wam_intern_i64_decimal(i64 ~w)', [KeyIdIR, SlotValue]),
     plawk_assoc_str_value_print_line(TableIndex, KeyIdIR, Line).
+% `print arr[k]` / `print arr[s]` on a DOUBLE-valued table (`c[$1] += $2`): the
+% cells are double bit patterns, which the i64 get below would print as integers
+% (the double-table IR check declines that). The table's print helper prints the
+% double the awk way, and nothing for an absent key. A direct/1 result has no
+% printf argument form, so a printf of one still declines.
+plawk_emit_print_expr_for_context(assoc_keyid(TableIndex, KeyIdValue), _FieldSeparator,
+        _Context, direct([Line]), [], []) :-
+    plawk_f64_table_index(TableIndex),
+    !,
+    plawk_assoc_value_print_line(TableIndex, KeyIdValue, Line).
+plawk_emit_print_expr_for_context(assoc_keyid_sv(TableIndex, SlotValue), _FieldSeparator,
+        Context, direct([KeyL, Line]), [], []) :-
+    plawk_f64_table_index(TableIndex),
+    !,
+    plawk_print_expr_value_base(Context, int, Base),
+    format(atom(KeyIR), '%~w_svkey', [Base]),
+    format(atom(KeyL), '  ~w = call i64 @wam_sv_key(i64 ~w)', [KeyIR, SlotValue]),
+    plawk_assoc_value_print_line(TableIndex, KeyIR, Line).
 % `print arr[k]`: in a PRINT an absent element is awk's empty string, not 0
 % (@wam_assoc_i64_get reads 0 for a missing key, and printing that was wrong
 % output: `{ k = $1; print c[k] "|"; c[k]++ }` printed "0|" where gawk prints "|").

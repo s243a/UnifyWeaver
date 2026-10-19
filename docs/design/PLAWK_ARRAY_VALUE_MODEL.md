@@ -343,6 +343,11 @@ each newly admitted input -- not deferred to the declaration PR.
    A key read is `@wam_assoc_f64_get` (the i64 get's bits as a double, absent -> 0.0
    = all-zero bits); the iterated element is `@wam_assoc_f64_value_at`. Every such
    table carries its `plawk-f64-table` marker, so the f64 table IR check still holds.
+   A keyed PRINT in the shared walker (`print k, c[k]` in an END for-in or a rule
+   body of the mixed chain, keyed by a scalar) goes through the table's print
+   helper, which prints the double the awk way and nothing for an absent key; it
+   had read the cell with the i64 get, which the IR check declined. A printf of
+   that element still declines (`tests/test_plawk_mixed_f64_forin.pl`).
    (f) Pure-array END control and arithmetic deltas -- landed: an END `if` / `while`
    / for-in in a program whose rules have NO scalar (`{ c[$1]++ } END { if (c["a"]
    > 1) ... }`) lowers through the mixed END-control fallback (the last driver
