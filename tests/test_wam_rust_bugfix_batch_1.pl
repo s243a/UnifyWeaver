@@ -55,6 +55,8 @@
 % ---------------------------------------------------------------------
 
 :- discontiguous bb_program/5, bb_clause/2.
+:- dynamic bb_dynamic/1.
+:- discontiguous bb_dynamic/1.
 
 % --- B1: names with `\` or `"` in Rust string literals ----------------
 %
@@ -183,12 +185,82 @@ bb_clause(agg_throw, (agg_throw(R) :- catch(findall(C, (member(_, [x]), aggregat
 bb_program(agg_fresh, 'B3', agg_fresh(R), R, true).
 bb_clause(agg_fresh, (agg_fresh(R) :- findall(B, (member(_, [x]), aggregate_all(bag(f(_)), member(_, [1, 2]), B)), [[f(P), f(Q)]]), ( P == Q -> R = shared ; R = distinct ))).
 
+% --- B4: dynamic rule bodies resume on redo ---------------------------
+%
+% A side effect in a dynamic rule body happens once per solution (the R0b
+% case: SWI prints `ab`; the body used to be re-run from its start on every
+% redo, printing `aabab`).
+bb_program(dyn_write, 'B4', dyn_w(X), X,
+           assertz((dyn_w(Y) :- member(Y, [a, b]), write(Y)))).
+% Reading lines through a dynamic rule loses no input (R0b: Rust read l1, l3).
+bb_program(dyn_read, 'B4',
+           ( stream_open(F, S), ( dyn_rl(S, L), write(L), nl, fail ; true ), read_line(S, A), stream_close(S) ),
+           after(A),
+           ( bb_lines_file(F), assertz((dyn_rl(S0, L0) :- member(_, [1, 2]), read_line(S0, L0))) )).
+bb_clause(dyn_read, bb_lines_file('output/rust_wam_bugfix_batch_1_lines.txt')).
+% A compiled nondeterministic predicate in the body, alone and in a
+% conjunction.
+bb_program(dyn_compiled, 'B4', dyn_c(X), X, assertz((dyn_c(Y) :- dyn_p(Y)))).
+bb_clause(dyn_compiled, dyn_p(1)).
+bb_clause(dyn_compiled, dyn_p(2)).
+bb_clause(dyn_compiled, dyn_p(3)).
+bb_program(dyn_conj, 'B4', dyn_cj(X, Y), [X, Y],
+           assertz((dyn_cj(A, B) :- dyn_p(A), dyn_p(B), A < B))).
+% A cut in the body prunes the body's alternatives to its left and the
+% predicate's later clauses.
+bb_program(dyn_cut, 'B4', dyn_k(X), X,
+           ( assertz((dyn_k(Y) :- member(Y, [a, b, c]), Y \== a, !)), assertz(dyn_k(z)) )).
+bb_program(dyn_cut_fail, 'B4', dyn_kf(X), X,
+           ( assertz((dyn_kf(Y) :- member(Y, [a, b]), !, fail)), assertz(dyn_kf(z)) )).
+% A recursive dynamic predicate.
+bb_program(dyn_rec, 'B4', dyn_path(a, X), X,
+           ( assertz(dyn_edge(a, b)), assertz(dyn_edge(b, c)), assertz(dyn_edge(c, d)),
+             assertz((dyn_path(P, Q) :- dyn_edge(P, Q))),
+             assertz((dyn_path(P, Q) :- dyn_edge(P, M), dyn_path(M, Q))) )).
+% If-then-else, disjunction and \+ in the body.
+bb_program(dyn_ctl, 'B4', dyn_ctl(X, R), [X, R],
+           assertz((dyn_ctl(Y, T) :- ( Y = 1 ; Y = 2 ; Y = 3 ), \+ Y = 2, ( Y > 1 -> T = big ; T = small )))).
+% A ball thrown in the body propagates.
+bb_program(dyn_throw, 'B4', catch(dyn_t(_), E, true), E,
+           assertz((dyn_t(Y) :- member(Y, [1, 2]), Y > 1, throw(dboom(Y))))).
+% All solutions under findall/3, with a side effect per solution.
+bb_program(dyn_findall, 'B4', findall(X, dyn_m(X), L), L,
+           assertz((dyn_m(Y) :- member(Y, [1, 2, 3]), write(Y)))).
+% The body sees the database the caller's continuation changed between
+% solutions; asserts in the body persist.
+bb_program(dyn_db, 'B4', ( dyn_q(X), assertz(dyn_seen(2)) ), X,
+           ( assertz(dyn_seen(0)), assertz((dyn_q(Y) :- member(Y, [1, 2, 3]), \+ dyn_seen(Y), assertz(dyn_log(Y)))) )).
+bb_program(dyn_db_log, 'B4', findall(Y, dyn_log(Y), L), L,
+           ( assertz(dyn_seen(0)), assertz((dyn_q(Y) :- member(Y, [1, 2, 3]), \+ dyn_seen(Y), assertz(dyn_log(Y)))),
+             ( dyn_q(Z), assertz(dyn_seen(2)), Z > 5 ; true ) )).
+
+bb_dynamic(dyn_w/1).
+bb_dynamic(dyn_rl/2).
+bb_dynamic(dyn_c/1).
+bb_dynamic(dyn_cj/2).
+bb_dynamic(dyn_k/1).
+bb_dynamic(dyn_kf/1).
+bb_dynamic(dyn_edge/2).
+bb_dynamic(dyn_path/2).
+bb_dynamic(dyn_ctl/2).
+bb_dynamic(dyn_t/1).
+bb_dynamic(dyn_m/1).
+bb_dynamic(dyn_q/1).
+bb_dynamic(dyn_seen/1).
+bb_dynamic(dyn_log/1).
+
+%% bb_swi_shim(?Clause)
+%  SWI-only definitions of the Rust runtime's line-reader builtins (as in
+%  tests/test_wam_rust_stream_swi_parity.pl); asserted for the SWI oracle,
+%  never compiled for Rust.
+bb_swi_shim((stream_open(P, S) :- open(P, read, S))).
+bb_swi_shim((read_line(S, L) :- read_line_to_string(S, L0), ( L0 == end_of_file -> L = end_of_file ; atom_string(L, L0) ))).
+bb_swi_shim((stream_close(S) :- close(S))).
+
 %% bb_dynamic(?PI)
 %  Predicates the drivers create at run time with assertz/1. Declared dynamic
 %  in user: for SWI; not compiled for Rust (the runtime's dynamic database
 %  serves them).
-:- dynamic bb_dynamic/1.
-:- discontiguous bb_dynamic/1.
 
 bb_dynamic(agg_log/1).
 
@@ -210,6 +282,9 @@ bb_lowered_out_of_scope(Name, lowered_call_of_builtin_fails) :-
 % noted by the R-1 harness) or reach aggregate_all/3 through a lowered call.
 bb_lowered_out_of_scope(Name, lowered_aggregates_unsupported) :-
     bb_program(Name, 'B3', _, _, _).
+% A dynamic predicate has no label either: a lowered call of one fails.
+bb_lowered_out_of_scope(Name, lowered_call_of_unlabelled_predicate_fails) :-
+    bb_program(Name, 'B4', _, _, _).
 
 %% bb_lowered_required(?Name)
 %  Programs whose query predicate MUST be lowered in functions mode, so the
@@ -244,9 +319,23 @@ install_bb_programs :-
              catch(retractall(user:H), _, true),
              dynamic(user:F/A) )),
     forall(bb_clause(_, C), assertz(user:C)),
+    forall(bb_swi_shim((H :- _)),
+           ( functor(H, F, A), functor(G, F, A), retractall(user:G) )),
+    forall(bb_swi_shim(C), assertz(user:C)),
+    write_bb_lines_file,
     forall(bb_program(N, _, Q, Out, Setup),
            ( bb_driver_name(N, D),
              assertz(user:(D :- Setup, ( Q, write(Out), nl, fail ; true ))) )).
+
+%% write_bb_lines_file
+%  The input file of dyn_read (both SWI and the Rust binaries read it).
+write_bb_lines_file :-
+    user:bb_lines_file(F),
+    file_directory_name(F, Dir),
+    make_directory_path(Dir),
+    setup_call_cleanup(open(F, write, S),
+                       format(S, "l1~nl2~nl3~nl4~n", []),
+                       close(S)).
 
 bb_rust_preds(Preds) :-
     bb_program_pis(PIs),
@@ -469,9 +558,11 @@ bb_run(Mode, Args, Out, Err) :-
     bb_run(Mode, Args, [], Out, Err).
 
 %% bb_run(+Mode, +Args, +StdinText, -Out, -Err)
+%  Each run is capped at 120 s (a program that loops on unfixed code reports
+%  a crash instead of hanging the suite).
 bb_run(Mode, Args, Stdin, Out, Err) :-
     bb_bin(Mode, Bin),
-    process_create(Bin, Args,
+    process_create(path(timeout), ['120', Bin|Args],
                    [stdin(pipe(I)), stdout(pipe(O)), stderr(pipe(E)), process(Pid)]),
     ( Stdin == [] -> true ; format(I, '~w', [Stdin]) ),
     close(I),

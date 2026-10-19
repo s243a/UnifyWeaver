@@ -119,9 +119,10 @@
     /// without the choice points (the goal never resumes them; its own
     /// floor is the empty stack) and without the shared state, which the
     /// caller has taken out with `take_side`.
-    fn gen_base(&self) -> Box<WamState> {
+    fn gen_base(&mut self) -> Box<WamState> {
+        let choice_points = std::mem::take(&mut self.choice_points);
         let mut base = Box::new(self.clone());
-        base.choice_points.clear();
+        self.choice_points = choice_points;
         base.backtrack_floor = 0;
         base.cut_barrier = 0;
         base.pending_cut_barrier = None;

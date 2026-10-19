@@ -820,6 +820,7 @@ wam_instruction_arm('Instruction::CallIndexedAtomFact2(pred)', Body) :-
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
                         builtin_state: Some(BuiltinState {
+                            suspended: None,
                             name: "indexed_atom_fact2".to_string(),
                             args: vec![Value::Atom(pred.clone().into()), Value::Atom(key.clone().into())],
                             data: vec![Value::Integer(1)],
@@ -1045,6 +1046,7 @@ wam_instruction_arm('Instruction::BeginAggregate(agg_type, value_reg, result_reg
                     trail_len: self.trail.len(),
                     heap_len: self.heap.len(),
                     builtin_state: Some(BuiltinState {
+                        suspended: None,
                         name: "aggregate_frame".to_string(),
                         args: vec![
                             Value::Atom(agg_type.clone().into()),
@@ -1680,6 +1682,11 @@ compile_backtrack_to_rust(Code0) :-
                 if let Some(state) = self.choice_points.pop().and_then(|cp| cp.builtin_state) {
                     if self.resume_builtin(state) {
                         return true;
+                    }
+                    // A ball thrown by the redo (a resumed dynamic rule body
+                    // can throw) aborts backtracking, as in run().
+                    if self.thrown_ball.is_some() {
+                        return false;
                     }
                 }
                 continue;
@@ -2662,6 +2669,7 @@ compile_execute_term_builtin_to_rust(Code) :-
                                 trail_len: self.trail.len(),
                                 heap_len: self.heap.len(),
                                 builtin_state: Some(BuiltinState {
+                                    suspended: None,
                                     name: "member/2".to_string(),
                                     args: vec![val1.clone(), val2.clone()],
                                     data: vec![Value::Integer(1)],
@@ -4484,6 +4492,7 @@ compile_foreign_result_helpers_to_rust(Code) :-
                     trail_len,
                     heap_len,
                     builtin_state: Some(BuiltinState {
+                        suspended: None,
                         name: "foreign_results".to_string(),
                         args: {
                             let mut args = Vec::with_capacity(result_regs.len() + 1);
@@ -5237,6 +5246,7 @@ compile_fact_table_attempt_to_rust(Code) :-
                         trail_len: cp_trail,
                         heap_len: cp_heap,
                         builtin_state: Some(BuiltinState {
+                            suspended: None,
                             name: "fact_table".to_string(),
                             args: args.clone(),
                             data,
@@ -5429,6 +5439,7 @@ compile_resume_builtin_to_rust(Code) :-
                             trail_len: self.trail.len(),
                             heap_len: self.heap.len(),
                             builtin_state: Some(BuiltinState {
+                                suspended: None,
                                 name: "member/2".to_string(),
                                 args: state.args.clone(),
                                 data: vec![Value::Integer((idx + 1) as i64)],
@@ -5520,6 +5531,7 @@ compile_resume_builtin_to_rust(Code) :-
                         trail_len: self.trail.len(),
                         heap_len: self.heap.len(),
                         builtin_state: Some(BuiltinState {
+                            suspended: None,
                             name: "indexed_atom_fact2".to_string(),
                             args: state.args.clone(),
                             data: vec![Value::Integer((idx + 1) as i64)],
@@ -5617,19 +5629,19 @@ compile_resume_builtin_to_rust(Code) :-
                 self.current_predicate_attempt(keys, start_idx, name, arity, cont_pc)
             }
             "dynamic_rule_body" => {
-                let clause = match state.args.get(0) {
-                    Some(clause) => clause.clone(),
-                    _ => return false,
-                };
-                let solution_idx = match state.data.get(0) {
+                // Bug-fix batch 1 (B4): resume the body''s suspended solver.
+                let cont_pc = match state.data.get(0) {
                     Some(Value::Integer(n)) => *n as usize,
                     _ => return false,
                 };
-                let cont_pc = match state.data.get(1) {
+                let clause_cp_depth = match state.data.get(1) {
                     Some(Value::Integer(n)) => *n as usize,
                     _ => return false,
                 };
-                self.dynamic_rule_body_attempt(clause, solution_idx, cont_pc)
+                match state.suspended {
+                    Some(gen) => self.dynamic_rule_body_resume(gen, cont_pc, clause_cp_depth),
+                    None => false,
+                }
             }
             "foreign_results" => {
                 let pred_key = match state.args.get(0) {
@@ -5996,6 +6008,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 trail_len: self.trail.len(),
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
+                    suspended: None,
                     name: "between/3".to_string(),
                     args: vec![x_raw.clone()],
                     data: vec![Value::Integer(n + 1), Value::Integer(high)],
@@ -6020,6 +6033,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 trail_len: self.trail.len(),
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
+                    suspended: None,
                     name: "select/3".to_string(),
                     args: vec![x_raw.clone(), Value::list(items.to_vec()), rest_raw.clone()],
                     data: vec![Value::Integer((idx + 1) as i64)],
@@ -6048,6 +6062,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 trail_len: self.trail.len(),
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
+                    suspended: None,
                     name: name.to_string(),
                     args: vec![n_raw.clone(), Value::list(items.to_vec()), elem_raw.clone()],
                     data: vec![Value::Integer((idx + 1) as i64)],
@@ -6076,6 +6091,7 @@ compile_execute_ext_builtin_to_rust(Code) :-
                 trail_len: self.trail.len(),
                 heap_len: self.heap.len(),
                 builtin_state: Some(BuiltinState {
+                    suspended: None,
                     name: "atom_concat/3".to_string(),
                     args: vec![a1_raw.clone(), a2_raw.clone(), Value::Atom(whole.into())],
                     data: vec![Value::Integer((split + 1) as i64)],
@@ -7181,6 +7197,7 @@ compile_execute_meta_builtin_to_rust(Code) :-
                             trail_len: self.trail.len(),
                             heap_len: self.heap.len(),
                             builtin_state: Some(BuiltinState {
+                                suspended: None,
                                 name: "naf_succeed".to_string(),
                                 args: vec![Value::Integer(naf_pc as i64)],
                                 data: vec![],

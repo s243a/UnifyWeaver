@@ -245,3 +245,83 @@ compared with SWI in both modes (its `rr_known_divergence/3` lines removed).
 | --- | --- | --- | --- |
 | before | 14 of 16 wrong (`[]`, no output, or the inline empty cases; `agg_empty_max` and `agg_fresh` matched by accident: the failing inner call gave the same printout) | 14 of 16 wrong | — |
 | after | 16/16 | 16/16 | not checked (the query predicates the emitter lowers contain a findall/aggregate, which the lowered emitter drops, or reach `aggregate_all/3` through a lowered call) |
+
+## B4 (D143): dynamic rule bodies resume on redo
+
+**Symptom.** With `dyn_w(X) :- member(X, [a, b]), write(X)` asserted,
+`( dyn_w(X), write(X), nl, fail ; true )` printed `aa`, `abb` (SWI `aa`,
+`bb`): every redo ran the body again from its start, so its side effects
+repeated (R0b's `aabab`). A rule that reads lines,
+`dyn_rl(S, L) :- member(_, [1, 2]), read_line(S, L)`, returned `l1`, `l3`
+and left `end_of_file` for the caller (SWI `l1`, `l2`, then `l3`). A body
+calling a compiled nondeterministic predicate returned wrong answers on
+redo, a cut in a body was not a cut, and a ball thrown in a body was lost.
+
+**Root cause** (`dynamic_db_methods.rs.mustache` on base). The first call
+solved the body with `dynamic_eval_body_solution(body, 0)` (`:624`) and the
+`dynamic_rule_body` choice point (`:589`) recorded only the solution index;
+its redo (`wam_rust_target.pl:5609` → `dynamic_rule_body_attempt`, `:686`)
+unified the head again and called `dynamic_eval_body_solution(body, k)`,
+which computes solutions 0..k from scratch (`dynamic_body_solutions`, `:632`)
+on clones of the machine and adopts the last (`*self = solutions.remove(k)`,
+`:628`). So solution k+1 re-executed the body's first k solutions: output
+written again, lines read from the process-wide stream table consumed
+again. `read/1` and assert/retract "happened to match" (R0b) only because
+their state lived in the discarded clones. `dynamic_body_solutions` also
+collected a goal's later solutions with `vm.backtrack()` alone (`:665`):
+for a compiled predicate that restores the next clause's choice point but
+never runs it, so the "solution" was a half-restored machine. And the
+body was meta-called with `call_goal_value`, which meets `!` with the
+machine's cut barrier (not the clause's) and swallows nothing it
+could report: a thrown ball stayed in a discarded clone.
+
+**Fix.** The body is solved by B3's `BodyGen`, which is resumable:
+
+- the first call unifies the head, builds a `BodyGen` for the body on a
+  copy of the machine (without its choice points; the shared state is moved
+  in) and asks it for one solution; the machine adopts it
+  (`adopt_solution`: the solution's bindings, trail, heap and registers, the
+  caller's choice points, control registers and environment stack, the
+  shared state), and the generator is kept in the `dynamic_rule_body`
+  choice point (`BuiltinState::suspended: Option<SuspendedBody>`, an
+  `Arc<Mutex<BodyGen>>`, dropped with the choice point);
+- the redo (`dynamic_rule_body_resume`) finds the machine restored to the
+  call's state by `backtrack`, takes the shared state out, asks the
+  suspended generator for the next solution and adopts it; the generator
+  continues inside the body (the goals' machines still hold their choice
+  points), so nothing before the redo point runs again;
+- the adoption is sound because the generator's machines descend from the
+  machine at the call: their trail and heap extend the machine's, whose
+  entries below the choice point's marks cannot change while the choice
+  point exists;
+- a cut in the body (reported by `BodyGen` as `Sol(_, true)`/`Done(true)`)
+  removes the predicate's remaining clauses: the next-clause choice point is
+  not pushed, or is truncated on redo (`clause_cp_depth`), as SWI does;
+- a ball thrown in the body propagates; `backtrack` now stops when a
+  resumed builtin leaves a ball in flight (a resumed body can throw), as
+  `run` does after a failing step.
+
+The answer order is unchanged (clause order, then the body's solutions in
+order). The retract-direct special case (`dynamic_clause_body_is_direct_retract`,
+retry from index 0 because re-solving skipped by index) is gone: a resumed
+`retract/1` continues from its own choice point.
+
+**Cost.** The first call copies the machine once (as before; the copy no
+longer includes the choice points, the dynamic database or the label table),
+and each later solution copies the running goal's machine once, against
+re-solving and copying k+1 times for solution k before. One generator per
+pending dynamic redo is kept in its choice point.
+
+**Not changed.** The `dynamic_call` choice point re-reads the predicate's
+clause list on redo (not SWI's logical update view); the stream table and
+`read/1` input are still separate (R0b §6.2 (d) item 2).
+
+**Tests.** `dyn_write` (output once per solution), `dyn_read` (line reading:
+`l1`, `l2`, `after(l3)`), `dyn_compiled` and `dyn_conj` (compiled
+nondeterministic predicates in the body), `dyn_cut` and `dyn_cut_fail` (cut
+prunes the body and the later clauses), `dyn_rec` (recursive dynamic
+predicate), `dyn_ctl` (disjunction, `\+`, if-then-else in the body),
+`dyn_throw` (ball to `catch/3`), `dyn_findall` (all solutions under
+`findall/3` with a side effect each), `dyn_db` and `dyn_db_log` (the body sees
+the continuation's asserts; its own asserts persist). SWI runs the
+line-reader through the shims of `test_wam_rust_stream_swi_parity.pl`.
