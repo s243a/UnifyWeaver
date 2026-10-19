@@ -11928,8 +11928,10 @@ plawk_mixed_update_action(split_into(field(KeyIndex), var(_ArrayName), string(Se
 % or -- PR 3f -- arithmetic) and a numeric `arr[$k] = EXPR`; the array-kind rules
 % decide the rest.
 plawk_mixed_update_action(Action) :-
-    plawk_mixed_elem_write(Action, _ArrayName, _KeyIndex, Op),
-    Op \== inc.
+    plawk_mixed_elem_write(Action, _ArrayName, KeyIndex, Op),
+    % a field-keyed `++` is admitted above (plawk_assoc_update_action/1); one at a
+    % literal or SUBSEP key only lowers through the element-write row
+    ( Op \== inc -> true ; KeyIndex = key(_) ).
 
 % A string / strnum / row element write at a field or NR key (arrays PR 5c): the
 % walker's string-store row.
@@ -12006,6 +12008,25 @@ plawk_mixed_elem_write(set_assoc(var(A), field(K), Value), A, K, set(Value)) :-
 plawk_mixed_elem_write(inc_assoc(var(A), field(K)), A, K, inc) :-
     integer(K), K > 0,
     plawk_f64_array(A).
+% ... and at a LITERAL or SUBSEP key (`c["x"] += $2`, `c[$1,$2]++`), on a counter
+% table too: the row interns the key as the pure-assoc writes do (key(Key) below).
+plawk_mixed_elem_write(add_assoc(var(A), Key, Delta), A, key(Key), add(Delta)) :-
+    plawk_mixed_elem_comps_key(Key),
+    plawk_assoc_add_delta_ok(Delta).
+plawk_mixed_elem_write(set_assoc(var(A), Key, Value), A, key(Key), set(Value)) :-
+    plawk_mixed_elem_comps_key(Key),
+    plawk_set_value_kind(Value, Kind),
+    memberchk(Kind, [counter, double]).
+plawk_mixed_elem_write(inc_assoc(var(A), Key), A, key(Key), inc) :-
+    plawk_mixed_elem_comps_key(Key).
+
+%% plawk_mixed_elem_comps_key(+Key) is semidet.
+%  A key the element-write row interns from components: a SUBSEP list, or a lone
+%  string / integer literal (a lone field keeps the field row above).
+plawk_mixed_elem_comps_key(subsep_key(Parts)) :-
+    plawk_cond_elem_key_comps(subsep_key(Parts), _).
+plawk_mixed_elem_comps_key(string(S)) :- string(S).
+plawk_mixed_elem_comps_key(int(N)) :- integer(N).
 
 %% plawk_mixed_elem_write_ir(+Prefix, +OpIndex, +ArrayName, +TableIndex, +KeyIndex,
 %%     +FieldSeparator, +Op, +Slots, +Values, -Pair)
@@ -12016,16 +12037,8 @@ plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
         FieldSeparator, Op, Slots, Values, GlobalIR-IR) :-
     integer(FieldSeparator),
     format(atom(B), '~w_elem_~w', [Prefix, OpIndex]),
-    format(atom(SliceL),
-        '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
-        [B, KeyIndex, FieldSeparator]),
-    format(atom(PtrL), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
-    format(atom(LenL), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
-    format(atom(MissL), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
-    plawk_missing_key_empty_lines(B, EmptyGlobal, SafePtrL),
-    format(atom(KidL),
-        '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 %~w_key_len)',
-        [B, B, B]),
+    plawk_mixed_elem_key_lines(KeyIndex, B, Prefix, Slots, Values, FieldSeparator,
+        KeyGlobals, KeyLines),
     format(atom(ValueBase), '~w_val', [B]),
     (   plawk_f64_array(ArrayName)
     ->  plawk_mixed_elem_f64(Op, ValueBase, FieldSeparator, Slots, Values,
@@ -12043,9 +12056,35 @@ plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
         plawk_assoc_elem_fn_line(Entry, i64, StoreRes, TableIndex, StoreKey,
             ValueIR, StoreL)
     ),
-    plawk_join_nonempty_ir([EmptyGlobal | ValueGlobals], GlobalIR),
-    append([[SliceL, PtrL, LenL, MissL, SafePtrL, KidL], ValueLines, [StoreL]], Lines),
+    append(KeyGlobals, ValueGlobals, Globals),
+    plawk_join_nonempty_ir(Globals, GlobalIR),
+    append([KeyLines, ValueLines, [StoreL]], Lines),
     atomic_list_concat(Lines, '\n', IR).
+
+%% plawk_mixed_elem_key_lines(+Key, +B, +Prefix, +Slots, +Values, +FS, -Globals, -Lines)
+%  The key id %B_key_id of an element write: field K interned (a missing field is
+%  the key ""), or -- key(Key) -- a literal / SUBSEP key interned by
+%  plawk_cond_elem_key/9 (which declines a field component in END).
+plawk_mixed_elem_key_lines(key(Key), B, Prefix, Slots, Values, FieldSeparator,
+        Globals, Lines) :-
+    !,
+    plawk_cond_elem_key(Key, Slots, Values, FieldSeparator, Prefix, B, KeyId0,
+        Globals, Lines0),
+    format(atom(CopyL), '  %~w_key_id = add i64 ~w, 0', [B, KeyId0]),
+    append(Lines0, [CopyL], Lines).
+plawk_mixed_elem_key_lines(KeyIndex, B, _Prefix, _Slots, _Values, FieldSeparator,
+        [EmptyGlobal], [SliceL, PtrL, LenL, MissL, SafePtrL, KidL]) :-
+    integer(KeyIndex),
+    format(atom(SliceL),
+        '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [B, KeyIndex, FieldSeparator]),
+    format(atom(PtrL), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
+    format(atom(LenL), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
+    format(atom(MissL), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
+    plawk_missing_key_empty_lines(B, EmptyGlobal, SafePtrL),
+    format(atom(KidL),
+        '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 %~w_key_len)',
+        [B, B, B]).
 
 plawk_mixed_elem_f64(inc, _B, _FS, _Slots, _Values, '1.0', [], [], add).
 plawk_mixed_elem_f64(add(Delta0), B, FS, Slots, Values, V, [], Lines, add) :-
@@ -12055,6 +12094,7 @@ plawk_mixed_elem_f64(set(Value0), B, FS, Slots, Values, V, Globals, Lines, set) 
     plawk_substitute_scalar_reads(Value0, Slots, Values, Value),
     plawk_f64_expr_ir(Value, FS, B, B, V, Globals, Lines).
 
+plawk_mixed_elem_i64(inc, _B, _FS, _Slots, _Values, '1', [], [], inc).
 plawk_mixed_elem_i64(add(Delta), B, FS, _Slots, _Values, V, [], Lines, inc) :-
     plawk_assoc_scalar_src_lines(Delta, B, FS, V, Lines0),
     ( is_list(Lines0) -> Lines = Lines0 ; Lines = [Lines0] ).
@@ -21433,6 +21473,8 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_mixed_elem_write(Action, ArrayName, KeyIndex, Op),
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      % an interned key cannot address a positional table (raw positions)
+      \+ ( KeyIndex = key(_), plawk_assoc_plan_posarray_array(AssocPlan, ArrayName) ),
       plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
           FieldSeparator, Op, Slots, Values0, Pair),
       !,
