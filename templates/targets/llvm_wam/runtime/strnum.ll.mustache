@@ -817,13 +817,25 @@ handle:
 {{case wam_sv_eq_id}}
 ; String equality of value %v against the interned atom %id: an id match is
 ; equality (interning is canonical); a handle compares its bytes with the atom's
-; text; any other value differs.
+; text; 0 (unset) is awk's uninitialised value, whose string is "", so it equals
+; the empty atom; any other value differs.
 define i1 @wam_sv_eq_id(i64 %v, i64 %id) {
 entry:
   %same = icmp eq i64 %v, %id
-  br i1 %same, label %yes, label %check
+  br i1 %same, label %yes, label %check0
 yes:
   ret i1 true
+check0:
+  %unset = icmp eq i64 %v, 0
+  br i1 %unset, label %unset_cmp, label %check
+unset_cmp:
+  %us = call i8* @wam_atom_to_string(i64 %id)
+  %usnull = icmp eq i8* %us, null
+  br i1 %usnull, label %no, label %unset_byte
+unset_byte:
+  %ub = load i8, i8* %us
+  %uempty = icmp eq i8 %ub, 0
+  ret i1 %uempty
 check:
   %tag = lshr i64 %v, 61
   %is_h = icmp eq i64 %tag, 1

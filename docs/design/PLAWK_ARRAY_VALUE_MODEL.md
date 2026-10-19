@@ -343,6 +343,11 @@ each newly admitted input -- not deferred to the declaration PR.
    A key read is `@wam_assoc_f64_get` (the i64 get's bits as a double, absent -> 0.0
    = all-zero bits); the iterated element is `@wam_assoc_f64_value_at`. Every such
    table carries its `plawk-f64-table` marker, so the f64 table IR check still holds.
+   A keyed PRINT in the shared walker (`print k, c[k]` in an END for-in or a rule
+   body of the mixed chain, keyed by a scalar) goes through the table's print
+   helper, which prints the double the awk way and nothing for an absent key; it
+   had read the cell with the i64 get, which the IR check declined. A printf of
+   that element still declines (`tests/test_plawk_mixed_f64_forin.pl`).
    (f) Pure-array END control and arithmetic deltas -- landed: an END `if` / `while`
    / for-in in a program whose rules have NO scalar (`{ c[$1]++ } END { if (c["a"]
    > 1) ... }`) lowers through the mixed END-control fallback (the last driver
@@ -413,7 +418,10 @@ each newly admitted input -- not deferred to the declaration PR.
    `"x" > 5` true). In mixed-walker ARITHMETIC (`t += a[$1]`, `x = a[$1] * 2`)
    it reads as awk's strtod of its text, the same `ssa_strnum` leaf a strnum
    element takes (`plawk_arith_elem_operand/11`), and the arithmetic is double
-   (`plawk_arith_text_elem_operand/1`): "9x" adds 9, "x" adds 0. A comparison
+   (`plawk_arith_text_elem_operand/1`): "9x" adds 9, "x" adds 0. A bare copy
+   `x = a[k]` of one makes x a STRING scalar (`plawk_scalar_string_names/2`); the
+   walker reads the element as `ssa_str` and copies it like any string copy. A
+   comparison
    operand whose id is 0 -- an unassigned scalar, an absent element -- is awk's
    uninitialised value: kind 0 (number) with text "", so it is 0 against a
    numeric-looking strnum and "" otherwise (`plawk_text_operand_lines/6`). Read
@@ -436,6 +444,8 @@ each newly admitted input -- not deferred to the declaration PR.
   comparison operands, elements in concatenations, string-kind conditions.
 - `tests/test_plawk_elem_text_arith.pl`: string-kind elements in rule-body
   arithmetic (`t += a[$1]`, `x = a[$1] * 2`).
+- `tests/test_plawk_elem_text_copy_length.pl`: a string-kind element copied into a
+  scalar; `length(a[k])`.
 - `tests/test_plawk_array_kinds.pl`: special-variable and unassigned keys decline;
   integer-literal keys on counted tables.
 - `tests/test_plawk_posarray_keyspace.pl`, `tests/test_plawk_literal_assoc_key.pl`:

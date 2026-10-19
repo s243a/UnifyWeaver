@@ -223,13 +223,13 @@ test(an_integer_literal_multi_dim_component_still_works, [condition(clang_availa
     run_sorted("{ c[$1,5]++ } END { for (k in c) print c[k] }\n", "1\n1\n2\n"),
     !.
 
-% The MIXED route (a scalar counter alongside an assoc update) declines for a literal
-% key -- pinned as a pair with the multi-dimensional form, which declines identically
-% and always has. The mixed chain has no N-ary key path at all, so this restriction
-% belongs to that gap, not to the literal key.
-test(the_mixed_route_declines_for_literal_and_multi_dim_keys_alike) :-
-    build_status("{ n++; c[\"x\"]++ } END { print n }\n", 3),
-    build_status("{ n++; c[$1,\"z\"]++ } END { print n }\n", 3),
+% The MIXED route (a scalar counter alongside an assoc update) takes a literal key
+% and the multi-dimensional form alike: its element-write row interns either through
+% the same key builder (both declined before it had an N-ary key path).
+test(the_mixed_route_takes_literal_and_multi_dim_keys_alike, [condition(clang_available)]) :-
+    run("{ n++; c[\"x\"]++ } END { print n, c[\"x\"] }\n", "4 4\n"),
+    run_sorted("{ n++; c[$1,\"z\"]++ } END { print n; for (k in c) print c[k] }\n",
+        "1\n1\n2\n4\n"),
     !.
 
 % An EMPTY-STRING subscript is a PARSE error, not a decline -- a pre-existing parser

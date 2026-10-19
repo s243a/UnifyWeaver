@@ -2268,7 +2268,7 @@ plawk_program_native_driver_ir(
     InputPath,
     DriverIR
 ) :-
-    plawk_end_actions_have_loop(EndActions),
+    plawk_end_actions_need_sequence(EndActions, Rules0),
     % A loop in the END block is only supported alongside a main rule. END-only
     % support (an empty scalar state plan, added for `END { print ... }`) makes
     % plawk_scalar_state_plan/3 succeed for Rules0 = [], which would otherwise let
@@ -2286,7 +2286,11 @@ plawk_program_native_driver_ir(
     plawk_end_loop_actions_ok(EndActions, EndRecord),
     plawk_resolve_dynrec_view_rules(Rules1, Rules1b),
     plawk_resolve_foreach_rules(FieldSeparator, Rules1b, Rules),
-    plawk_scalar_state_plan(Rules, PrintFields, StatePlan),
+    % END assignments are typed like rule assignments: the END block joins the
+    % scalar planning as a pseudo-rule (as the mixed END route does), so
+    % `END { avg = t / NR }` gives avg a double slot, not a counter
+    append(Rules, [rule(end_planning, EndActions)], PlanRules),
+    plawk_scalar_state_plan(PlanRules, PrintFields, StatePlan),
     plawk_output_separator(BeginClauses, OutputSeparator),
     plawk_begin_print_string_globals(BeginClauses, BeginGlobalIR),
     plawk_begin_print_ir(BeginClauses, OutputSeparator, BeginIR0),
@@ -2443,6 +2447,30 @@ plawk_end_actions_have_loop(Actions) :-
 
 plawk_end_loop_action(while_loop(_Cond, _Body)).
 plawk_end_loop_action(do_while_loop(_Body, _Cond)).
+
+%% plawk_end_actions_need_sequence(+EndActions, +Rules) is semidet.
+%
+%  END blocks the clause above claims: one with a top-level loop, and a straight-
+%  line one with a top-level scalar ASSIGNMENT (`END { avg = t / NR; print avg }`,
+%  `END { n = length(s); print n }`) -- no other scalar END driver lowers one, so
+%  each declined. The shared sequence emitter lowers an assignment as it does in a
+%  rule body. Only in a program with no array: an array program's END has its own
+%  (mixed) drivers, which this clause's cut must not take programs from.
+plawk_end_actions_need_sequence(EndActions, _Rules) :-
+    plawk_end_actions_have_loop(EndActions),
+    !.
+plawk_end_actions_need_sequence(EndActions, Rules) :-
+    is_list(EndActions),
+    member(Action, EndActions),
+    plawk_end_assignment_action(Action),
+    !,
+    \+ ( sub_term(T, Rules-EndActions), compound(T),
+          ( T = assoc(_, _) ; plawk_array_term_effect(T, _, _) ) ).
+
+plawk_end_assignment_action(set(var(N), _)) :- atom(N).
+plawk_end_assignment_action(add(var(N), _)) :- atom(N).
+plawk_end_assignment_action(inc(var(N))) :- atom(N).
+plawk_end_assignment_action(dec(var(N))) :- atom(N).
 
 %% plawk_end_loop_print_fields(+Actions, -Fields) is det.
 %
@@ -7863,6 +7891,9 @@ plawk_arith_parent(T, [L, R]) :-
     !.
 plawk_arith_parent(add(var(N), X), [X]) :-
     atom(N).
+% `length(a[k])`: the element is read first, as its text leaf (a text table's)
+plawk_arith_parent(length(X), [X]) :-
+    X = assoc(_, _).
 
 plawk_compound_action(if(_, _, _)).
 plawk_compound_action(while_loop(_, _)).
@@ -11071,7 +11102,10 @@ plawk_scalar_string_names(Rules, Strings) :-
           plawk_trim_control_tails(Actions0, Actions),
           member(Action0, Actions),
           plawk_scalar_nested_action(Action0, Action),
-          plawk_scalar_action_update(Action, Name, set_str(_Src))
+          (   plawk_scalar_action_update(Action, Name, set_str(_Src))
+          ;   Action = set(var(Name), assoc(var(A), _)),   % a string-kind element copy
+              atom(A), plawk_string_array(A)
+          )
         ),
         Names0),
     sort(Names0, Strings0),
@@ -11606,8 +11640,60 @@ plawk_mixed_state_plan_any(Rules, PrintFields,
     PlannedRules \== [].
 
 plawk_mixed_scalar_state_plan(Rules0, PrintFields, StatePlan) :-
-    plawk_prelude_planning_rules(Rules0, Rules),
+    plawk_prelude_planning_rules(Rules0, Rules1),
+    plawk_mixed_planning_rules(Rules1, Rules),
     plawk_mixed_scalar_state_plan_(Rules, PrintFields, StatePlan).
+
+%% plawk_mixed_planning_rules(+Rules0, -Rules) is det.
+%  The rules as the mixed scalar planner sees them: a top-level `for (k in A) BODY`
+%  in a rule body is flattened as an END one is (plawk_end_planning_actions/2: the
+%  key is a string, the body's assignments are visible), so the general for-in row
+%  finds k in a string slot. A rule without a for-in is unchanged.
+plawk_mixed_planning_rules(Rules0, Rules) :-
+    maplist(plawk_mixed_planning_rule, Rules0, Rules).
+
+plawk_mixed_planning_rule(rule(Pattern, Actions0), rule(Pattern, Actions)) :-
+    is_list(Actions0),
+    sub_term(T, Actions0), nonvar(T), T = for_in(_, _, _),
+    !,
+    plawk_mixed_planning_actions(Actions0, Actions).
+plawk_mixed_planning_rule(Rule, Rule).
+
+% Flatten every GENERAL for-in, at any depth: an `if` branch or a loop body keeps
+% its shape with its own for-ins flattened (`if (NR == 3) delete c` is a for-in
+% there). A print-only body is left alone: its own row requires the key NOT to be a
+% scalar slot (a split table's key is a raw position).
+plawk_mixed_planning_actions([], []).
+plawk_mixed_planning_actions([for_in(K, A, Body) | Rest], Actions) :-
+    \+ plawk_forin_print_only_body(Body),
+    !,
+    plawk_end_planning_actions([for_in(K, A, Body)], Flat0),
+    plawk_mixed_planning_actions(Flat0, Flat),
+    plawk_mixed_planning_actions(Rest, RestActions),
+    append(Flat, RestActions, Actions).
+plawk_mixed_planning_actions([Action0 | Rest], [Action | RestActions]) :-
+    plawk_mixed_planning_nested(Action0, Action),
+    plawk_mixed_planning_actions(Rest, RestActions).
+
+% the body the print-only for-in row takes (see its plawk_mixed_update_action/1)
+plawk_forin_print_only_body(Body) :-
+    Body = [_ | _],
+    forall(member(Action, Body), Action = print(_)).
+
+plawk_mixed_planning_nested(if(P, T0, E0), if(P, T, E)) :-
+    is_list(T0), is_list(E0),
+    !,
+    plawk_mixed_planning_actions(T0, T),
+    plawk_mixed_planning_actions(E0, E).
+plawk_mixed_planning_nested(while_loop(C, B0), while_loop(C, B)) :-
+    is_list(B0),
+    !,
+    plawk_mixed_planning_actions(B0, B).
+plawk_mixed_planning_nested(do_while_loop(B0, C), do_while_loop(B, C)) :-
+    is_list(B0),
+    !,
+    plawk_mixed_planning_actions(B0, B).
+plawk_mixed_planning_nested(Action, Action).
 
 plawk_mixed_scalar_state_plan_(Rules, PrintFields, state_plan(Slots, Tracked)) :-
     findall(Name,
@@ -11928,8 +12014,10 @@ plawk_mixed_update_action(split_into(field(KeyIndex), var(_ArrayName), string(Se
 % or -- PR 3f -- arithmetic) and a numeric `arr[$k] = EXPR`; the array-kind rules
 % decide the rest.
 plawk_mixed_update_action(Action) :-
-    plawk_mixed_elem_write(Action, _ArrayName, _KeyIndex, Op),
-    Op \== inc.
+    plawk_mixed_elem_write(Action, _ArrayName, KeyIndex, Op),
+    % a field-keyed `++` is admitted above (plawk_assoc_update_action/1); one at a
+    % literal or SUBSEP key only lowers through the element-write row
+    ( Op \== inc -> true ; KeyIndex = key(_) ).
 
 % A string / strnum / row element write at a field or NR key (arrays PR 5c): the
 % walker's string-store row.
@@ -12006,6 +12094,25 @@ plawk_mixed_elem_write(set_assoc(var(A), field(K), Value), A, K, set(Value)) :-
 plawk_mixed_elem_write(inc_assoc(var(A), field(K)), A, K, inc) :-
     integer(K), K > 0,
     plawk_f64_array(A).
+% ... and at a LITERAL or SUBSEP key (`c["x"] += $2`, `c[$1,$2]++`), on a counter
+% table too: the row interns the key as the pure-assoc writes do (key(Key) below).
+plawk_mixed_elem_write(add_assoc(var(A), Key, Delta), A, key(Key), add(Delta)) :-
+    plawk_mixed_elem_comps_key(Key),
+    plawk_assoc_add_delta_ok(Delta).
+plawk_mixed_elem_write(set_assoc(var(A), Key, Value), A, key(Key), set(Value)) :-
+    plawk_mixed_elem_comps_key(Key),
+    plawk_set_value_kind(Value, Kind),
+    memberchk(Kind, [counter, double]).
+plawk_mixed_elem_write(inc_assoc(var(A), Key), A, key(Key), inc) :-
+    plawk_mixed_elem_comps_key(Key).
+
+%% plawk_mixed_elem_comps_key(+Key) is semidet.
+%  A key the element-write row interns from components: a SUBSEP list, or a lone
+%  string / integer literal (a lone field keeps the field row above).
+plawk_mixed_elem_comps_key(subsep_key(Parts)) :-
+    plawk_cond_elem_key_comps(subsep_key(Parts), _).
+plawk_mixed_elem_comps_key(string(S)) :- string(S).
+plawk_mixed_elem_comps_key(int(N)) :- integer(N).
 
 %% plawk_mixed_elem_write_ir(+Prefix, +OpIndex, +ArrayName, +TableIndex, +KeyIndex,
 %%     +FieldSeparator, +Op, +Slots, +Values, -Pair)
@@ -12016,16 +12123,8 @@ plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
         FieldSeparator, Op, Slots, Values, GlobalIR-IR) :-
     integer(FieldSeparator),
     format(atom(B), '~w_elem_~w', [Prefix, OpIndex]),
-    format(atom(SliceL),
-        '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
-        [B, KeyIndex, FieldSeparator]),
-    format(atom(PtrL), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
-    format(atom(LenL), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
-    format(atom(MissL), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
-    plawk_missing_key_empty_lines(B, EmptyGlobal, SafePtrL),
-    format(atom(KidL),
-        '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 %~w_key_len)',
-        [B, B, B]),
+    plawk_mixed_elem_key_lines(KeyIndex, B, Prefix, Slots, Values, FieldSeparator,
+        KeyGlobals, KeyLines),
     format(atom(ValueBase), '~w_val', [B]),
     (   plawk_f64_array(ArrayName)
     ->  plawk_mixed_elem_f64(Op, ValueBase, FieldSeparator, Slots, Values,
@@ -12043,9 +12142,35 @@ plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
         plawk_assoc_elem_fn_line(Entry, i64, StoreRes, TableIndex, StoreKey,
             ValueIR, StoreL)
     ),
-    plawk_join_nonempty_ir([EmptyGlobal | ValueGlobals], GlobalIR),
-    append([[SliceL, PtrL, LenL, MissL, SafePtrL, KidL], ValueLines, [StoreL]], Lines),
+    append(KeyGlobals, ValueGlobals, Globals),
+    plawk_join_nonempty_ir(Globals, GlobalIR),
+    append([KeyLines, ValueLines, [StoreL]], Lines),
     atomic_list_concat(Lines, '\n', IR).
+
+%% plawk_mixed_elem_key_lines(+Key, +B, +Prefix, +Slots, +Values, +FS, -Globals, -Lines)
+%  The key id %B_key_id of an element write: field K interned (a missing field is
+%  the key ""), or -- key(Key) -- a literal / SUBSEP key interned by
+%  plawk_cond_elem_key/9 (which declines a field component in END).
+plawk_mixed_elem_key_lines(key(Key), B, Prefix, Slots, Values, FieldSeparator,
+        Globals, Lines) :-
+    !,
+    plawk_cond_elem_key(Key, Slots, Values, FieldSeparator, Prefix, B, KeyId0,
+        Globals, Lines0),
+    format(atom(CopyL), '  %~w_key_id = add i64 ~w, 0', [B, KeyId0]),
+    append(Lines0, [CopyL], Lines).
+plawk_mixed_elem_key_lines(KeyIndex, B, _Prefix, _Slots, _Values, FieldSeparator,
+        [EmptyGlobal], [SliceL, PtrL, LenL, MissL, SafePtrL, KidL]) :-
+    integer(KeyIndex),
+    format(atom(SliceL),
+        '  %~w_key_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [B, KeyIndex, FieldSeparator]),
+    format(atom(PtrL), '  %~w_key_ptr = extractvalue %WamSlice %~w_key_slice, 0', [B, B]),
+    format(atom(LenL), '  %~w_key_len = extractvalue %WamSlice %~w_key_slice, 1', [B, B]),
+    format(atom(MissL), '  %~w_key_missing = icmp eq i8* %~w_key_ptr, null', [B, B]),
+    plawk_missing_key_empty_lines(B, EmptyGlobal, SafePtrL),
+    format(atom(KidL),
+        '  %~w_key_id = call i64 @wam_intern_atom(i8* %~w_key_sptr, i64 %~w_key_len)',
+        [B, B, B]).
 
 plawk_mixed_elem_f64(inc, _B, _FS, _Slots, _Values, '1.0', [], [], add).
 plawk_mixed_elem_f64(add(Delta0), B, FS, Slots, Values, V, [], Lines, add) :-
@@ -12055,6 +12180,7 @@ plawk_mixed_elem_f64(set(Value0), B, FS, Slots, Values, V, Globals, Lines, set) 
     plawk_substitute_scalar_reads(Value0, Slots, Values, Value),
     plawk_f64_expr_ir(Value, FS, B, B, V, Globals, Lines).
 
+plawk_mixed_elem_i64(inc, _B, _FS, _Slots, _Values, '1', [], [], inc).
 plawk_mixed_elem_i64(add(Delta), B, FS, _Slots, _Values, V, [], Lines, inc) :-
     plawk_assoc_scalar_src_lines(Delta, B, FS, V, Lines0),
     ( is_list(Lines0) -> Lines = Lines0 ; Lines = [Lines0] ).
@@ -12078,6 +12204,15 @@ plawk_mixed_update_action(for_in(var(LoopVar), var(ArrayName), Body)) :-
         ( Action = print(Fields), Fields = [_ | _],
           maplist(plawk_rule_body_print_field, Fields) )),
     \+ ( sub_term(Special, Body), ( Special == special('NR') ; Special == special('FNR') ) ).
+% ... and a GENERAL body (scalar updates, element writes and deletes, `if`): the
+% walker's general for-in row, shared with END (rule-body planning types the key a
+% string, plawk_mixed_planning_rules/2). A print-only body keeps the row above.
+plawk_mixed_update_action(for_in(var(LoopVar), var(ArrayName), Body)) :-
+    atom(LoopVar), atom(ArrayName),
+    Body = [_ | _],
+    \+ plawk_forin_print_only_body(Body),
+    \+ ( sub_term(T, Body), ( T == next ; T == exit ; nonvar(T), T = exit(_) ) ),
+    maplist(plawk_mixed_update_action, Body).
 % Loops in a mixed body: the walker's loop rows are shared with the scalar chain
 % and thread the table plan into the body (a `for (i = 1; i <= n; i++)` over split
 % pieces parses to a while_loop).
@@ -12693,6 +12828,11 @@ plawk_assoc_print_field_spec(assoc(var(Arr), Lit), lookupn(Arr, Comps)) :-
     atom(Arr),
     plawk_assoc_literal_key_comps(Lit, Comps).
 
+% `print length(arr[$N])` -- the length of a text element (planned only for a
+% str-valued table; a numeric element's text is a number formatting, so it
+% declines).
+plawk_assoc_print_field_spec(length(assoc(var(Arr), field(N))), llength(Arr, N)) :-
+    atom(Arr), integer(N), N > 0.
 % A scalar accumulator read in a per-record print.
 plawk_assoc_print_field_spec(var(Name), svar(Name)) :-
     atom(Name).
@@ -12742,6 +12882,10 @@ plawk_assoc_arith_operand(assoc(var(Arr), string(S)), alookup_lit(Arr, Text)) :-
 % StrArrays is the set of str-valued (atom-id) tables, used to pick the value
 % kind for an integer-key element read.
 plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, fld(N), fld(N)).
+plawk_assoc_print_plan_field(Tables, StrArrays, _PosArrays, llength(Arr, N),
+        llength(TableIndex, N)) :-
+    memberchk(Arr, StrArrays),
+    nth0(TableIndex, Tables, Arr).
 plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, record, record).
 plawk_assoc_print_plan_field(_Tables, _StrArrays, _PosArrays, strlit(V), strlit(V)).
 % A field-keyed element read resolves its array to a table index AND its value
@@ -12961,6 +13105,28 @@ plawk_assoc_print_one_field(lookup(TableIndex, N, Kind), Base, Index, FieldSep, 
     format(atom(KeyIR), '%~w_kid', [P]),
     plawk_assoc_kind_value_print_line(Kind, TableIndex, KeyIR, PrL),
     Lines = [SliceL, PtrL, LenL, KidL, PrL].
+% `print length(arr[$N])`: read the text element (0 when absent, which reads "")
+% and print its byte length.
+plawk_assoc_print_one_field(llength(TableIndex, N), Base, Index, FieldSep, Lines) :-
+    format(atom(P), '~w_f~w', [Base, Index]),
+    format(atom(SliceL),
+        '  %~w_slice = call %WamSlice @wam_atom_field_slice_value(%Value %line, i64 ~w, i8 ~w)',
+        [P, N, FieldSep]),
+    format(atom(PtrL), '  %~w_ptr = extractvalue %WamSlice %~w_slice, 0', [P, P]),
+    format(atom(LenL), '  %~w_len = extractvalue %WamSlice %~w_slice, 1', [P, P]),
+    format(atom(KidL),
+        '  %~w_kid = call i64 @wam_intern_atom(i8* %~w_ptr, i64 %~w_len)', [P, P, P]),
+    format(atom(KeyIR), '%~w_kid', [P]),
+    format(atom(ValIR), '%~w_val', [P]),
+    plawk_assoc_elem_call_line(ValIR, i64, i64, get, TableIndex, KeyIR, GetL),
+    format(atom(StrL), '  %~w_s = call i8* @wam_sv_cstr(i64 ~w)', [P, ValIR]),
+    format(atom(NL), '  %~w_n = call i64 @strlen(i8* %~w_s)', [P, P]),
+    format(atom(FmtL),
+        '  %~w_fmt = getelementptr [4 x i8], [4 x i8]* @.plawk_surface_print_i64, i32 0, i32 0',
+        [P]),
+    format(atom(PrL),
+        '  %~w_pr = call i32 (i8*, ...) @printf(i8* %~w_fmt, i64 %~w_n)', [P, P, P]),
+    Lines = [SliceL, PtrL, LenL, KidL, GetL, StrL, NL, FmtL, PrL].
 % `print arr[$i,$j,...]` -- a multi-dimensional element read. The N components
 % are joined with SUBSEP and interned by the runtime helper (the same key the
 % arr[...]++ counter builds), then the table's i64 value at that key prints.
@@ -19269,6 +19435,9 @@ plawk_rule_body_print_field(length(field(_))).
 % `length(s)` before substitution: becomes sv_len(Ref) for a text slot; any other
 % slot stays length(var(_)), which no emitter takes, so the program declines
 plawk_rule_body_print_field(length(var(V))) :- atom(V).
+% an element's length: read by the element pre-read (plawk_arith_parent/2)
+plawk_rule_body_print_field(length(assoc(var(A), _Key))) :- atom(A).
+plawk_rule_body_print_field(length(ssa_strnum(Ref))) :- atom(Ref).
 plawk_rule_body_print_field(sv_len(_Ref)).
 plawk_rule_body_print_field(match_expr(field(_), _Regex)).
 plawk_rule_body_print_field(special('RSTART')).
@@ -20041,6 +20210,11 @@ plawk_substitute_scalar_reads(field_var(Name, Offset), Slots, Values, Substitute
     ;   Substituted = field_var(Name, Offset)
     ).
 % `length(s)` of a string / strnum slot: the byte length of its text (sv_len).
+% `length(a[k])` once the element pre-read made it a text leaf: its text's length
+% (a numeric element's leaf stays length(ssa...) / length(ssa_f64...), which no
+% emitter takes, so it declines)
+plawk_substitute_scalar_reads(length(ssa_strnum(Ref)), _Slots, _Values, sv_len(Ref)) :-
+    !.
 plawk_substitute_scalar_reads(length(var(Name)), Slots, Values, Substituted) :-
     !,
     (   nth0(SlotIndex, Slots, Slot),
@@ -20312,6 +20486,8 @@ plawk_i64_binary_primary_expr(length(field(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_i64_binary_primary_expr(sv_len(_Ref)).
 plawk_i64_binary_primary_expr(length(var(V))) :- atom(V).
+plawk_i64_binary_primary_expr(length(assoc(var(A), _Key))) :- atom(A).
+plawk_i64_binary_primary_expr(length(ssa_strnum(Ref))) :- atom(Ref).
 plawk_i64_binary_primary_expr(index(field(FieldIndex), string(Needle))) :-
     FieldIndex >= 0,
     string(Needle).
@@ -20324,6 +20500,8 @@ plawk_i64_scalar_primary_expr(length(field(FieldIndex))) :-
     FieldIndex >= 0.
 plawk_i64_scalar_primary_expr(sv_len(_Ref)).
 plawk_i64_scalar_primary_expr(length(var(V))) :- atom(V).
+plawk_i64_scalar_primary_expr(length(assoc(var(A), _Key))) :- atom(A).
+plawk_i64_scalar_primary_expr(length(ssa_strnum(Ref))) :- atom(Ref).
 plawk_i64_scalar_primary_expr(index(field(FieldIndex), string(Needle))) :-
     FieldIndex >= 0,
     string(Needle).
@@ -20449,6 +20627,15 @@ plawk_scalar_action_update(add(var(Name), ssa_strnum(Ref)), Name, add(ssa_strnum
 plawk_scalar_action_update(set(var(Name), Elem), Name, set(Elem)) :-
     atom(Name),
     plawk_strnum_elem_operand(Elem).
+% ... and of a STRING-kind element (`a[k] = $2 ""; x = a[k]`): x is a string
+% (plawk_scalar_string_names/2), and the walker's copy row reads the element as
+% ssa_str, copied as any string copy is
+plawk_scalar_action_update(set(var(Name), assoc(var(A), Key)), Name,
+        set(assoc(var(A), Key))) :-
+    atom(Name), atom(A),
+    plawk_string_array(A).
+plawk_scalar_action_update(set(var(Name), ssa_str(Ref)), Name, set(ssa_str(Ref))) :-
+    atom(Name), atom(Ref).
 % a bare copy of an element already read (only produced for the iterated element of
 % an END for-in, which is present by construction -- arrays PR 3d-2)
 plawk_scalar_action_update(set(var(Name), ssa(Ref)), Name, set(ssa(Ref))) :-
@@ -20655,6 +20842,22 @@ plawk_scalar_action_sequence_pairs([], _Slots, _AssocPlan, _FieldSeparator, _Out
 % A bare copy of a strnum element into a strnum slot (`x = a[$1]`, array plan item
 % 5(d)): read the element (absent -> id 0, which reads "") into an ssa_strnum leaf,
 % then the copy duplicates it (plawk_str_copy_ir/7). Any other target declines.
+% ... and of a STRING-kind element into a string slot: the element's text value
+% (absent -> 0, "") read as ssa_str, then copied by plawk_str_copy_ir/7.
+plawk_scalar_action_sequence_pairs([set(var(Name), assoc(var(A), Key)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { memberchk(scalar_string(Name), Slots),
+      plawk_string_array(A),
+      !,
+      format(atom(RBase), '~w_ec~w', [Prefix, OpIndex]),
+      plawk_cond_cmp_operand(assoc(var(A), Key), Slots, Values0, AssocPlan,
+          FieldSeparator, RBase, 0, _, ssa_text(Ref, 2), Globals, Lines),
+      plawk_join_nonempty_ir(Globals, GlobalIR),
+      atomic_list_concat(Lines, '\n', IR)
+    },
+    [GlobalIR-IR],
+    plawk_scalar_action_sequence_pairs([set(var(Name), ssa_str(Ref)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([set(var(Name), assoc(var(A), Key)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { memberchk(scalar_strnum(Name), Slots),
@@ -21137,6 +21340,44 @@ plawk_scalar_action_sequence_pairs([gsub_count(CountName, Global, Regex, Repl, T
     [GsubPair, ''-CountLine],
     plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         NextOpIndex, Values2, Values, FinalOpIndex, ExitLabel, NextExits).
+% A bare COPY `m = n` between numeric slots of one kind, where n is TRACKED (every
+% write to it stores the assigned mark) but not definitely assigned here: awk's
+% copy of an uninitialised value is uninitialised, so `{ n++ } END { m = n; print
+% m }` on empty input prints "" -- the generic row marked m assigned and printed 0.
+% The copy carries n's mark into m's (a plain store, as every mark write is) and
+% m takes n's value as is, so its prints keep the runtime check (a value that is an
+% op result would count as assigned). An untracked n keeps the generic row: its
+% mark would wrongly read unset.
+plawk_scalar_action_sequence_pairs([set(var(Name), var(Src)) | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
+    { atom(Name), atom(Src),
+      nth0(TIndex, Slots, TSlot), plawk_slot_name(TSlot, Name),
+      nth0(SIndex, Slots, SSlot), plawk_slot_name(SSlot, Src),
+      ( TSlot = scalar_counter(_), SSlot = scalar_counter(_)
+      ; TSlot = scalar_double(_), SSlot = scalar_double(_) ),
+      nb_current(plawk_walker_tracked, Tracked), is_list(Tracked),
+      memberchk(SIndex, Tracked),
+      \+ ( plawk_walker_assigned_get(Assigned), memberchk(Src, Assigned) ),
+      plawk_slot_assigned_width(Width),
+      TIndex < Width, SIndex < Width,
+      !,
+      nth0(SIndex, Values0, SrcValue),
+      (   TIndex =:= SIndex
+      ->  IR = ''
+      ;   format(atom(B), '%~w_copy_~w', [Prefix, OpIndex]),
+          format(atom(IR),
+'  ~w_sptr = getelementptr [~w x i1], [~w x i1]* @plawk_slot_assigned, i64 0, i64 ~w
+  ~w_m = load i1, i1* ~w_sptr
+  ~w_tptr = getelementptr [~w x i1], [~w x i1]* @plawk_slot_assigned, i64 0, i64 ~w
+  store i1 ~w_m, i1* ~w_tptr',
+              [B, Width, Width, SIndex, B, B, B, Width, Width, TIndex, B, B])
+      ),
+      replace_nth0(TIndex, Values0, SrcValue, Values1),
+      NextOpIndex is OpIndex + 1
+    },
+    [''-IR],
+    plawk_scalar_action_sequence_pairs(Rest, Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
+        NextOpIndex, Values1, Values, FinalOpIndex, ExitLabel, NextExits).
 plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_scalar_action_update(Action, Name, Operation0),
@@ -21433,6 +21674,8 @@ plawk_scalar_action_sequence_pairs([Action | Rest], Slots, AssocPlan, FieldSepar
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
     { plawk_mixed_elem_write(Action, ArrayName, KeyIndex, Op),
       plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+      % an interned key cannot address a positional table (raw positions)
+      \+ ( KeyIndex = key(_), plawk_assoc_plan_posarray_array(AssocPlan, ArrayName) ),
       plawk_mixed_elem_write_ir(Prefix, OpIndex, ArrayName, TableIndex, KeyIndex,
           FieldSeparator, Op, Slots, Values0, Pair),
       !,
@@ -21727,7 +21970,7 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
 plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body00) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
-    { sub_atom(Prefix, 0, _, _, end_body),
+    { ( sub_atom(Prefix, 0, _, _, end_body) ; sub_atom(Prefix, 0, _, _, rule_) ),
       atom(K), atom(A),
       plawk_assoc_table_index(AssocPlan, A, TableIndex),
       \+ plawk_assoc_plan_posarray_array(AssocPlan, A),
@@ -22088,9 +22331,21 @@ plawk_unset_tracked_slots(Rules, StatePlan, TrackedIndices) :-
 plawk_unset_name_only_updated(Rules, Name) :-
     forall(( member(rule(_Pattern, Actions), Rules),
              plawk_trim_control_tails(Actions, ReachableActions),
-             plawk_end_actions_assigning(ReachableActions, Name, Action)
+             plawk_end_actions_assigning(ReachableActions, Name, Action),
+             \+ plawk_unset_plain_read(Action, Name)
            ),
            plawk_unset_marking_action(Action, Name)).
+
+%  Name is only READ by a plain assignment to another name (`m = n * 2`, `t += n`,
+%  the copy `m = n`): plawk_scalar_update_action_name/2 reports reads too (so a read
+%  gets a slot), but a read writes nothing, so it cannot leave n's mark stale. Only
+%  the plain shapes: a multi-write action (a getline capture, a gsub / split count,
+%  a dynrec bind) reports names it really writes, some without a mark.
+plawk_unset_plain_read(Action, Name) :-
+    functor(Action, F, A),
+    memberchk(F/A, [set/2, add/2, inc/1, dec/1]),
+    arg(1, Action, var(Writer)),
+    Writer \== Name.
 
 %  An assignment that stores the assigned mark: every update-shaped action (its
 %  emitter wrapper marks), and the `n = split(...)` / `n = gsub(...)` counts (their
@@ -26937,6 +27192,24 @@ plawk_emit_print_expr_for_context(assoc_keyid_num_str(TableIndex, SlotValue),
     format(atom(InternCall),
         '  ~w = call i64 @wam_intern_i64_decimal(i64 ~w)', [KeyIdIR, SlotValue]),
     plawk_assoc_str_value_print_line(TableIndex, KeyIdIR, Line).
+% `print arr[k]` / `print arr[s]` on a DOUBLE-valued table (`c[$1] += $2`): the
+% cells are double bit patterns, which the i64 get below would print as integers
+% (the double-table IR check declines that). The table's print helper prints the
+% double the awk way, and nothing for an absent key. A direct/1 result has no
+% printf argument form, so a printf of one still declines.
+plawk_emit_print_expr_for_context(assoc_keyid(TableIndex, KeyIdValue), _FieldSeparator,
+        _Context, direct([Line]), [], []) :-
+    plawk_f64_table_index(TableIndex),
+    !,
+    plawk_assoc_value_print_line(TableIndex, KeyIdValue, Line).
+plawk_emit_print_expr_for_context(assoc_keyid_sv(TableIndex, SlotValue), _FieldSeparator,
+        Context, direct([KeyL, Line]), [], []) :-
+    plawk_f64_table_index(TableIndex),
+    !,
+    plawk_print_expr_value_base(Context, int, Base),
+    format(atom(KeyIR), '%~w_svkey', [Base]),
+    format(atom(KeyL), '  ~w = call i64 @wam_sv_key(i64 ~w)', [KeyIR, SlotValue]),
+    plawk_assoc_value_print_line(TableIndex, KeyIR, Line).
 % `print arr[k]`: in a PRINT an absent element is awk's empty string, not 0
 % (@wam_assoc_i64_get reads 0 for a missing key, and printing that was wrong
 % output: `{ k = $1; print c[k] "|"; c[k]++ }` printed "0|" where gawk prints "|").

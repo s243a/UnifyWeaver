@@ -4604,7 +4604,9 @@ scalar_delta_expr(length(Field)) -->
     field_expr(Field),
     ws,
     ")",
-    { ( plawk_builtin_string_arg(Field) ; Field = var(V), plawk_length_builtin_arg(var(V)) ) }.
+    { ( plawk_builtin_string_arg(Field)
+      ; Field = var(V), plawk_length_builtin_arg(var(V))
+      ; Field = assoc(var(_), _), plawk_length_builtin_arg(Field) ) }.
 scalar_delta_expr(length(field(0))) -->
     "length",
     length_no_argument.
@@ -5159,6 +5161,11 @@ plawk_length_builtin_arg(Field) :-
 plawk_length_builtin_arg(var(V)) :-
     atom(V),
     \+ plawk_surface_reserved_name(V),
+    !.
+% `length(a[k])` of an array element: the codegen measures a text element's
+% text (a numeric table's element declines, like a numeric variable).
+plawk_length_builtin_arg(assoc(var(A), _Key)) :-
+    atom(A),
     !.
 plawk_length_builtin_arg(Field) :-
     ( Field = toupper(_) ; Field = tolower(_) ; Field = substr(_, _, _) ),
@@ -5759,6 +5766,16 @@ i64_binary_primary_expr(length(var(V))) -->
     ws,
     identifier(V),
     { plawk_length_builtin_arg(var(V)) },
+    ws,
+    ")".
+% `length(a[k])` of an array element as an arithmetic operand
+i64_binary_primary_expr(length(Elem)) -->
+    "length",
+    ws,
+    "(",
+    ws,
+    field_expr(Elem),
+    { Elem = assoc(var(_), _), plawk_length_builtin_arg(Elem) },
     ws,
     ")".
 i64_binary_primary_expr(length(field(0))) -->

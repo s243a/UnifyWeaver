@@ -72,7 +72,9 @@ and `unset` is represented **outside** the storage value:
   record loop's phis: a plain store wherever a write is emitted is correct, inside
   branches and loops included.
 - **string / strnum slots**: the value `0` is the unset sentinel; it renders as
-  `""`. No mark is needed.
+  `""`, and it is EQUAL to `""` (`@wam_sv_eq_id`: `m == ""` is true before m is
+  assigned, which the min / max idiom `if (m == "" || x < m) m = x` relies on --
+  it compared id 0 with the interned `""` atom and was false). No mark is needed.
 
 The type zero is therefore *not* a second value of the type. It is how the `unset`
 case **reads in a numeric context**, which is exactly awk's rule. The empty string
@@ -131,6 +133,14 @@ each of its assignments is update-shaped (it goes through the one marking emitte
 themselves (`plawk_unset_marking_action/2`: the `n = split(...)` and `n = gsub(...)`
 counts).
 
+A name only READ by a plain assignment to another name (`m = n * 2`, `t += n`)
+is not written by it, so the read does not count against n
+(`plawk_unset_plain_read/2`; it used to, and `{ n++; m = n * 2 } END { print n }`
+printed 0 on empty input). A bare COPY `m = n` between numeric slots of one kind,
+n tracked and not definitely assigned, carries n's mark into m's (awk's copy of an
+uninitialised value is uninitialised) and keeps n's value, so m's print keeps its
+runtime check.
+
 A name also written by a writer that does not mark (a getline capture status, a
 dynrec bind) is **not tracked** and keeps printing the type zero. So the failure
 mode of a missed writer is a *known divergence* (`0` where awk prints `""`), never
@@ -154,6 +164,8 @@ table's absent position prints `""` through `@wam_assoc_str_print`.
   the array-rule driver's double accumulators, unset print, cross-pass sums.
 - `tests/test_plawk_strnum_scalar_float.pl`: scalars against float literals, a
   strnum in float arithmetic, and the field-copy-into-numeric-slot decline.
+- `tests/test_plawk_unset_end_assign.pl`: unset `== ""`, straight-line END
+  assignments, copies and reads of possibly-unset values.
 
 ## 8. Open edges
 
