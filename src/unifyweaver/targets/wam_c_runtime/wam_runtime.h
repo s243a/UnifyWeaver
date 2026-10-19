@@ -35,6 +35,7 @@
 #define WAM_META_DISJ_RIGHT -7
 #define WAM_META_ITE_THEN -8
 #define WAM_META_ITE_ELSE -9
+#define WAM_FACT_TABLE_RETRY -13
 #define WAM_FOREIGN_STREAM_NEXT -10
 #define WAM_MEMBER_NEXT -12
 
@@ -91,6 +92,7 @@ typedef struct {
     int conj_top;
     int disj_top;
     int ite_top;
+    int fact_table_top;
     int arg_ctx_top;   /* read-mode arg-context depth at push time */
     int arity;
     WamValue a_regs[32]; // Reduced from MAX_REGS to save memory (typical max arity)
@@ -176,6 +178,21 @@ typedef struct {
     int return_pc;
     int base_b;
 } WamIteFrame;
+
+/* T9 fact-table enumeration frame.  Carries the static row table (flattened,
+ * row-major: rows[i*arity + col]), the candidate row-index array (NULL = scan
+ * all rows 0..count), the candidate count, the next position to try on
+ * backtrack, the predicate arity, and the proceed PC to continue at on a match.
+ * Mirrors WamDisjFrame; the difference is it can be resumed once per remaining
+ * matching row. */
+typedef struct {
+    const WamValue *rows;
+    const int *indices;
+    int count;
+    int pos;
+    int arity;
+    int return_pc;
+} WamFactTableFrame;
 
 /* Wam Mode */
 typedef enum {
@@ -520,6 +537,8 @@ struct WamState {
     int disj_top;
     WamIteFrame ite_frames[WAM_META_GOAL_STACK_SIZE];
     int ite_top;
+    WamFactTableFrame fact_table_frames[WAM_META_GOAL_STACK_SIZE];
+    int fact_table_top;
 
     /* Native category_ancestor kernel data */
     CategoryEdge *category_edges;
@@ -1211,6 +1230,14 @@ static inline void wam_trim_ite_frames(WamState *state, int target_top) {
     state->ite_top = target_top;
 }
 
+static inline void wam_trim_fact_table_frames(WamState *state, int target_top) {
+    if (target_top < 0) target_top = 0;
+    if (target_top > state->fact_table_top) {
+        target_top = state->fact_table_top;
+    }
+    state->fact_table_top = target_top;
+}
+
 static inline bool push_choice_point(WamState *state, int next_pc, int arity) {
     if (state->B >= state->B_cap) {
         int new_cap = state->B_cap ? state->B_cap * 2 : WAM_INITIAL_CAP;
@@ -1241,6 +1268,8 @@ static inline bool push_choice_point(WamState *state, int next_pc, int arity) {
     cp->conj_top = state->conj_top;
     cp->disj_top = state->disj_top;
     cp->ite_top = state->ite_top;
+    cp->fact_table_top = state->fact_table_top;
+
     /* Read-mode argument contexts are per-clause-head: a clause that
        fails partway through head unification leaves entries behind, and
        the next clause's get_* would push on top of them. Restoring the
@@ -1299,6 +1328,7 @@ static inline void restore_choice_point(WamState *state, ChoicePoint *cp) {
     wam_trim_conj_frames(state, cp->conj_top);
     wam_trim_disj_frames(state, cp->disj_top);
     wam_trim_ite_frames(state, cp->ite_top);
+    wam_trim_fact_table_frames(state, cp->fact_table_top);
     unwind_trail(state, cp->trail_size);
     if (cp->arg_ctx_top >= 0 && cp->arg_ctx_top <= state->arg_ctx_top) {
         state->arg_ctx_top = cp->arg_ctx_top;
@@ -1326,11 +1356,13 @@ static inline void wam_prune_choice_points(WamState *state, int target_b) {
     int target_conj_top = 0;
     int target_disj_top = 0;
     int target_ite_top = 0;
+    int target_fact_table_top = 0;
     if (target_b > 0 && target_b <= state->B) {
         target_group_top = state->B_array[target_b - 1].aggregate_group_top;
         target_conj_top = state->B_array[target_b - 1].conj_top;
         target_disj_top = state->B_array[target_b - 1].disj_top;
         target_ite_top = state->B_array[target_b - 1].ite_top;
+        target_fact_table_top = state->B_array[target_b - 1].fact_table_top;
     }
     while (state->B > target_b) {
         pop_choice_point(state);
@@ -1339,11 +1371,60 @@ static inline void wam_prune_choice_points(WamState *state, int target_b) {
     wam_trim_conj_frames(state, target_conj_top);
     wam_trim_disj_frames(state, target_disj_top);
     wam_trim_ite_frames(state, target_ite_top);
+    wam_trim_fact_table_frames(state, target_fact_table_top);
 }
 static inline void update_choice_point(WamState *state, int next_pc) {
     if (state->B > 0) {
         state->B_array[state->B - 1].next_pc = next_pc;
     }
+}
+
+/* Enumerate ground atom/integer rows in source order. Each attempted row is
+ * transactional: later aliased columns can reject an earlier binding. The CP
+ * saves the pre-binding registers/trail, including for direct register vars. */
+static inline bool wam_fact_table_scan(WamState *state, const WamValue *rows,
+                                       int arity, const int *indices, int count,
+                                       int start, int return_pc) {
+    /* ChoicePoint currently snapshots at most 32 argument registers. */
+    if (!rows || arity < 1 || arity > 32 || count < 0 ||
+        start < 0 || start > count) return false;
+    for (int pos = start; pos < count; pos++) {
+        int row_index = indices ? indices[pos] : pos;
+        if (row_index < 0) return false;
+        const WamValue *row = &rows[(size_t)row_index * (size_t)arity];
+        int saved_tr = state->TR;
+        bool retry = pos + 1 < count;
+        if (retry) {
+            if (state->fact_table_top >= WAM_META_GOAL_STACK_SIZE) {
+                state->error = WAM_ERR_OOB;
+                return false;
+            }
+            WamFactTableFrame *frame = &state->fact_table_frames[state->fact_table_top++];
+            *frame = (WamFactTableFrame){ rows, indices, count, pos + 1, arity, return_pc };
+            if (!push_choice_point(state, WAM_FACT_TABLE_RETRY, arity)) {
+                state->fact_table_top--;
+                return false;
+            }
+        }
+        bool match = true;
+        for (int col = 0; col < arity; col++) {
+            WamValue *cell = wam_deref_ptr(state, &state->A[col]);
+            if (val_is_unbound(*cell)) {
+                trail_binding(state, cell);
+                *cell = row[col];
+            } else if (!val_equal(*cell, row[col])) {
+                match = false;
+                break;
+            }
+        }
+        if (match) return true;
+        unwind_trail(state, saved_tr);
+        if (retry) {
+            pop_choice_point(state);
+            state->fact_table_top--;
+        }
+    }
+    return false;
 }
 
 #endif /* WAM_RUNTIME_H */

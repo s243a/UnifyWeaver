@@ -98,6 +98,7 @@ lowerability gate + emit; T8 depth is roadmap-derived — see notes.)
 | scala   | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
 | rust    | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | `~` gated | ✓ | ✓ capped | ✗ | ✗ |
 | cpp     | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✗ | ✗ | ✗ | ✗ |
+| c       | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ capped | ✗ | ✗ |
 | go      | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✗ | ✗ | ✗ |
 | haskell | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ✓ | ✓ | ✗ | ✗ |
 | fsharp  | ✓ | ✓ T2a | ✓ | ✓ | ✓ | `~` gated | ✗ | ~ | ✓ capped | ✗ | ✗ |
@@ -179,7 +180,20 @@ Verification notes:
   `factTableAttempt` enumerator leaves a `FactTableRetry` choice point per
   remaining row, mirroring `select/3`. Tests:
   `tests/test_wam_fsharp_fact_table_exec.pl` (query-mode matrix),
-  `tests/test_wam_fsharp_fact_table_emit.pl`.
+  `tests/test_wam_fsharp_fact_table_emit.pl`. **c = ✓ (default, capped):** C
+  already had a deterministic static-row-table + first-arg bucket scan; T9 makes
+  the in-window fact lowering *backtrackable* — the handler drives a shared
+  `wam_fact_table_scan` that leaves a `WAM_FACT_TABLE_RETRY` choice point
+  (a `WamFactTableFrame` side-stack + resume function mirroring the runtime's
+  disjunction CP), so every matching row is enumerated; registered as a foreign
+  predicate, so it is reachable as a query and from another predicate unchanged.
+  Below `t9_min_rows` keeps the cheap deterministic scanner; opt out with
+  `fact_table_inline(false)`; above `t9_max_rows` uses interpreted clauses + warns (no static table).
+  Arity is capped at 32, matching the choice-point argument snapshot.
+  Projected/filtered callers of T9 predicates remain interpreted to preserve retries.
+  Below-window and opt-out deterministic lowering retain their existing first-match semantics. Tests:
+  `tests/test_wam_c_fact_table_exec.pl` (query-mode matrix),
+  `tests/test_wam_c_fact_table_emit.pl`.
 - **T8** (native kernels) is a curated library feature dispatched via shared
   `kernel_dispatch` plumbing, not a generic per-predicate lowering. ✓ marks
   the roadmap's validated full-parity set (Rust / Haskell / Elixir / Go /

@@ -232,6 +232,25 @@ jobs:
           echo "✓ Visualization glue tests (478 tests)"
           echo "=========================================="
 
+  wam_c_fact_table:
+    name: WAM C fact-table regressions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install SWI-Prolog
+        run: bash scripts/ci/install_swi_prolog.sh
+      - name: Prepare C tests
+        run: |
+          command -v gcc
+          bash scripts/setup_local.sh
+          mkdir -p output/advanced
+      - name: Run C emitter, execution, alias and runtime regressions
+        run: |
+          swipl -q -s tests/test_wam_c_fact_table_emit.pl -g run_tests -t halt
+          swipl -q -s tests/test_wam_c_fact_table_exec.pl -g run_tests -t halt
+          swipl -q -s tests/test_wam_c_var_alias.pl -g run_tests -t halt
+          swipl -q -s tests/test_wam_c_target.pl -g run_tests -t halt
+
   wam_conformance_smoke:
     name: WAM Conformance Smoke (${{ matrix.target }})
     if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
