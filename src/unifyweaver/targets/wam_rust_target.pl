@@ -8688,8 +8688,9 @@ wam_lines_to_rust([Line|Rest], PC, PredIndicator, Options, Instrs, Labels) :-
         (   % Label line: "pred/2:" or "L_pred_2_2:"
             sub_string(First, _, 1, 0, ":")
         ->  sub_string(First, 0, _, 1, LabelName),
+            escape_rust_string(LabelName, ELabelName),
             format(string(LabelInsert),
-                '    labels.insert("~w".to_string(), ~w);', [LabelName, PC]),
+                '    labels.insert("~w".to_string(), ~w);', [ELabelName, PC]),
             Labels = [LabelInsert|RestLabels],
             wam_lines_to_rust(Rest, PC, PredIndicator, Options, Instrs, RestLabels)
         ;   % Instruction line
@@ -8729,10 +8730,11 @@ wam_line_to_rust_instr(["get_value", Xn, Ai], _, _, Rust) :-
         [RXn, RAi]).
 wam_line_to_rust_instr(["get_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    escape_rust_string(CFN, ECFN),
     rust_reg_literal(CAi, RAi),
     format(string(Rust),
         'Instruction::GetStructure(Functor::new("~w"), ~w)',
-        [CFN, RAi]).
+        [ECFN, RAi]).
 wam_line_to_rust_instr(["get_list", Ai], _, _, Rust) :-
     clean_comma(Ai, CAi),
     rust_reg_literal(CAi, RAi),
@@ -8771,10 +8773,11 @@ wam_line_to_rust_instr(["put_value", Xn, Ai], _, _, Rust) :-
         [RXn, RAi]).
 wam_line_to_rust_instr(["put_structure", FN, Ai], _, _, Rust) :-
     clean_comma(FN, CFN), clean_comma(Ai, CAi),
+    escape_rust_string(CFN, ECFN),
     rust_reg_literal(CAi, RAi),
     format(string(Rust),
         'Instruction::PutStructure(Functor::new("~w"), ~w)',
-        [CFN, RAi]).
+        [ECFN, RAi]).
 wam_line_to_rust_instr(["put_list", Ai], _, _, Rust) :-
     rust_reg_literal(Ai, RAi),
     format(string(Rust),
@@ -9030,11 +9033,13 @@ wam_line_to_rust_instr(["try_me_else", Label], Pred/Arity, Options, Rust) :-
     text_to_string(Label, LabelS),
     LabelS == Expected,
     !,
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::TryMeElseArgs("~w".to_string(), ~w)', [Label, Arity]).
+        'Instruction::TryMeElseArgs("~w".to_string(), ~w)', [ELabel, Arity]).
 wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::TryMeElse("~w".to_string())', [Label]).
+        'Instruction::TryMeElse("~w".to_string())', [ELabel]).
 % D138: the indexed dispatch chain's try/retry/trust (format_dispatch_chain/5
 % in wam_target.pl) have standard-WAM semantics -- the choice point's
 % alternative is the NEXT chain instruction and control JUMPS to the body
@@ -9042,21 +9047,26 @@ wam_line_to_rust_instr(["try_me_else", Label], _, _, Rust) :-
 % the label as the alternative and fall through: a key shared by several
 % clauses ran off the end of the chain and returned no solutions.
 wam_line_to_rust_instr(["try", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::Try("~w".to_string())', [Label]).
+        'Instruction::Try("~w".to_string())', [ELabel]).
 wam_line_to_rust_instr(["trust_me"], _, _, "Instruction::TrustMe").
 wam_line_to_rust_instr(["trust", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::Trust("~w".to_string())', [Label]).
+        'Instruction::Trust("~w".to_string())', [ELabel]).
 wam_line_to_rust_instr(["retry_me_else", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::RetryMeElse("~w".to_string())', [Label]).
+        'Instruction::RetryMeElse("~w".to_string())', [ELabel]).
 wam_line_to_rust_instr(["retry", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::Retry("~w".to_string())', [Label]).
+        'Instruction::Retry("~w".to_string())', [ELabel]).
 wam_line_to_rust_instr(["jump", Label], _, _, Rust) :-
+    escape_rust_string(Label, ELabel),
     format(string(Rust),
-        'Instruction::Jump("~w".to_string())', [Label]).
+        'Instruction::Jump("~w".to_string())', [ELabel]).
 % M144: legacy cut_ite (only emitted when ite_use_y_level is off) pops
 % the single ITE guard CP. Mis-cuts when the condition pushed inner CPs
 % - the same limitation the LLVM target had pre-M17 - but strictly
@@ -9222,8 +9232,10 @@ rust_index_entry_split(Entry, KeyStr, Label) :-
 parse_index_entry_constant(Entry, Rust) :-
     (   rust_index_entry_split(Entry, ValStr, Label)
     ->  rust_const_value(ValStr, VExpr),
-        format(string(Rust), '(~w, "~w".to_string())', [VExpr, Label])
-    ;   format(string(Rust), '(Value::Atom("~w".to_string().into()), "unknown".to_string())', [Entry])
+        escape_rust_string(Label, ELabel),
+        format(string(Rust), '(~w, "~w".to_string())', [VExpr, ELabel])
+    ;   escape_rust_string(Entry, EEntry),
+        format(string(Rust), '(Value::Atom("~w".to_string().into()), "unknown".to_string())', [EEntry])
     ).
 
 %  A structure key is `Name/Arity`; quote_wam_constant/2 quotes it when the
@@ -9233,8 +9245,10 @@ parse_index_entry_structure(Entry, Rust) :-
     ->  wam_classify_constant_token(FunctorTok, Class),
         (   Class = atom(Functor0) -> true ; Functor0 = FunctorTok ),
         escape_rust_string(Functor0, Functor),
-        format(string(Rust), '("~w".to_string(), "~w".to_string())', [Functor, Label])
-    ;   format(string(Rust), '("~w".to_string(), "unknown".to_string())', [Entry])
+        escape_rust_string(Label, ELabel),
+        format(string(Rust), '("~w".to_string(), "~w".to_string())', [Functor, ELabel])
+    ;   escape_rust_string(Entry, EEntry),
+        format(string(Rust), '("~w".to_string(), "unknown".to_string())', [EEntry])
     ).
 
 
@@ -9308,8 +9322,20 @@ rust_lowered_dispatch_keys(Code, Keys) :-
               sub_string(L, 0, 9, _, "        \""),
               sub_string(L, 9, _, 0, Rest),
               sub_string(Rest, B, _, _, "\" =>"),
-              sub_string(Rest, 0, B, _, Key) ),
+              sub_string(Rest, 0, B, _, EKey),
+              rust_unescape_string(EKey, Key) ),
             Keys).
+
+%% rust_unescape_string(+Escaped, -Text)
+%  Inverse of escape_rust_string/2 (`\\` and `\"` only).
+rust_unescape_string(Escaped, Text) :-
+    string_codes(Escaped, Cs0),
+    rust_unescape_codes(Cs0, Cs),
+    string_codes(Text, Cs).
+
+rust_unescape_codes([], []).
+rust_unescape_codes([0'\\, C|Cs], [C|Rs]) :- !, rust_unescape_codes(Cs, Rs).
+rust_unescape_codes([C|Cs], [C|Rs]) :- rust_unescape_codes(Cs, Rs).
 
 
 %% rust_builtin_route(+EscapedName, -Route) is det.
@@ -10320,8 +10346,9 @@ rust_genrec_arms(Classified, Arms, Keys) :-
               \+ memberchk(Key, Claimed),
               catch(deterministic_recursion_class(user, P/A, Class), _, fail),
               rust_genrec_shape_method(Class, Method),
+              escape_rust_string(Key, EKey),
               format(atom(Arm),
-                     '        "~w" => vm.~w(cont_pc),', [Key, Method]) ),
+                     '        "~w" => vm.~w(cont_pc),', [EKey, Method]) ),
             Pairs0),
     % de-dup on key (a predicate is classified once, but guard against repeats)
     rust_genrec_dedup(Pairs0, Pairs),
@@ -10521,10 +10548,12 @@ rust_dispatch_pure_builtin('numlist/3').
 %  first argument is bound to one of the cascade's own discriminators — with
 %  anything else the cascade returns `false` meaning "declined", which an
 %  interpreted caller must never read as "failed".
-rust_lowered_dispatch_arm(lo_cand(Key, FName, _, [], _), Arm) :- !,
+rust_lowered_dispatch_arm(lo_cand(Key0, FName, _, [], _), Arm) :- !,
+    escape_rust_string(Key0, Key),
     format(string(Arm),
 '        "~w" => vm.lowered_dispatch(~w, cont_pc),', [Key, FName]).
-rust_lowered_dispatch_arm(lo_cand(Key, FName, _, Guards, _), Arm) :-
+rust_lowered_dispatch_arm(lo_cand(Key0, FName, _, Guards, _), Arm) :-
+    escape_rust_string(Key0, Key),
     maplist(rust_lowered_guard_literal, Guards, Lits),
     atomic_list_concat(Lits, ' | ', LitStr),
     format(string(Arm),
@@ -10549,11 +10578,12 @@ rust_fact_dispatch_arm(Pred/Arity, Arm) :-
     atomic_list_concat(Reads, '\n', ReadsStr),
     findall(AN, ( member(I, Idxs), format(atom(AN), 'a~w', [I]) ), ANs),
     atomic_list_concat(ANs, ', ', ArgsVec),
+    escape_rust_string(Pred, EPred),
     format(string(Arm),
 '        "~w/~w" => {
 ~w
             Some(~w_run(vm, vec![~w], cont_pc))
-        }', [Pred, Arity, ReadsStr, FName, ArgsVec]).
+        }', [EPred, Arity, ReadsStr, FName, ArgsVec]).
 
 %% rust_pred_has_control_constructs(+Module:Pred/Arity)
 %  True if any clause body uses a backtracking-driven control construct
