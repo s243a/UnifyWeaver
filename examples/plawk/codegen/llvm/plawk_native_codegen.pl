@@ -11640,8 +11640,60 @@ plawk_mixed_state_plan_any(Rules, PrintFields,
     PlannedRules \== [].
 
 plawk_mixed_scalar_state_plan(Rules0, PrintFields, StatePlan) :-
-    plawk_prelude_planning_rules(Rules0, Rules),
+    plawk_prelude_planning_rules(Rules0, Rules1),
+    plawk_mixed_planning_rules(Rules1, Rules),
     plawk_mixed_scalar_state_plan_(Rules, PrintFields, StatePlan).
+
+%% plawk_mixed_planning_rules(+Rules0, -Rules) is det.
+%  The rules as the mixed scalar planner sees them: a top-level `for (k in A) BODY`
+%  in a rule body is flattened as an END one is (plawk_end_planning_actions/2: the
+%  key is a string, the body's assignments are visible), so the general for-in row
+%  finds k in a string slot. A rule without a for-in is unchanged.
+plawk_mixed_planning_rules(Rules0, Rules) :-
+    maplist(plawk_mixed_planning_rule, Rules0, Rules).
+
+plawk_mixed_planning_rule(rule(Pattern, Actions0), rule(Pattern, Actions)) :-
+    is_list(Actions0),
+    sub_term(T, Actions0), nonvar(T), T = for_in(_, _, _),
+    !,
+    plawk_mixed_planning_actions(Actions0, Actions).
+plawk_mixed_planning_rule(Rule, Rule).
+
+% Flatten every GENERAL for-in, at any depth: an `if` branch or a loop body keeps
+% its shape with its own for-ins flattened (`if (NR == 3) delete c` is a for-in
+% there). A print-only body is left alone: its own row requires the key NOT to be a
+% scalar slot (a split table's key is a raw position).
+plawk_mixed_planning_actions([], []).
+plawk_mixed_planning_actions([for_in(K, A, Body) | Rest], Actions) :-
+    \+ plawk_forin_print_only_body(Body),
+    !,
+    plawk_end_planning_actions([for_in(K, A, Body)], Flat0),
+    plawk_mixed_planning_actions(Flat0, Flat),
+    plawk_mixed_planning_actions(Rest, RestActions),
+    append(Flat, RestActions, Actions).
+plawk_mixed_planning_actions([Action0 | Rest], [Action | RestActions]) :-
+    plawk_mixed_planning_nested(Action0, Action),
+    plawk_mixed_planning_actions(Rest, RestActions).
+
+% the body the print-only for-in row takes (see its plawk_mixed_update_action/1)
+plawk_forin_print_only_body(Body) :-
+    Body = [_ | _],
+    forall(member(Action, Body), Action = print(_)).
+
+plawk_mixed_planning_nested(if(P, T0, E0), if(P, T, E)) :-
+    is_list(T0), is_list(E0),
+    !,
+    plawk_mixed_planning_actions(T0, T),
+    plawk_mixed_planning_actions(E0, E).
+plawk_mixed_planning_nested(while_loop(C, B0), while_loop(C, B)) :-
+    is_list(B0),
+    !,
+    plawk_mixed_planning_actions(B0, B).
+plawk_mixed_planning_nested(do_while_loop(B0, C), do_while_loop(B, C)) :-
+    is_list(B0),
+    !,
+    plawk_mixed_planning_actions(B0, B).
+plawk_mixed_planning_nested(Action, Action).
 
 plawk_mixed_scalar_state_plan_(Rules, PrintFields, state_plan(Slots, Tracked)) :-
     findall(Name,
@@ -12152,6 +12204,15 @@ plawk_mixed_update_action(for_in(var(LoopVar), var(ArrayName), Body)) :-
         ( Action = print(Fields), Fields = [_ | _],
           maplist(plawk_rule_body_print_field, Fields) )),
     \+ ( sub_term(Special, Body), ( Special == special('NR') ; Special == special('FNR') ) ).
+% ... and a GENERAL body (scalar updates, element writes and deletes, `if`): the
+% walker's general for-in row, shared with END (rule-body planning types the key a
+% string, plawk_mixed_planning_rules/2). A print-only body keeps the row above.
+plawk_mixed_update_action(for_in(var(LoopVar), var(ArrayName), Body)) :-
+    atom(LoopVar), atom(ArrayName),
+    Body = [_ | _],
+    \+ plawk_forin_print_only_body(Body),
+    \+ ( sub_term(T, Body), ( T == next ; T == exit ; nonvar(T), T = exit(_) ) ),
+    maplist(plawk_mixed_update_action, Body).
 % Loops in a mixed body: the walker's loop rows are shared with the scalar chain
 % and thread the table plan into the body (a `for (i = 1; i <= n; i++)` over split
 % pieces parses to a while_loop).
@@ -21909,7 +21970,7 @@ plawk_scalar_action_sequence_pairs([while_loop(Cond, Body) | Rest],
 plawk_scalar_action_sequence_pairs([for_in(var(K), var(A), Body00) | Rest],
         Slots, AssocPlan, FieldSeparator, OutputSeparator, Prefix, _CurrentLabel, RuleIndex,
         OpIndex, Values0, Values, FinalOpIndex, ExitLabel, NextExits) -->
-    { sub_atom(Prefix, 0, _, _, end_body),
+    { ( sub_atom(Prefix, 0, _, _, end_body) ; sub_atom(Prefix, 0, _, _, rule_) ),
       atom(K), atom(A),
       plawk_assoc_table_index(AssocPlan, A, TableIndex),
       \+ plawk_assoc_plan_posarray_array(AssocPlan, A),

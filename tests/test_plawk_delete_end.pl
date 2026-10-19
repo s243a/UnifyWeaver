@@ -48,10 +48,12 @@ test(delete_whole_array, [condition(clang_available)]) :-
         "e\n"),
     !.
 
-% a for-in delete in a rule body does not lower yet: a clean decline, not a parse error
-test(delete_whole_array_in_rule_declines) :-
-    build_status("{ c[$1]++ } NR == 3 { delete c } END { for (k in c) print k, c[k] }\n", 3),
-    build_status("{ c[$1]++; delete c } END { for (k in c) print k }\n", 3),
+% in a rule body too, once rule-body for-ins took general bodies
+% (tests/test_plawk_rule_forin.pl)
+test(delete_whole_array_in_rule, [condition(clang_available)]) :-
+    run(fields, "{ c[$1]++ } NR == 3 { delete c } END { for (k in c) print k, c[k] }\n",
+        "b 1\nc 1\nd 1\n"),
+    run(fields, "{ c[$1]++; delete c } END { for (k in c) print k; print \"e\" }\n", "e\n"),
     !.
 
 :- end_tests(plawk_delete_end).
