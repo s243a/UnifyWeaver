@@ -155,3 +155,93 @@ effect happens once), `ign_throw` (a ball propagates to `catch/3`).
 differentials, corpora and byte identity as listed in the ledger row. The
 generated resolver crate gains only the new match arm (the resolver never
 calls `ignore/1`).
+
+## B3 (D142): `aggregate_all/3` (and `findall/3`) as runtime builtins
+
+**Symptom.** `findall(c(K, C), (member(K, [p, q, r]), aggregate_all(count, e(K, _), C)), L)`
+gave `L = []` (SWI `[c(p,3),c(q,1),c(r,0)]`); the R0b audit's
+`nested_agg_inline`. The same for `aggregate_all/3` in an if-then-else
+condition or branch, a disjunction, a `\+`, or a meta-call
+(`call(aggregate_all(...))`), and for a meta-called `findall/3`.
+
+**Root cause.** The shared compiler inlines `aggregate_all/3`
+(begin/end_aggregate) only as a clause-body goal (`compile_goals`,
+`wam_target.pl:1738`). Inner goal positions go through
+`compile_inner_call_goals/4` (`wam_target.pl:2415`), which inlines `findall/3`
+(`:2434`), `\+`, `once/1`, `forall/2`, if-then-else and disjunction but sends
+every other goal, `aggregate_all/3` included, to `compile_goal_call`
+(`:2469`): `call aggregate_all/3`. The Rust runtime had no such predicate
+(no label; `execute_meta_builtin`, `wam_rust_target.pl:7077`, had no arm), so
+the call failed, and with it the findall goal for every element. The shared
+compiler is not changed: the call is a correct compilation of the goal, and
+the other WAM targets have their own runtimes; the gap is the Rust runtime's.
+
+**Fix.** `aggregate_all/3` and `findall/3` are runtime builtins (meta family).
+They need every solution of an arbitrary goal, which the runtime could not
+produce: `call_goal_value` is first-solution and cannot retry the left
+conjunct of a conjunction, and the dynamic body solver re-ran goals on clones
+(B4). So this item adds a resumable goal solver, `BodyGen`
+(`state.rs.mustache`), used here and by B4:
+
+- control constructs are taken apart in Rust: conjunction, disjunction,
+  if-then-else (condition opaque, first solution), `\+`, `call/N`, `once/1`,
+  `ignore/1`, `M:G`, and `!` (a cut prunes the alternatives to its left in its
+  clause body or meta-call; `call/N`, `once/1`, `\+` and the if-then-else
+  condition stop it);
+- every other goal is a `GoalGen`: a machine that meta-called it
+  (`meta_call_first`, the dispatch of `call_goal_key`) and, on the next
+  request, backtracks into the choice points the goal left above its floor;
+  a compiled predicate then runs on to its next exit (the `cp == 0` sentinel
+  of its call), a builtin's or dynamic predicate's redo is self-contained in
+  `resume_builtin`;
+- a solution is a copy of the machine with the goal's choice points removed
+  and the caller's control registers put back;
+- the goal runs on a copy of the caller's machine (without its choice
+  points), and the state a nested run must share with its caller rather than
+  copy (`SideState`: the dynamic database, the label table, the `read/1`
+  input and cursor, the fresh-variable counter, the step counters, the
+  aggregate accumulator, the R0a full-save flag) is moved into the running
+  machine before each step and back out after it, so side effects happen once,
+  in order, and reach the caller, and copying a machine does not copy the
+  database or the label table.
+
+`builtin_aggregate_all` follows SWI-Prolog's `library(aggregate)`: `count`,
+`sum(E)`, `max(E)`, `min(E)` (E evaluated; the first maximal value is kept),
+`max(X, W)`, `min(X, W)` (result `max(X, W)`/`min(X, W)`, X must be a number),
+`bag(T)`, `set(T)` (sorted, duplicates removed). `count` and `sum` of no
+solutions are 0, `bag` and `set` are `[]`, `max` and `min` fail. Each
+solution's template is copied with fresh variables (findall semantics); a
+ball thrown in the goal propagates.
+
+**The inline path had two wrong answers, fixed in the same item.** The
+begin/end_aggregate finalisation (`resume_builtin` `"aggregate_frame"`,
+`wam_rust_target.pl:5267` on base) failed for `aggregate_all(bag(T), G, L)`
+and `aggregate_all(set(T), G, S)` with no solutions (`"bagof" | "bag"` shared
+bagof's empty-fails rule, `:5318`; SWI gives `[]`), and returned `[]` for
+`max`/`min` of no solutions (`:5349`, `:5368`; SWI fails). Both now follow
+SWI; `bagof`/`setof` keep failing on no solutions. The T7 parallel-aggregate
+reductions (the `ParAggregate` arm, `:1128`/`:1145`, and the injected
+wrapper's `rust_agg_minmax_reduce/2`) still give `[]` for an empty `max`/`min`;
+they run only under `parallel(true)` and are left for the parallel work.
+
+**Not done.** `bagof/3` and `setof/3` in inner positions (also compiled as
+calls) have no runtime builtin yet; with free variables they need ISO
+grouping, which the inline path refuses too. `call/1` itself stays
+first-solution over conjunctions (unchanged).
+
+**Tests.** `agg_in_findall` (the R0b case), `agg_templates` (sum, max, min,
+bag, set), `agg_witness` (`max(X, W)`, `min(X, W)`), `agg_expr` (evaluated
+`sum(V*2)`, `max(V+1)`), `agg_empty` (count 0, sum 0, bag/set `[]`),
+`agg_empty_max`, `agg_inline_empty` / `agg_inline_max_empty` /
+`agg_inline_min_empty` (the inline path), `agg_control` (nondeterministic left
+conjunct, cut, disjunction, `\+`, if-then-else inside the goal), `agg_ite`
+(in an if-then-else condition and branch), `agg_meta`, `findall_meta`,
+`agg_assert` (assertz in the goal persists), `agg_throw` (ball to
+`catch/3`), `agg_fresh` (fresh variables per solution).
+`tests/test_wam_rust_register_restore.pl`: `nested_agg_inline` is now
+compared with SWI in both modes (its `rr_known_divergence/3` lines removed).
+
+| | interpreter | functions | lowered entry |
+| --- | --- | --- | --- |
+| before | 14 of 16 wrong (`[]`, no output, or the inline empty cases; `agg_empty_max` and `agg_fresh` matched by accident: the failing inner call gave the same printout) | 14 of 16 wrong | — |
+| after | 16/16 | 16/16 | not checked (the query predicates the emitter lowers contain a findall/aggregate, which the lowered emitter drops, or reach `aggregate_all/3` through a lowered call) |

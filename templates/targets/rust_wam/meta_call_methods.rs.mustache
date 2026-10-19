@@ -1,0 +1,326 @@
+// Meta-call helpers for WamState (bug-fix batch 1, B3): the shared-state
+// hand-over used by `BodyGen`, the first call of a goal on a generator's
+// machine, and aggregate_all/3 and findall/3 as runtime builtins.
+// Included inside `impl WamState` by wam_rust_target.pl, after the dynamic
+// database helpers.
+
+    /// Move the shared state (`SideState`) out of this machine.
+    pub(crate) fn take_side(&mut self) -> SideState {
+        SideState {
+            dynamic_db: std::mem::take(&mut self.dynamic_db),
+            labels: std::mem::take(&mut self.labels),
+            term_input: std::mem::take(&mut self.term_input),
+            term_input_pos: self.term_input_pos,
+            var_counter: self.var_counter,
+            step_count: self.step_count,
+            backtrack_count: self.backtrack_count,
+            aggregate_acc: std::mem::take(&mut self.aggregate_acc),
+            aggregate_return_pc: self.aggregate_return_pc,
+            clause_cp_full_save: self.clause_cp_full_save,
+        }
+    }
+
+    /// Move the shared state back into this machine.
+    pub(crate) fn put_side(&mut self, side: SideState) {
+        let mut side = side;
+        self.import_side(&mut side);
+    }
+
+    /// Move `side` into this machine before it runs a step of a generator.
+    fn import_side(&mut self, side: &mut SideState) {
+        self.dynamic_db = std::mem::take(&mut side.dynamic_db);
+        self.labels = std::mem::take(&mut side.labels);
+        self.term_input = std::mem::take(&mut side.term_input);
+        self.term_input_pos = side.term_input_pos;
+        // Fresh names stay unique across every machine that shares `side`.
+        self.var_counter = self.var_counter.max(side.var_counter);
+        self.step_count = side.step_count;
+        self.backtrack_count = side.backtrack_count;
+        self.aggregate_acc = std::mem::take(&mut side.aggregate_acc);
+        self.aggregate_return_pc = side.aggregate_return_pc;
+        self.clause_cp_full_save = side.clause_cp_full_save;
+    }
+
+    /// Move the shared state back out after the step.
+    fn export_side(&mut self, side: &mut SideState) {
+        side.dynamic_db = std::mem::take(&mut self.dynamic_db);
+        side.labels = std::mem::take(&mut self.labels);
+        side.term_input = std::mem::take(&mut self.term_input);
+        side.term_input_pos = self.term_input_pos;
+        side.var_counter = self.var_counter;
+        side.step_count = self.step_count;
+        side.backtrack_count = self.backtrack_count;
+        side.aggregate_acc = std::mem::take(&mut self.aggregate_acc);
+        side.aggregate_return_pc = self.aggregate_return_pc;
+        side.clause_cp_full_save = self.clause_cp_full_save;
+    }
+
+    /// First call of an ordinary goal (no control construct) on a generator's
+    /// machine: the dispatch of `call_goal_key`, also reporting whether the
+    /// goal ran as a compiled predicate (its redo must then run on to the
+    /// predicate's next exit) or as a builtin / dynamic predicate (whose redo
+    /// is self-contained in `resume_builtin`).
+    fn meta_call_first(&mut self, goal: &Value) -> (bool, bool) {
+        let (key, args): (String, Vec<Value>) = match goal {
+            Value::Atom(name) => (format!("{}/0", name), Vec::new()),
+            Value::Str(functor, args) => {
+                let arity = args.len();
+                let name = Self::display_functor_name(functor, arity);
+                let dargs: Vec<Value> = args.iter().map(|a| self.deref_var(a)).collect();
+                (format!("{}/{}", name, arity), dargs)
+            }
+            _ => return (false, false),
+        };
+        let arity = args.len();
+        for (i, arg) in args.iter().enumerate() {
+            self.set_reg(&format!("A{}", i + 1), arg.clone());
+        }
+        let saved_pc = self.pc;
+        let saved_cp = self.cp;
+        if key == "retract/1" {
+            let ok = self.dynamic_retract_call(saved_pc);
+            self.pc = saved_pc;
+            return (ok, false);
+        }
+        if key == "clause/2" {
+            let ok = self.dynamic_clause_call(saved_pc);
+            self.pc = saved_pc;
+            return (ok, false);
+        }
+        if key == "current_predicate/1" {
+            let ok = self.current_predicate_call(saved_pc);
+            self.pc = saved_pc;
+            return (ok, false);
+        }
+        if self.execute_builtin(&key, arity) {
+            self.pc = saved_pc;
+            return (true, false);
+        }
+        if self.thrown_ball.is_some() {
+            return (false, false);
+        }
+        if let Some(&target_pc) = self.labels.get(&key) {
+            self.pc = target_pc;
+            self.cp = 0; // halt sentinel: the goal's exit returns here
+            let ok = self.run();
+            self.cp = saved_cp;
+            self.pc = saved_pc;
+            return (ok, true);
+        }
+        if self.dynamic_call(&key, saved_pc) {
+            self.pc = saved_pc;
+            return (true, false);
+        }
+        Self::warn_unresolved_goal("call", &key);
+        (false, false)
+    }
+
+    /// A machine for a `BodyGen` that solves a goal of this machine: a copy
+    /// without the choice points (the goal never resumes them; its own
+    /// floor is the empty stack) and without the shared state, which the
+    /// caller has taken out with `take_side`.
+    fn gen_base(&self) -> Box<WamState> {
+        let mut base = Box::new(self.clone());
+        base.choice_points.clear();
+        base.backtrack_floor = 0;
+        base.cut_barrier = 0;
+        base.pending_cut_barrier = None;
+        base.pending_level = None;
+        base
+    }
+
+    /// Every solution of `goal`, in order, each as a copy of `template` with
+    /// fresh variables (findall/3 semantics). The goal runs on a copy of this
+    /// machine through a `BodyGen`, so it can backtrack into conjunctions,
+    /// disjunctions and compiled predicates; its side effects reach this
+    /// machine through the shared state. None: a ball was thrown and is left
+    /// in flight.
+    fn solve_all_copies(&mut self, goal: &Value, template: &Value) -> Option<Vec<Value>> {
+        let mut side = self.take_side();
+        let mut gen = BodyGen::new(self.gen_base(), goal);
+        let mut raw: Vec<Value> = Vec::new();
+        let mut ball: Option<Value> = None;
+        loop {
+            match gen.next(&mut side) {
+                GenStep::Sol(s, _) => raw.push(s.deref_heap(&s.deref_var(template))),
+                GenStep::Done(_) => break,
+                GenStep::Thrown(b) => {
+                    ball = Some(b);
+                    break;
+                }
+            }
+        }
+        drop(gen);
+        self.put_side(side);
+        if let Some(b) = ball {
+            self.thrown_ball = Some(b);
+            return None;
+        }
+        let mut out = Vec::with_capacity(raw.len());
+        for v in &raw {
+            let mut var_map = std::collections::HashMap::new();
+            out.push(Self::copy_term_walk(&mut self.var_counter, &mut var_map, v));
+        }
+        Some(out)
+    }
+
+    /// findall/3 called as a goal (`call(findall(T, G, L))`, or from a goal
+    /// position the compiler does not inline).
+    fn builtin_findall(&mut self) -> bool {
+        let template = self.get_reg_raw("A1").unwrap_or(Value::Uninit);
+        let goal = self.get_reg_raw("A2")
+            .map(|v| self.deref_heap(&self.deref_var(&v)))
+            .unwrap_or(Value::Uninit);
+        let result_raw = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+        let saved_pc = self.pc;
+        let items = match self.solve_all_copies(&goal, &template) {
+            Some(items) => items,
+            None => return false,
+        };
+        if self.unify(&result_raw, &Value::list(items)) {
+            self.pc = saved_pc + 1;
+            true
+        } else {
+            false
+        }
+    }
+
+    /// A number for aggregate_all/3's sum/max/min: numbers as they are, any
+    /// other term evaluated as is/2 evaluates it.
+    fn aggregate_number(&self, v: &Value) -> Option<Value> {
+        match v {
+            Value::Integer(_) | Value::Float(_) => Some(v.clone()),
+            _ => self.eval_arith(v).map(|r| {
+                if (r.round() - r).abs() < f64::EPSILON {
+                    Value::Integer(r.round() as i64)
+                } else {
+                    Value::Float(r)
+                }
+            }),
+        }
+    }
+
+    fn aggregate_as_f64(v: &Value) -> f64 {
+        match v {
+            Value::Integer(n) => *n as f64,
+            Value::Float(f) => *f,
+            _ => f64::NAN,
+        }
+    }
+
+    /// aggregate_all/3 called as a goal: the shared compiler inlines it only
+    /// as a clause-body goal, so inside a findall/3 goal, an if-then-else,
+    /// a disjunction or a meta-call it arrives as `call aggregate_all/3`.
+    /// Templates as SWI-Prolog's library(aggregate): count, sum(E), max(E),
+    /// min(E) (E evaluated), max(X, W), min(X, W) (result max(X, W) /
+    /// min(X, W), X a number), bag(T), set(T). max/min of no solutions fail;
+    /// count/sum give 0, bag/set give [].
+    fn builtin_aggregate_all(&mut self) -> bool {
+        use std::cmp::Ordering;
+        let spec = self.get_reg_raw("A1")
+            .map(|v| self.deref_heap(&self.deref_var(&v)))
+            .unwrap_or(Value::Uninit);
+        let goal = self.get_reg_raw("A2")
+            .map(|v| self.deref_heap(&self.deref_var(&v)))
+            .unwrap_or(Value::Uninit);
+        let result_raw = self.get_reg_raw("A3").unwrap_or(Value::Uninit);
+        let saved_pc = self.pc;
+        let (kind, template): (String, Value) = match &spec {
+            Value::Atom(s) if s == "count" => ("count".to_string(), Value::Atom("true".to_string().into())),
+            Value::Str(f, args) => {
+                let name = Self::display_functor_name(f, args.len());
+                match (name.as_str(), args.len()) {
+                    ("sum", 1) | ("max", 1) | ("min", 1) | ("bag", 1) | ("set", 1) => {
+                        (name.clone(), args[0].clone())
+                    }
+                    ("max", 2) | ("min", 2) => {
+                        (format!("{}_w", name), Value::strv("w".to_string(), vec![args[0].clone(), args[1].clone()]))
+                    }
+                    _ => return false,
+                }
+            }
+            _ => return false,
+        };
+        let items = match self.solve_all_copies(&goal, &template) {
+            Some(items) => items,
+            None => return false,
+        };
+        let result = match kind.as_str() {
+            "count" => Value::Integer(items.len() as i64),
+            "sum" => {
+                let mut sum_i: i64 = 0;
+                let mut sum_f: f64 = 0.0;
+                let mut saw_float = false;
+                for item in &items {
+                    match self.aggregate_number(item) {
+                        Some(Value::Integer(n)) => { sum_i = sum_i.wrapping_add(n); sum_f += n as f64; }
+                        Some(Value::Float(f)) => { saw_float = true; sum_f += f; }
+                        _ => return false,
+                    }
+                }
+                if saw_float { Value::Float(sum_f) } else { Value::Integer(sum_i) }
+            }
+            "max" | "min" => {
+                let want_max = kind == "max";
+                let mut best: Option<Value> = None;
+                for item in &items {
+                    let n = match self.aggregate_number(item) {
+                        Some(n) => n,
+                        None => return false,
+                    };
+                    best = match best {
+                        None => Some(n),
+                        Some(b) => {
+                            let (x, y) = (Self::aggregate_as_f64(&n), Self::aggregate_as_f64(&b));
+                            if (want_max && x > y) || (!want_max && x < y) { Some(n) } else { Some(b) }
+                        }
+                    };
+                }
+                match best {
+                    Some(b) => b,
+                    None => return false,
+                }
+            }
+            "max_w" | "min_w" => {
+                let want_max = kind == "max_w";
+                let mut best: Option<(Value, Value)> = None;
+                for item in &items {
+                    let (x, w) = match item {
+                        Value::Str(_, a) if a.len() == 2 => (self.deref_heap(&a[0]), a[1].clone()),
+                        _ => return false,
+                    };
+                    if !matches!(x, Value::Integer(_) | Value::Float(_)) {
+                        return false;
+                    }
+                    best = match best {
+                        None => Some((x, w)),
+                        Some((bx, bw)) => {
+                            let (fx, fb) = (Self::aggregate_as_f64(&x), Self::aggregate_as_f64(&bx));
+                            if (want_max && fx > fb) || (!want_max && fx < fb) { Some((x, w)) } else { Some((bx, bw)) }
+                        }
+                    };
+                }
+                match best {
+                    Some((x, w)) => {
+                        let name = if want_max { "max" } else { "min" };
+                        Value::strv(name.to_string(), vec![x, w])
+                    }
+                    None => return false,
+                }
+            }
+            "bag" => Value::list(items),
+            "set" => {
+                let mut items: Vec<Value> = items.iter().map(|v| self.deref_heap(v)).collect();
+                items.sort_by(|a, b| self.sort_cmp(a, b));
+                items.dedup_by(|a, b| self.sort_cmp(a, b) == Ordering::Equal);
+                Value::list(items)
+            }
+            _ => return false,
+        };
+        if self.unify(&result_raw, &result) {
+            self.pc = saved_pc + 1;
+            true
+        } else {
+            false
+        }
+    }

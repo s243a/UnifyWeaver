@@ -3701,7 +3701,11 @@ compile_execute_term_builtin_to_rust(Code) :-
 
 compile_dynamic_db_helpers_to_rust(Code) :-
     read_template_file('templates/targets/rust_wam/dynamic_db_methods.rs.mustache', Template),
-    render_template(Template, [], Code).
+    render_template(Template, [], DbCode),
+    % Bug-fix batch 1 (B3): BodyGen hand-over, aggregate_all/3, findall/3.
+    read_template_file('templates/targets/rust_wam/meta_call_methods.rs.mustache', MetaTemplate),
+    render_template(MetaTemplate, [], MetaCode),
+    format(string(Code), "~w~n~w", [DbCode, MetaCode]).
 
 compile_execute_foreign_predicate_to_rust(Code) :-
     Code = '    /// Execute a registered foreign predicate by name/arity.
@@ -5315,12 +5319,14 @@ compile_resume_builtin_to_rust(Code) :-
                     // begin_aggregate form that carries them used to fall
                     // through to NoOp, so the aggregate frame was never pushed
                     // and the whole clause failed.
+                    // aggregate_all(bag(T)/set(T), ...) of no solutions is
+                    // [] (SWI-Prolog); only bagof/setof fail.
                     "bagof" | "bag" => {
-                        if acc.is_empty() { return false; }
+                        if acc.is_empty() && agg_type == "bagof" { return false; }
                         Value::list(acc)
                     }
                     "setof" | "set" => {
-                        if acc.is_empty() { return false; }
+                        if acc.is_empty() && agg_type == "setof" { return false; }
                         let mut items: Vec<Value> = acc
                             .iter()
                             .map(|v| self.deref_heap(&self.deref_var(v)))
@@ -5346,7 +5352,9 @@ compile_resume_builtin_to_rust(Code) :-
                                 }
                             };
                         }
-                        best.unwrap_or(Value::list(vec![]))
+                        // aggregate_all(max/min(E), ...) of no solutions
+                        // fails (SWI-Prolog); it used to give [].
+                        match best { Some(b) => b, None => return false }
                     }
                     "min" => {
                         let mut best: Option<Value> = None;
@@ -5365,7 +5373,9 @@ compile_resume_builtin_to_rust(Code) :-
                                 }
                             };
                         }
-                        best.unwrap_or(Value::list(vec![]))
+                        // aggregate_all(max/min(E), ...) of no solutions
+                        // fails (SWI-Prolog); it used to give [].
+                        match best { Some(b) => b, None => return false }
                     }
                     _ => return false,
                 };
@@ -7108,6 +7118,8 @@ compile_execute_meta_builtin_to_rust(Code) :-
                     true
                 } else { false }
             }
+            "aggregate_all/3" => self.builtin_aggregate_all(),
+            "findall/3" => self.builtin_findall(),
             "ignore/1" => {
                 // ignore(G) :- (call(G) -> true ; true). The goal runs as
                 // call/1 runs it (call_goal_once): an opaque cut scope with a

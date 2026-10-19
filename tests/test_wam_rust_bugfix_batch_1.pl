@@ -124,11 +124,73 @@ bb_clause(ign_write, (ign_write :- ignore((write(a), fail)))).
 bb_program(ign_throw, 'B2', ign_throw(R), R, true).
 bb_clause(ign_throw, (ign_throw(R) :- catch(ignore(throw(oops)), E, R = caught(E)))).
 
+% --- B3: aggregate_all/3 in inner goal positions ---------------------
+%
+% The R0b case (nested_agg_inline): aggregate_all/3 inside a findall/3 goal.
+bb_program(agg_in_findall, 'B3', agg_in_findall(L), L, true).
+bb_clause(agg_in_findall, (agg_in_findall(L) :- findall(c(K, C), (member(K, [p, q, r]), aggregate_all(count, agg_e(K, _), C)), L))).
+bb_clause(agg_in_findall, agg_e(p, 2)).
+bb_clause(agg_in_findall, agg_e(p, 1)).
+bb_clause(agg_in_findall, agg_e(p, 2)).
+bb_clause(agg_in_findall, agg_e(q, 3)).
+bb_clause(agg_in_findall, (agg_none :- fail)).
+bb_clause(agg_in_findall, (agg_none2(_) :- fail)).
+% Every template.
+bb_program(agg_templates, 'B3', agg_templates(L), L, true).
+bb_clause(agg_templates, (agg_templates(L) :- findall(r(K, S, Mx, Mn, B, St), (member(K, [p, q]), aggregate_all(sum(V), agg_e(K, V), S), aggregate_all(max(V), agg_e(K, V), Mx), aggregate_all(min(V), agg_e(K, V), Mn), aggregate_all(bag(V), agg_e(K, V), B), aggregate_all(set(V), agg_e(K, V), St)), L))).
+bb_program(agg_witness, 'B3', agg_witness(L), L, true).
+bb_clause(agg_witness, (agg_witness(L) :- findall(W-M, (member(K, [p, q]), aggregate_all(max(V, w(K, V)), agg_e(K, V), W), aggregate_all(min(V, w(K, V)), agg_e(K, V), M)), L0), agg_pairs(L0, L))).
+bb_clause(agg_witness, agg_pairs([], [])).
+bb_clause(agg_witness, (agg_pairs([A-B|T], [A, B|R]) :- agg_pairs(T, R))).
+% sum/max/min evaluate their expression.
+bb_program(agg_expr, 'B3', agg_expr(L), L, true).
+bb_clause(agg_expr, (agg_expr(L) :- findall(x(K, S, Mx), (member(K, [p, q]), aggregate_all(sum(V * 2), agg_e(K, V), S), aggregate_all(max(V + 1), agg_e(K, V), Mx)), L))).
+% Empty goals: count 0, sum 0, bag [], set []; max of nothing fails.
+bb_program(agg_empty, 'B3', agg_empty(L), L, true).
+bb_clause(agg_empty, (agg_empty(L) :- findall(e(C, S, B, St), (member(_, [x]), aggregate_all(count, agg_none, C), aggregate_all(sum(V), agg_none2(V), S), aggregate_all(bag(V), agg_none2(V), B), aggregate_all(set(V), agg_none2(V), St)), L))).
+bb_program(agg_empty_max, 'B3', agg_empty_max(L), L, true).
+bb_clause(agg_empty_max, (agg_empty_max(L) :- findall(M, (member(_, [x]), aggregate_all(max(V), agg_none2(V), M)), L))).
+% The same templates as clause-body goals (the inline begin/end_aggregate
+% path): bag/set of nothing is [], max/min of nothing fails.
+bb_program(agg_inline_empty, 'B3', agg_inline_empty(B, S), [B, S], true).
+bb_clause(agg_inline_empty, (agg_inline_empty(B, S) :- aggregate_all(bag(V), agg_none2(V), B), aggregate_all(set(V), agg_none2(V), S))).
+bb_program(agg_inline_max_empty, 'B3', agg_inline_max_empty(M), M, true).
+bb_clause(agg_inline_max_empty, (agg_inline_max_empty(M) :- aggregate_all(max(V), agg_none2(V), M))).
+bb_program(agg_inline_min_empty, 'B3', agg_inline_min_empty(M), M, true).
+bb_clause(agg_inline_min_empty, (agg_inline_min_empty(M) :- aggregate_all(min(V), agg_none2(V), M))).
+% Control constructs in the goal: a nondeterministic left conjunct, a cut,
+% a disjunction, \+, an if-then-else.
+bb_program(agg_control, 'B3', agg_control(L), L, true).
+bb_clause(agg_control, (agg_control(L) :- findall(r(A, B, C, D, E), (member(_, [x]),
+     aggregate_all(count, (agg_e(_, V), V > 1), A),
+     aggregate_all(bag(V), (agg_e(p, V), !), B),
+     aggregate_all(bag(V), (agg_e(q, V) ; V = z), C),
+     aggregate_all(bag(K), (member(K, [p, q, r]), \+ agg_e(K, _)), D),
+     aggregate_all(bag(T), (member(K, [p, r]), ( agg_e(K, _) -> T = y(K) ; T = n(K) )), E)), L))).
+% In an if-then-else condition and branch, and meta-called.
+bb_program(agg_ite, 'B3', agg_ite(K, R), [K, R], true).
+bb_clause(agg_ite, (agg_ite(K, R) :- member(K, [p, r]), ( aggregate_all(count, agg_e(K, _), C), C > 0 -> R = some(C) ; aggregate_all(count, agg_e(_, _), N), R = none(N) ))).
+bb_program(agg_meta, 'B3', agg_meta(C), C, true).
+bb_clause(agg_meta, (agg_meta(C) :- G = aggregate_all(count, agg_e(_, _), C), call(G))).
+bb_program(findall_meta, 'B3', findall_meta(L), L, true).
+bb_clause(findall_meta, (findall_meta(L) :- G = findall(V, agg_e(p, V), L), call(G))).
+% Side effects of the goal persist; a ball thrown inside propagates; every
+% solution gets fresh variables.
+bb_program(agg_assert, 'B3', agg_assert(L), L, true).
+bb_clause(agg_assert, (agg_assert(L) :- findall(C, (member(_, [x]), aggregate_all(count, (member(X, [a, b]), assertz(agg_log(X))), C)), Cs), findall(X, agg_log(X), Xs), L = r(Cs, Xs))).
+bb_program(agg_throw, 'B3', agg_throw(R), R, true).
+bb_clause(agg_throw, (agg_throw(R) :- catch(findall(C, (member(_, [x]), aggregate_all(count, throw(boom), C)), _), E, true), R = caught(E))).
+bb_program(agg_fresh, 'B3', agg_fresh(R), R, true).
+bb_clause(agg_fresh, (agg_fresh(R) :- findall(B, (member(_, [x]), aggregate_all(bag(f(_)), member(_, [1, 2]), B)), [[f(P), f(Q)]]), ( P == Q -> R = shared ; R = distinct ))).
+
 %% bb_dynamic(?PI)
 %  Predicates the drivers create at run time with assertz/1. Declared dynamic
 %  in user: for SWI; not compiled for Rust (the runtime's dynamic database
 %  serves them).
 :- dynamic bb_dynamic/1.
+:- discontiguous bb_dynamic/1.
+
+bb_dynamic(agg_log/1).
 
 %% bb_lowered_out_of_scope(?Name, ?Why)
 %  Programs whose DIRECT lowered entry is wrong for a reason outside this
@@ -143,6 +205,11 @@ bb_lowered_out_of_scope(esc_neq,     lowered_call_of_builtin_fails).
 % reaches it through a lowered `call ignore/1`.
 bb_lowered_out_of_scope(Name, lowered_call_of_builtin_fails) :-
     bb_program(Name, 'B2', _, _, _).
+% The B3 query predicates the emitter lowers contain a findall/3 or an
+% aggregate_all/3 (the lowered emitter drops begin_aggregate/end_aggregate,
+% noted by the R-1 harness) or reach aggregate_all/3 through a lowered call.
+bb_lowered_out_of_scope(Name, lowered_aggregates_unsupported) :-
+    bb_program(Name, 'B3', _, _, _).
 
 %% bb_lowered_required(?Name)
 %  Programs whose query predicate MUST be lowered in functions mode, so the
