@@ -257,6 +257,33 @@ bb_clause(lite_part, lite_two(b, 0)).
 bb_program(lite_nested, 'B5', lite_nested(a, b, R), R, true).
 bb_clause(lite_nested, (lite_nested(X, Y, R) :- ( lite_clob(X) -> R = one ; ( lite_deep(Y, _) -> R = two ; R = three(X, Y) ) ))).
 
+% --- B6: `_XT<N>` template scratch registers --------------------------
+%
+% A findall/bagof/setof/aggregate_all template with a compound argument is
+% built with `set_variable _XT<N>` / `put_structure F, _XT<N>`; the runtime
+% decoded `_XT<N>` to flat slot 0, the slot of A1, which also holds the
+% template's root, so the aggregate collected the last sub-compound.
+bb_program(xt_nested, 'B6', xt_nested(L), L, true).
+bb_clause(xt_nested, (xt_nested(L) :- findall(f(g(X)), member(X, [1, 2]), L))).
+bb_program(xt_two, 'B6', xt_two(L), L, true).
+bb_clause(xt_two, (xt_two(L) :- findall(f(g(X), h(Y)), member(p(X, Y), [p(1, a), p(2, b)]), L))).
+bb_program(xt_deep, 'B6', xt_deep(L), L, true).
+bb_clause(xt_deep, (xt_deep(L) :- findall(f(g(h(X)), k), member(X, [1, 2]), L))).
+bb_program(xt_list, 'B6', xt_list(L), L, true).
+bb_clause(xt_list, (xt_list(L) :- findall([X, Y], member(p(X, Y), [p(1, a), p(2, b)]), L))).
+bb_program(xt_arg_live, 'B6', xt_arg_live(z, L), L, true).
+bb_clause(xt_arg_live, (xt_arg_live(A, L) :- findall(f(g(X), A), member(X, [1, 2]), L))).
+bb_program(xt_bag, 'B6', xt_bag(L, S), [L, S], true).
+bb_clause(xt_bag, (xt_bag(L, S) :- aggregate_all(bag(f(g(X))), member(X, [2, 1]), L), aggregate_all(set(f(g(X))), member(X, [2, 1, 2]), S))).
+bb_program(xt_setof, 'B6', xt_setof(L, B), [L, B], true).
+bb_clause(xt_setof, (xt_setof(L, B) :- setof(f(g(X)), member(X, [2, 1, 2]), L), bagof(f(g(X)), member(X, [2, 1]), B))).
+bb_program(xt_inner, 'B6', xt_inner(L), L, true).
+bb_clause(xt_inner, (xt_inner(L) :- findall(f(g(X), Ys), (member(X, [1, 2]), findall(h(k(Y)), member(Y, [X, 3]), Ys)), L))).
+bb_program(xt_bound_var, 'B6', xt_bound_var(L), L, true).
+bb_clause(xt_bound_var, (xt_bound_var(L) :- X = a, findall(X, member(X, [a, b]), L))).
+bb_program(xt_count, 'B6', xt_count(N, L), [N, L], true).
+bb_clause(xt_count, (xt_count(N, L) :- aggregate_all(count, member(_, [a, b]), N), findall(f(g(N)), member(_, [x]), L))).
+
 bb_dynamic(dyn_w/1).
 bb_dynamic(dyn_rl/2).
 bb_dynamic(dyn_c/1).
@@ -308,6 +335,30 @@ bb_lowered_out_of_scope(Name, lowered_aggregates_unsupported) :-
 % A dynamic predicate has no label either: a lowered call of one fails.
 bb_lowered_out_of_scope(Name, lowered_call_of_unlabelled_predicate_fails) :-
     bb_program(Name, 'B4', _, _, _).
+% Every B6 program is an aggregate (dropped by the lowered emitter).
+bb_lowered_out_of_scope(Name, lowered_aggregates_unsupported) :-
+    bb_program(Name, 'B6', _, _, _).
+
+%% bb_known_divergence(?Mode, ?Name, ?Why)
+%  Programs whose interpreted entry still differs from SWI-Prolog for a
+%  reason outside this batch. Not compared with SWI; test
+%  known_divergences_still_present asserts that each still differs, so the
+%  fix that removes one must delete its line.
+%
+%  The shared compiler (wam_target.pl compile_aggregate_all/6 and
+%  init_template_leaf_vars/4) initialises every template variable with
+%  `put_variable R, R` before begin_aggregate, also a variable that is
+%  already bound outside the aggregate (a head argument, the result of an
+%  earlier goal), which loses its binding: findall(f(g(X), A), ..., L) with
+%  A = z collects f(g(1), _), and findall(X, member(X, [a, b]), L) with X = a
+%  gives [a, b] (SWI [a]). Found while testing B6; it is not the `_XT<N>`
+%  aliasing and needs a change to the shared compiler.
+bb_known_divergence(interpreter, xt_arg_live, template_var_bound_outside_is_reinitialised).
+bb_known_divergence(functions,   xt_arg_live, template_var_bound_outside_is_reinitialised).
+bb_known_divergence(interpreter, xt_bound_var, template_var_bound_outside_is_reinitialised).
+bb_known_divergence(functions,   xt_bound_var, template_var_bound_outside_is_reinitialised).
+bb_known_divergence(interpreter, xt_count,    template_var_bound_outside_is_reinitialised).
+bb_known_divergence(functions,   xt_count,    template_var_bound_outside_is_reinitialised).
 
 %% bb_lowered_required(?Name)
 %  Programs whose query predicate MUST be lowered in functions mode, so the
@@ -630,6 +681,11 @@ bb_all_mode(interpreter).
 bb_all_mode(functions).
 
 check_all(Mode, Name) :-
+    bb_known_divergence(Mode, Name, Why),
+    !,
+    format(user_error, '  [~w] ~w: known divergence, not compared (~w)~n',
+           [Mode, Name, Why]).
+check_all(Mode, Name) :-
     bb_ensure_built(Mode),
     swi_all(Name, SOut, SOk),
     rust_all(Mode, Name, ROut, ROk),
@@ -673,6 +729,13 @@ test(lowered_first_solution_matches_swi,
      [forall(( member(Mode, [functions, functions_nodef]),
                bb_program(Name, _, _, _, _) ))]) :-
     once(check_once(Mode, Name)).
+
+test(known_divergences_still_present,
+     [forall(bb_known_divergence(Mode, Name, _))]) :-
+    bb_ensure_built(Mode),
+    swi_all(Name, SOut, SOk),
+    rust_all(Mode, Name, ROut, ROk),
+    \+ ( SOut == ROut, SOk == ROk ).
 
 test(lowered_entries_present, [forall(bb_lowered_required(Name))]) :-
     bb_ensure_built(functions),

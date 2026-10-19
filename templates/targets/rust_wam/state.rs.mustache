@@ -2775,7 +2775,9 @@ mod r1_reg_operand_tests {
             }
         }
         // The raw encodings wam_rust_reg.pl emits for non-canonical names.
-        assert_eq!(Reg::from_name("_XT0"), Some(Reg(0)));
+        assert_eq!(Reg::from_name("_XT0"), Some(Reg::x(99)));
+        assert_eq!(Reg::from_name("_XT7"), Some(Reg::x(92)));
+        assert_eq!(Reg::from_name("_XT99"), Some(Reg::x(99)));
         assert_eq!(Reg::from_name("A01"), Some(Reg(16384)));
         assert_eq!(Reg::from_name("X0"), Some(Reg(99)));
         assert_eq!(Reg::from_name("A0"), Some(Reg(32767)));
@@ -3388,6 +3390,18 @@ impl WamState {
     fn reg_index_parse(name: &str) -> usize {
         let bytes = name.as_bytes();
         if bytes.is_empty() { return 0; }
+        // Bug-fix batch 1 (B6): the aggregate template scratch registers
+        // `_XT<N>` (wam_target.pl construct_template/7) hold sub-compounds
+        // while A1 holds the template's root; they used to fall to slot 0
+        // (A1) below, so a nested compound template collected its last
+        // sub-compound. They are X registers counted down from X99.
+        if let Some(digits) = name.strip_prefix("_XT") {
+            if !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()) {
+                if let Ok(n) = digits.parse::<usize>() {
+                    return 99 - n % 99 + 99;
+                }
+            }
+        }
         let prefix = bytes[0];
         let num_str = &name[1..];
         let num: usize = num_str.parse().unwrap_or(0);

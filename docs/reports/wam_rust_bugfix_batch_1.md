@@ -374,3 +374,132 @@ condition inside an else branch). All four query predicates must be lowered
 
 `tests/test_wam_rust_register_restore.pl`: `naf_temp` lowered entry, before
 `swi got(a,b)`, `rust ''`; after, matches.
+
+## B6 (D145): `_XT<N>` template scratch registers alias A1
+
+**Question.** R1 found that the shared compiler's template scratch registers
+`_XT<N>` decode to flat slot 0, A1's slot, and kept that for byte identity.
+Does any program observe it?
+
+**Yes: every compound template with a compound argument.** For
+`findall(f(g(X)), member(X, [1, 2]), L)` the shared compiler
+(`construct_template/7`, `wam_target.pl:2205`) emits, after the inner goal,
+
+```
+put_structure f/1, A1      % the root, in A1
+set_variable _XT0          % a fresh cell in f's argument, also in _XT0
+put_structure g/1, _XT0    % binds that cell to g(...)
+set_value Y1
+end_aggregate A1           % collects the root
+```
+
+With `_XT0` in A1's slot, `set_variable _XT0` overwrote the root, and
+`end_aggregate A1` collected `g(1)`: the harness programs gave
+`[g(1),g(2)]` for SWI's `[f(g(1)),f(g(2))]`, `[h(a),h(b)]` for
+`findall(f(g(X), h(Y)), ...)`, `[[a],[b]]` for `findall([X, Y], ...)` (a list
+template is a nested `'[|]'/2`), and the same for `aggregate_all(bag/set)`,
+`bagof/3`, `setof/3` and nested findalls with such templates. The resolvers
+never build one, which is why the R1 byte-identity gates could not see it.
+
+**Root cause.** `WamState::reg_index_parse` (`state.rs.mustache:2978` on
+base) maps any name whose prefix is not `A`/`X`/`Y` to slot 0, and
+`wam_rust_reg.pl` (`rust_reg_literal/2`, `:38`; `rust_reg_index/2`, `:88`)
+reproduces that as the raw `Reg(0)`.
+
+**Fix.** `_XT<N>` is an X register counted down from X99: X(99 − N mod 99),
+in both the generator (`rust_reg_literal/2` emits `Reg::x(K)`;
+`rust_reg_code/2` agrees) and the runtime decoder (`reg_index_parse`, used by
+the `&str` accessors and the text parser through `Reg::from_name`). Between
+the inner goal and `end_aggregate` no other A/X register is live (only Y
+registers and the root in A1 are read), so these slots are free; they are in
+the A/X window that choice points save. The PutStructure bind-through
+(non-A registers bind an unbound occupant to the new structure) is what the
+template construction relies on, and an X register keeps it.
+`tests/test_wam_rust_r1_encoding.pl` and the lib test
+`constructors_match_the_decoder` expect the new encoding.
+
+**Found, not fixed (shared compiler).** `compile_aggregate_all/6` and
+`init_template_leaf_vars/4` (`wam_target.pl`) initialise every template
+variable with `put_variable R, R` before `begin_aggregate`, also one already
+bound outside the aggregate, which loses its binding:
+`X = a, findall(X, member(X, [a, b]), L)` gives `[a, b]` (SWI `[a]`), and a
+head argument or an earlier result inside a compound template becomes a fresh
+variable (`findall(f(g(X), A), ...)` with `A = z` collects `f(g(1), _)`). The
+fix is to initialise only template variables first seen in the aggregate;
+that changes the shared compiler's output for every WAM target, so it is left
+for a change that runs the other targets' suites. The harness pins the three
+programs as known divergences (`bb_known_divergence/3`;
+`known_divergences_still_present` fails once a fix lands).
+
+**Tests.** `xt_nested`, `xt_two`, `xt_deep`, `xt_list`, `xt_bag` (bag and
+set), `xt_setof` (setof and bagof), `xt_inner` (nested findall, both with
+nested templates), and the known divergences `xt_arg_live`, `xt_bound_var`,
+`xt_count`.
+
+| | interpreter | functions |
+| --- | --- | --- |
+| before | 7 of 7 nested-template programs wrong (the known-divergence programs were wrong too) | same |
+| after | 7/7; the 3 known divergences still differ for the reason above | same |
+
+Lowered entries not checked (aggregates are dropped by the lowered emitter).
+
+## Summary
+
+| item | ledger | defect | fix | harness, before → after (interpreter / functions / lowered entry) |
+| --- | --- | --- | --- | --- |
+| B1 | D140 | names with `\` or `"` written unescaped into Rust literals; the lowered tokenizer split quoted constants | `escape_rust_string/2` at every site; the shared `wam_tokenize_line/2` in the lowered emitter | crate did not compile → 12/12 / 12/12 / 6 lowered, all match |
+| B2 | D141 | `ignore/1` missing | meta builtin over `call_goal_once` | 9 of 9 wrong → 9/9 / 9/9 / not checked |
+| B3 | D142 | `aggregate_all/3` (and meta-called `findall/3`) failed in inner goal positions; inline bag/set/max/min of no solutions | runtime builtins on the new resumable `BodyGen`; inline finalisation as SWI | 14 of 16 wrong → 16/16 / 16/16 / not checked |
+| B4 | D143 | dynamic rule bodies re-run from the start on redo (repeated side effects; broken redo of compiled goals; cut; lost balls) | body solved by `BodyGen`, kept in the choice point, resumed on redo | 11 of 12 wrong (one without end) → 12/12 / 12/12 / not checked |
+| B5 | D144 | lowered ITE else branch read Y registers from a failed callee's frame | `lowered_ite_rollback`: stack snapshot, bindings, choice points | 3 lowered entries and 1 functions-mode answer wrong → 4/4 / 4/4 / 4/4 on both builds |
+| B6 | D145 | `_XT<N>` template registers in A1's slot: a nested compound template collected its last sub-compound | `_XT<N>` = X(99 − N mod 99) in the generator and the decoder | 7 of 7 wrong → 7/7 / 7/7 / not checked |
+
+"Not checked": the direct lowered entry of those programs is skipped for a
+pre-existing lowered-tier reason, named in the harness
+(`bb_lowered_out_of_scope/2`): a lowered `call`/`execute` of a label-less
+runtime builtin or dynamic predicate returns false, and the lowered emitter
+drops aggregates. Their interpreted entry in functions mode (which reaches
+lowered callees through `lowered_call`) is checked.
+
+**Per-commit gates.** Every commit was checked from a `git archive` of it;
+base `a56714b` was built the same way.
+
+| commit | term diff | term corpus | store diff | store corpus | byte identity | lib | harnesses | conformance | plunit vs base | Ir / warm resolve, N=40 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| base | 2600/0/0 | 51/51 | 503/0/0 | 51/51, IDENTICAL to term | — | 273/273 | — | rc=0 | — | 17.222 M |
+| B1 | 2600/0/0 | 51/51 | 503/0/0 | 51/51, IDENTICAL | all 6 `cmp`-identical | 273/273 | all pass (this file 40) | rc=0 | same (par_aggregate timing test flaked) | generated crate identical |
+| B2 | 2600/0/0 | 51/51 | 503/0/0 | 51/51, IDENTICAL | all 6 `cmp`-identical | 273/273 | all pass (76) | rc=0 | same (par_aggregate timing test flaked) | 17.224 M |
+| B3 | 2600/0/0 | 51/51 | 503/0/0 | 51/51, IDENTICAL | all 6 `cmp`-identical | 273/273 | all pass (140) | rc=0 | same (par_aggregate timing test flaked) | 17.232 M |
+| B4 | 2600/0/0 | 51/51 | 503/0/0 | 51/51, IDENTICAL | all 6 `cmp`-identical | 273/273 | all pass (188) | rc=0 | same | 17.233 M |
+| B5 | 2600/0/0 | 51/51 | 503/0/0 | 51/51, IDENTICAL | all 6 `cmp`-identical | 273/273 | all pass (208) | rc=0 | same | 17.233 M |
+| B6 | 2600/0/0 | 51/51 | 503/0/0 | 51/51, IDENTICAL | all 6 `cmp`-identical | 273/273 | all pass (254) | rc=0 | same | 17.233 M |
+
+"Byte identity": the term differential, term corpus, store differential and
+store corpus JSONLs and the scale `--bench` stdout at N=40 and N=5000.
+"Harnesses": this file (count in brackets), `test_wam_rust_baseline_fixes.pl`
+(92), `test_wam_rust_r0a_clause_cps.pl` (90), `test_wam_rust_register_restore.pl`
+(120, then 118 from B3 on: its two `known_divergences_still_present`
+instances left when `nested_agg_inline` became a checked program),
+`test_wam_rust_first_arg_dispatch.pl` (217), `test_wam_rust_r1_encoding.pl`
+(13) and `test_wam_rust_stream_swi_parity.pl` (9 passed, 12 blocked, as base).
+"plunit vs base": every `tests/test_wam_rust_*.pl` file's exit code and
+failing-test lines compared with base's (20 files fail on base, all
+pre-existing). `test_wam_rust_par_aggregate.pl`'s cargo test
+`gate_stays_sequential_when_cheap` compares wall-clock times and failed in
+the loaded runs marked above; rerun on the B6 tree after all gates, it failed once more while the load average was still 2.7, then passed 3 times out of 3.
+
+**Perf.** Ir per warm resolve at N=40: 17.222 M on base, 17.233 M at B6
+(+0.06%). The resolver runs none of the new code (no dynamic rules, no
+inner aggregates, no lowered predicates, no nested templates); the rest is
+code layout, the 8-byte `BuiltinState::suspended` field, and `backtrack`'s
+thrown-ball test after a failed builtin redo.
+
+**Left open.** A lowered `call`/`execute` of a label-less runtime builtin or
+dynamic predicate still returns false, and the lowered emitter still drops
+aggregates (most B2–B4 lowered entries stay unchecked); template variables
+bound outside an aggregate are re-initialised by the shared compiler (B6,
+pinned); atoms containing a newline break the line-based WAM text (B1);
+`bagof/3`/`setof/3` in inner goal positions have no runtime builtin; the
+dynamic-call choice point re-reads the clause list on redo (no logical update
+view); the T7 parallel reductions keep `[]` for an empty `max`/`min`;
+`call/1` stays first-solution over conjunctions.
