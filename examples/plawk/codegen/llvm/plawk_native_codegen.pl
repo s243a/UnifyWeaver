@@ -8772,13 +8772,15 @@ plawk_records_field_lines(arith(F64Op, LPlan, RPlan), PrintIndex, FieldSep, Line
     format(atom(B), 'rec_f~w', [PrintIndex]),
     plawk_records_operand_lines(LPlan, B, l, FieldSep, LVar, LLines),
     plawk_records_operand_lines(RPlan, B, r, FieldSep, RVar, RLines),
-    format(atom(OpL), '  %~w_res = ~w double ~w, ~w', [B, F64Op, LVar, RVar]),
+    format(atom(ResBase), '~w_res', [B]),
+    plawk_divisor_kind(RPlan, DivisorKind),
+    plawk_f64_binary_op_lines(F64Op, DivisorKind, ResBase, LVar, RVar, OpLines),
     format(atom(FmtL),
         '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
         [B]),
     format(atom(PrL),
         '  %~w_pr = call i32 @wam_print_awk_number(i8* %~w_fmt, double %~w_res)', [B, B, B]),
-    append([LLines, RLines, [OpL, FmtL, PrL]], Lines).
+    append([LLines, RLines, OpLines, [FmtL, PrL]], Lines).
 
 % A row-arithmetic operand as a double: a column read as f64, or a constant.
 plawk_records_operand_lines(col(ColIndex), B, Slot, FieldSep, ValVar, [Line]) :-
@@ -13273,13 +13275,15 @@ plawk_assoc_print_one_field(farith(F64Op, LOperand, ROperand), Base, Index, Fiel
     format(atom(P), '~w_f~w', [Base, Index]),
     plawk_assoc_arith_operand_lines(LOperand, P, l, FieldSep, LVar, LLines),
     plawk_assoc_arith_operand_lines(ROperand, P, r, FieldSep, RVar, RLines),
-    format(atom(OpL), '  %~w_res = ~w double ~w, ~w', [P, F64Op, LVar, RVar]),
+    format(atom(ResBase), '~w_res', [P]),
+    plawk_divisor_kind(ROperand, DivisorKind),
+    plawk_f64_binary_op_lines(F64Op, DivisorKind, ResBase, LVar, RVar, OpLines),
     format(atom(FmtL),
         '  %~w_fmt = getelementptr [3 x i8], [3 x i8]* @.plawk_surface_print_f64, i32 0, i32 0',
         [P]),
     format(atom(PrL),
         '  %~w_pr = call i32 @wam_print_awk_number(i8* %~w_fmt, double %~w_res)', [P, P, P]),
-    append([LLines, RLines, [OpL, FmtL, PrL]], Lines).
+    append([LLines, RLines, OpLines, [FmtL, PrL]], Lines).
 
 %% plawk_assoc_arith_operand_lines(+Operand, +P, +Slot, +FieldSep, -ValVar, -Lines)
 %  Emit IR computing a print-arithmetic operand as a double. `afield(N)`
@@ -23592,8 +23596,8 @@ plawk_ternary_cond_ir(cmp(CondLeft, Op, CondRight), FieldSeparator, Base,
 
 %% plawk_i64_binary_op_lines(+LLVMOp, +Base, +LeftIR, +RightIR, -Lines)
 %
-%  add/sub/mul emit one instruction. sdiv/srem are guarded so awk-side
-%  division stays defined: a zero divisor yields 0, and the
+%  add/sub/mul emit one instruction. sdiv/srem are guarded: a zero divisor is
+%  fatal, as in awk (@wam_awk_divisor_checked_i64; it used to yield 0), and the
 %  INT64_MIN / -1 overflow case divides by 1 instead, wrapping to
 %  INT64_MIN for `/` and 0 for `%`.
 plawk_i64_binary_op_lines(sdiv, Base, LeftIR, RightIR, Lines) :-
@@ -23714,8 +23718,8 @@ plawk_f64_operand_expr(Expr) :-
 %  Double expression emitter. Float literals emit as an exact integer
 %  ratio (fdiv of two exactly representable doubles gives the correctly
 %  rounded value, matching strtod). i64 subtrees emit through the i64
-%  emitter and promote with sitofp; IEEE semantics apply to / (no
-%  divide-by-zero guard: x/0.0 is inf, 0.0/0.0 is nan, as in awk).
+%  emitter and promote with sitofp; a runtime divisor of / or % is
+%  checked (zero is fatal, as in awk: plawk_f64_binary_op_lines/6).
 plawk_f64_expr_ir(ssa_f64(Value), _FieldSeparator, _Base, _GlobalBase,
         Value, [], []) :-
     !.
@@ -23913,23 +23917,38 @@ plawk_f64_expr_ir(Expr, FieldSeparator, Base, GlobalBase, ValueIR,
     plawk_f64_expr_ir(Right, FieldSeparator, RightBase, RightGlobalBase,
         RightValueIR, RightGlobalParts, RightSetupParts),
     format(atom(ValueIR), '%~w', [Base]),
-    plawk_f64_binary_op_lines(F64Op, Base, LeftValueIR, RightValueIR, OpLines),
+    plawk_divisor_kind(Right, DivisorKind),
+    plawk_f64_binary_op_lines(F64Op, DivisorKind, Base, LeftValueIR, RightValueIR,
+        OpLines),
     append(LeftGlobalParts, RightGlobalParts, GlobalParts),
     append([LeftSetupParts, RightSetupParts, OpLines], SetupParts).
 
-%% plawk_f64_binary_op_lines(+F64Op, +Base, +LeftIR, +RightIR, -Lines) is det.
+%% plawk_f64_binary_op_lines(+F64Op, +DivisorKind, +Base, +LeftIR, +RightIR, -Lines)
 %
-%  `%` keeps plawk's zero-divisor policy in double arithmetic: `x % 0` is 0, as the
-%  guarded integer srem it replaced gave (frem by zero is NaN). gawk aborts on a zero
-%  divisor instead; that existing, documented plawk divergence is left as it was.
-plawk_f64_binary_op_lines(frem, Base, LeftIR, RightIR, [Zero, Raw, Sel]) :-
+%  `%Base = F64Op LeftIR, RightIR`. A division or `%` by zero is fatal in awk (gawk:
+%  "division by zero attempted", exit 2), so unless the divisor is a nonzero literal
+%  (DivisorKind = nonzero) it passes through @wam_awk_divisor_checked first. These
+%  used to print inf / nan for `/` and 0 for `%`.
+plawk_f64_binary_op_lines(F64Op, runtime, Base, LeftIR, RightIR, [Check, Line]) :-
+    plawk_f64_divides(F64Op),
     !,
-    format(atom(Zero), '  %~w_den_zero = fcmp oeq double ~w, 0.0', [Base, RightIR]),
-    format(atom(Raw), '  %~w_raw = frem double ~w, ~w', [Base, LeftIR, RightIR]),
-    format(atom(Sel), '  %~w = select i1 %~w_den_zero, double 0.0, double %~w_raw',
-        [Base, Base, Base]).
-plawk_f64_binary_op_lines(F64Op, Base, LeftIR, RightIR, [Line]) :-
+    format(atom(Check), '  %~w_cden = call double @wam_awk_divisor_checked(double ~w)',
+        [Base, RightIR]),
+    format(atom(Line), '  %~w = ~w double ~w, %~w_cden', [Base, F64Op, LeftIR, Base]).
+plawk_f64_binary_op_lines(F64Op, _DivisorKind, Base, LeftIR, RightIR, [Line]) :-
     format(atom(Line), '  %~w = ~w double ~w, ~w', [Base, F64Op, LeftIR, RightIR]).
+
+plawk_f64_divides(fdiv).
+plawk_f64_divides(frem).
+
+%% plawk_divisor_kind(+Divisor, -Kind) is det.
+%
+%  `nonzero` for a divisor that is a nonzero literal (no runtime check needed),
+%  `runtime` otherwise. Accepts expression terms and the chains' operand plans.
+plawk_divisor_kind(int(V), nonzero) :- integer(V), V =\= 0, !.
+plawk_divisor_kind(aint(V), nonzero) :- integer(V), V =\= 0, !.
+plawk_divisor_kind(float_const(M, _D), nonzero) :- integer(M), M =\= 0, !.
+plawk_divisor_kind(_Divisor, runtime).
 % A text FIELD in a double context is read as a number the awk way -- strtod
 % semantics through the same row as `float($N)` (@wam_atom_field_f64_value). It used
 % to fall to the i64-then-promote clause below, whose strict integer parse reads any
@@ -23976,9 +23995,8 @@ plawk_math_fn(atan2, atan2, 2).
 % srand -- default seed otherwise, so a program without srand is reproducible).
 plawk_math_fn(rand, drand48, 0).
 
-plawk_i64_guarded_div_lines(LLVMOp, Base, LeftIR, RightIR, Lines) :-
-    format(atom(DenZero),
-        '  %~w_den_zero = icmp eq i64 ~w, 0', [Base, RightIR]),
+plawk_i64_guarded_div_lines(LLVMOp, Base, LeftIR, RightIR0, Lines) :-
+    plawk_i64_divisor_check_lines(Base, RightIR0, RightIR, CheckLines),
     format(atom(LhsMin),
         '  %~w_lhs_min = icmp eq i64 ~w, -9223372036854775808', [Base, LeftIR]),
     format(atom(RhsNegOne),
@@ -23986,17 +24004,24 @@ plawk_i64_guarded_div_lines(LLVMOp, Base, LeftIR, RightIR, Lines) :-
     format(atom(Overflow),
         '  %~w_overflow = and i1 %~w_lhs_min, %~w_rhs_negone',
         [Base, Base, Base]),
-    format(atom(DenBad),
-        '  %~w_den_bad = or i1 %~w_den_zero, %~w_overflow', [Base, Base, Base]),
     format(atom(SafeDen),
-        '  %~w_safe_den = select i1 %~w_den_bad, i64 1, i64 ~w',
+        '  %~w_safe_den = select i1 %~w_overflow, i64 1, i64 ~w',
         [Base, Base, RightIR]),
-    format(atom(Raw),
-        '  %~w_raw = ~w i64 ~w, %~w_safe_den', [Base, LLVMOp, LeftIR, Base]),
     format(atom(Result),
-        '  %~w = select i1 %~w_den_zero, i64 0, i64 %~w_raw',
-        [Base, Base, Base]),
-    Lines = [DenZero, LhsMin, RhsNegOne, Overflow, DenBad, SafeDen, Raw, Result].
+        '  %~w = ~w i64 ~w, %~w_safe_den', [Base, LLVMOp, LeftIR, Base]),
+    append(CheckLines, [LhsMin, RhsNegOne, Overflow, SafeDen, Result], Lines).
+
+% A nonzero literal divisor needs no runtime check; anything else goes through
+% @wam_awk_divisor_checked_i64, which stops the program on zero.
+plawk_i64_divisor_check_lines(_Base, RightIR, RightIR, []) :-
+    atom_number(RightIR, N),
+    integer(N),
+    N =\= 0,
+    !.
+plawk_i64_divisor_check_lines(Base, RightIR0, RightIR, [Check]) :-
+    format(atom(RightIR), '%~w_cden', [Base]),
+    format(atom(Check), '  ~w = call i64 @wam_awk_divisor_checked_i64(i64 ~w)',
+        [RightIR, RightIR0]).
 
 plawk_branch_to_done_ir(none, _DoneLabel, '  br label %continue_loop') :-
     !.

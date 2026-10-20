@@ -1444,6 +1444,50 @@ afic.fatal:
   call void @exit(i32 2)
   unreachable
 }
+{{case wam_awk_divisor_checked}}
+; awk `x / 0` and `x % 0` are fatal (gawk: "division by zero attempted", exit 2),
+; not inf, nan or 0. Every division and `%` whose divisor is runtime data passes the
+; divisor through here: returned unchanged when nonzero (-0.0 is zero), otherwise
+; the program stops with exit status 2. Output is flushed before the message, so
+; every line printed before the division appears, and ahead of the message, as in
+; gawk. A call rather than an inline branch, like @wam_awk_field_index_checked, so
+; the caller stays one block.
+@.wam_awk_div_zero_error = private constant [42 x i8] c"plawk: fatal: division by zero attempted\0A\00"
+
+define double @wam_awk_divisor_checked(double %den) {
+entry:
+  %adc.zero = fcmp oeq double %den, 0.0
+  br i1 %adc.zero, label %adc.fatal, label %adc.ok
+
+adc.ok:
+  ret double %den
+
+adc.fatal:
+  call void @wam_awk_div_zero_fatal()
+  unreachable
+}
+
+define i64 @wam_awk_divisor_checked_i64(i64 %den) {
+entry:
+  %adci.zero = icmp eq i64 %den, 0
+  br i1 %adci.zero, label %adci.fatal, label %adci.ok
+
+adci.ok:
+  ret i64 %den
+
+adci.fatal:
+  call void @wam_awk_div_zero_fatal()
+  unreachable
+}
+
+define void @wam_awk_div_zero_fatal() {
+entry:
+  %adz.fl = call i32 @fflush(i8* null)
+  %adz.msg = getelementptr [42 x i8], [42 x i8]* @.wam_awk_div_zero_error, i64 0, i64 0
+  %adz.written = call i64 @write(i32 2, i8* %adz.msg, i64 41)
+  call void @exit(i32 2)
+  unreachable
+}
 {{case wam_atom_field_subslice_value}}
 define %WamSlice @wam_atom_field_subslice_value(%Value %atom_value, i64 %field_index, i8 %sep, i64 %start, i64 %max_len) {
 entry:

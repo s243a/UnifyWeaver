@@ -78,16 +78,16 @@ test(legacy_primary_minus_constant_ast_unchanged) :-
                 sub_i64(length(field(0)), int(3))])])], [])).
 
 % `/` is floating-point (fdiv). `%` of FIELDS is now double too (phase C: field
-% arithmetic is double, `%` is frem = fmod, awk's `%`), keeping plawk's
-% zero-divisor policy (x % 0 = 0) via a guard; there is no INT64_MIN overflow case
-% in double. This pinned the integer srem lowering before.
+% arithmetic is double, `%` is frem = fmod, awk's `%`). A runtime divisor of
+% either goes through @wam_awk_divisor_checked (zero is fatal, as in awk); there is
+% no INT64_MIN overflow case in double. This pinned the integer srem lowering before.
 test(arith_ir_division_is_float_modulo_stays_guarded_integer) :-
     plawk_parse_string("{ print $2 / $3, $2 % $3 }\n", Program),
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, 'fdiv double'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, 'sdiv i64')),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_den_zero = fcmp oeq double'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '_raw = frem double'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '_cden = call double @wam_awk_divisor_checked'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, 'frem double'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, 'srem i64')),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
@@ -116,12 +116,7 @@ test(surface_division_and_modulo) :-
         "a 7 2\nb -7 2\n",
         "3.5 1\n-3.5 -1\n").
 
-% float `/` by zero is IEEE inf (gawk fatals; plawk stays lenient); `%` by zero
-% keeps its guard and yields 0.
-test(surface_float_division_by_zero_is_inf) :-
-    run_arith_print_smoke("{ print $2 / $3, $2 % $3 }\n",
-        "a 7 0\n",
-        "inf 0\n").
+% `/` and `%` by zero are fatal, as in gawk: tests/test_plawk_div_zero.pl.
 
 % INT64_MIN / -1 has no integer-overflow trap under float `/` -- it is just the
 % double 2^63, an INTEGRAL value, which awk prints in full (gawk: the digits; this
