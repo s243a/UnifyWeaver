@@ -3665,6 +3665,16 @@ while_cmp(cmp(length(var(V)), Op, Rhs)) -->
     "length", ws, "(", ws, identifier(V), ws, ")",
     { plawk_length_builtin_arg(var(V)) },
     ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+% `length(a[k])` of an element and `length($N)` of a field as the left operand
+% (`if (length(a[$1]) > 2)`): both were parse errors, though the same terms parse
+% in an expression (`n = length(a[$1])`).
+while_cmp(cmp(length(Elem), Op, Rhs)) -->
+    "length", ws, "(", ws, cond_elem_read(Elem), ws, ")",
+    ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
+while_cmp(cmp(length(field(N)), Op, Rhs)) -->
+    "length", ws, "(", ws, "$", integer_codes(NCodes), ws, ")",
+    { number_codes(N, NCodes), N > 0 },
+    ws, numeric_cmp_op(Op), ws, while_cmp_rhs(Rhs).
 % The identifier fallback. The reserved-name guard is what makes the two lists above
 % FAIL SAFE rather than silently disagree: without it, any special this grammar has not
 % been taught is captured here as an ordinary variable, resolves to an unassigned slot

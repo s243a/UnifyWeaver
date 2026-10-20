@@ -260,13 +260,16 @@ test(scalar_end_conditions_and_record_reads_in_branches_unaffected,
 
 % --- a follow-on, pinned with its reason -------------------------------
 
-% `length($N)` for N > 0 is a PARSE ERROR in a condition -- and equally in a bare
-% pattern, which is the point: special_cmp_operand//1 accepts only bare `length` and
-% `length($0)`, so both spellings refuse it identically. A consistent gap rather than a
-% new asymmetry, and admitting it means carrying a field index on the special term.
-% Pinned as a pair so the two cannot drift apart the way `length` itself did.
-test(length_of_a_positive_field_is_not_yet_a_comparison_operand) :-
-    build_status("{ if (length($1) > 0) print $1 }\n", 2),
+% `length($N)` for N > 0 was a PARSE ERROR in an `if` condition and in a bare
+% pattern alike (special_cmp_operand//1 accepts only bare `length` and `length($0)`).
+% The `if` form now parses as an ordinary comparison operand, `length(field(N))`, which
+% the condition pre-pass computes (plawk_cond_cmp_operand/11) -- no special term
+% carries a field index. The bare PATTERN goes through the pattern-guard grammar and
+% is still a parse error: a known asymmetry, pinned here so it stays visible.
+test(length_of_a_positive_field_in_an_if_compiles, [condition(clang_available)]) :-
+    run("{ if (length($2) > 4) print $1 }\n", "5\n"),
+    !.
+test(length_of_a_positive_field_is_not_yet_a_pattern_operand) :-
     build_status("length($1) > 0 { print $1 }\n", 2),
     !.
 
