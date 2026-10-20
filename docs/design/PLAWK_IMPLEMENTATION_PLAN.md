@@ -281,8 +281,9 @@ operands: integer literals, `NR`, `NF`, `length($N)`, `int($N)`,
 `index($N, "literal")`, and bare numeric fields (`$3 + $4` coerces like
 `int/1`; a bare `$N` alone still prints as a slice). Each binary node lowers
 recursively through the shared `plawk_i64_expr_ir` emitter with `_lhs`/`_rhs`
-name suffixes; `/` and `%` emit branch-free guards so a zero divisor yields
-`0` and `INT64_MIN / -1` wraps instead of trapping. Scalar `+=`/`=` updates
+name suffixes; `/` and `%` pass a runtime divisor through
+`@wam_awk_divisor_checked` (a zero divisor is fatal, exit 2, as in awk) and
+`INT64_MIN / -1` wraps instead of trapping. Scalar `+=`/`=` updates
 and `printf` arguments accept the same expression grammar.
 Print-only `tolower($N)` and `toupper($N)` lower through shared
 `@wam_print_ascii_lower_slice` and `@wam_print_ascii_upper_slice` helpers, so

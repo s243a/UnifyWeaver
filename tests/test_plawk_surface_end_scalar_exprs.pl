@@ -49,9 +49,11 @@ test(end_expr_ir_uses_final_slots_and_loop_nr_phi) :-
     plawk_program_native_driver_ir(Program, 'input.txt', DriverIR),
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_nr = phi i64 [0, %check_handle_value], [%current_nr, %continue_loop]'))),
     % `/` is floating-point. `sum += $2` is a DOUBLE slot (phase C: field
-    % arithmetic is double), so the final slot divides directly -- only NR promotes.
+    % arithmetic is double), so the final slot divides directly -- only NR promotes,
+    % and passes the zero-divisor check (zero is fatal, as in awk).
     assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_end_expr_0_rhs = sitofp i64 %plawk_nr to double'))),
-    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_end_expr_0 = fdiv double %final_slot_0, %plawk_end_expr_0_rhs'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_end_expr_0_cden = call double @wam_awk_divisor_checked(double %plawk_end_expr_0_rhs)'))),
+    assertion(once(sub_atom(DriverIR, _, _, _, '%plawk_end_expr_0 = fdiv double %final_slot_0, %plawk_end_expr_0_cden'))),
     assertion(\+ sub_atom(DriverIR, _, _, _, '@run_loop')),
     !.
 
@@ -95,14 +97,8 @@ test(surface_mixed_end_expr_with_assoc_lookup) :-
         "ERROR a\nWARN b\nERROR c\n",
         "6 2\n").
 
-% `/` is floating-point, so an empty-input average is IEEE 0.0/0.0 = nan (printed
-% "-nan"), not the old guarded integer 0. gawk fatals on division by zero here;
-% plawk keeps its lenient float policy (x/0.0 = inf, 0.0/0.0 = nan) rather than
-% aborting, consistent with its other f64 division.
-test(surface_empty_input_average_is_nan) :-
-    run_endexpr_print_smoke("{ sum += $2 } END { print sum / NR }\n",
-        "",
-        "-nan\n").
+% An empty-input average `sum / NR` divides by zero, which is fatal, as in gawk
+% (it printed "-nan"): tests/test_plawk_div_zero.pl.
 
 test(surface_assignments_apply_in_source_order) :-
     run_endexpr_print_smoke("{ a = NR; b = a + 1; a = 100 } END { print a, b }\n",

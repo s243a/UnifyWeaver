@@ -208,9 +208,10 @@ both associate left) and parentheses, e.g.
 `{ print ($2 + $3) * $4, $2 + $3 * $4 }`. Operands are integer literals,
 `NR`, `NF`, `length($N)`, `int($N)`, `index($N, "literal")`, and bare numeric
 fields such as `$3`, which coerce like `int($3)` inside arithmetic (a bare
-`$N` on its own still prints as a byte slice). Division and modulo are
-guarded: a zero divisor yields `0`, and `INT64_MIN / -1` wraps to
-`INT64_MIN` (`% -1` yields `0`) instead of trapping.
+`$N` on its own still prints as a byte slice). A zero divisor is fatal, as
+in awk: the program prints `plawk: fatal: division by zero attempted` to
+stderr and exits with status 2, after the output printed so far. Integer
+`INT64_MIN / -1` wraps to `INT64_MIN` (`% -1` yields `0`) instead of trapping.
 Expressions become double-typed when any operand is a float literal or a
 `float($N)` coercion: `{ print $2 / 2.0 }` prints `3.5` where
 `{ print $2 / 2 }` prints `3`. Float literals are kept exact as integer
@@ -219,7 +220,7 @@ double), `float($N)` parses with `strtod` semantics (leading number,
 trailing text ignored, `0` when non-numeric), and `i64` operands promote
 with `sitofp`. Double results print with `%g` (so `2.0 * 10` prints `20`)
 and `printf` accepts `%f`/`%g`/`%e` with optional precision such as `%.2f`.
-IEEE semantics apply to float division (no zero-divisor guard). Doubles are
+Float division and `%` by zero are fatal too (they printed `inf`/`nan`). Doubles are
 expression-level only in this slice: scalar slots, guards, and `END`
 expressions stay `i64`, and assigning a double expression to a scalar is
 rejected at codegen; typed double slots are the documented follow-up.

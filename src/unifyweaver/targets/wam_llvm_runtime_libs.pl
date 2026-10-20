@@ -190,6 +190,7 @@ wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_count_value, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_length_value, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_subslice_value, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_awk_field_index_checked, fields).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_awk_divisor_checked, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_subslice_value, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_slice_index_value, fields).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_atom_field_index_value, fields).
