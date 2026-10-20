@@ -28,8 +28,9 @@
 %      needs. Without it the general clause emits an unterminated block: invalid
 %      LLVM, an exit-4 clang failure. The general clause keeps its `RuleCount > 0`.
 %   3. the END-loop driver clause is guarded `Rules0 \== []`, so `END { while ... }`
-%      with no rule DECLINES cleanly (exit 3) instead of committing past its cut and
-%      miscompiling -- END-loop-with-no-rule is a follow-on, not part of this change.
+%      with no rule does not commit past its cut and miscompile. (Since then an
+%      END-only loop or assignment compiles as the same program with a main rule
+%      that does nothing -- the clause above that guard.)
 %
 % The distinction that matters most below: a supported END-only form must COMPILE
 % and match gawk; an unsupported one must DECLINE cleanly (exit 3), never exit 4.
@@ -180,17 +181,16 @@ test(end_loop_with_a_rule_still_compiles, [condition(clang_available)]) :-
 
 % --- BOUNDARIES: unsupported END-only forms DECLINE, never miscompile ---
 
-% The miscompile that this change had to avoid: END-loop with no rule. It must
-% decline cleanly (exit 3), NOT emit invalid LLVM (exit 4). This is the sharpest
-% pin in the suite -- the whole END-loop clause guard exists for it.
-test(end_only_loop_declines_cleanly_not_exit_4) :-
-    build_status("END { while (i < 3) { print i; i++ } }\n", 3),
+% END-loop with no rule was the miscompile this change had to avoid (it declined,
+% exit 3, never exit 4). It now compiles as the program with an empty main rule,
+% and matches gawk -- including the unset `i` printing "" on the first pass.
+test(end_only_loop_compiles, [condition(clang_available)]) :-
+    run("END { while (i < 3) { print i; i++ } }\n", "\n1\n2\n"),
     !.
 
-% END-only with a scalar ASSIGNMENT is a follow-on (the assignment machinery is
-% not wired for an END-only context yet). Declines, exit 3.
-test(end_only_assignment_declines) :-
-    build_status("END { x = 5; print x }\n", 3),
+% END-only with a scalar ASSIGNMENT (it declined, exit 3): the same route.
+test(end_only_assignment_compiles, [condition(clang_available)]) :-
+    run("END { x = 5; print x }\n", "5\n"),
     !.
 
 % for-in over an (empty) array in END-only: declines, exit 3.

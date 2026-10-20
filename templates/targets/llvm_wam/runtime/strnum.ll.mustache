@@ -392,6 +392,28 @@ pn.print:
   %pn.r = call i32 (i8*, ...) @printf(i8* %pn.f, double %pn.v)
   ret i32 %pn.r
 }
+{{case wam_awk_num_text}}
+; A number as awk TEXT for a string concatenation (`s = "n=" n`): the same rule as
+; print -- integral as an integer, otherwise "%.6g" (CONVFMT) -- written into the
+; caller's buffer, which is returned. The buffer is WAM_AWK_NUM_TEXT_CAP (400)
+; bytes: the longest "%.0f" of a finite double is 309 digits plus a sign.
+; + 0.0 turns -0.0 into +0.0, as print does. The i64 form spells a counter exactly.
+@.wam_awk_i64_fmt = private constant [4 x i8] c"%ld\00"
+
+define i8* @wam_awk_num_text(double %v, i8* %buf) {
+entry:
+  %at.v = fadd double %v, 0.0
+  %at.f = call i8* @wam_awk_num_fmt(double %at.v)
+  %at.n = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %buf, i64 400, i8* %at.f, double %at.v)
+  ret i8* %buf
+}
+
+define i8* @wam_awk_i64_text(i64 %v, i8* %buf) {
+entry:
+  %ait.f = getelementptr [4 x i8], [4 x i8]* @.wam_awk_i64_fmt, i64 0, i64 0
+  %ait.n = call i32 (i8*, i64, i8*, ...) @snprintf(i8* %buf, i64 400, i8* %ait.f, i64 %v)
+  ret i8* %buf
+}
 {{case wam_strnum_cmp_double}}
 
 define i32 @wam_strnum_cmp_double(i8* %as, i8 %akind, double %bval) {

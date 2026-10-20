@@ -87,7 +87,8 @@ is not a double; it is how the `unset` case **renders in a print**.
 | arithmetic, numeric comparison | the type zero (register value) | — |
 | `print` (END, rule body, BEGIN prelude, END loop body) | `""` when the mark is clear; else the number | `""` for id 0 |
 | `printf "%d"` / `"%g"` argument | the number (unset = `0`) | — |
-| string contexts of a numeric slot: `n "x"`, `n == ""`, `printf "%s", n` | **declined** (exit 3): no string reading of a numeric slot is lowered | as a string |
+| concatenation: `print n "x"`, `s = n "x"` | `""` when the mark is clear; else the number's text (integral as an integer, else `%.6g`, CONVFMT) | as a string |
+| other string contexts of a numeric slot: `n == ""`, `printf "%s", n` | **declined** (exit 3): not lowered | as a string |
 
 Declining is deliberate: a context whose awk value would be `""` is never allowed
 to silently produce `"0"`.
@@ -169,8 +170,9 @@ table's absent position prints `""` through `@wam_assoc_str_print`.
 
 ## 8. Open edges
 
-- The string readings of a numeric slot (`n "x"`, `printf "%s", n`, `n == ""`) are
-  declined, not lowered. Lowering them would need a number-to-string conversion
-  that is `""` for unset and CONVFMT-formatted otherwise.
+- The remaining string readings of a numeric slot (`printf "%s", n`, `n == ""`) are
+  declined, not lowered. A concatenation is lowered (section 3): its number parts
+  go through `@wam_awk_num_text` / `%ld`, and the mark selects `""` for unset
+  (`tests/test_plawk_concat_numbers.pl`).
 - Writers that do not store the mark (getline capture status, dynrec binds) leave
   their names untracked (see §5).

@@ -143,6 +143,7 @@ wam_llvm_runtime_chunk(builtin_dispatch, wam_strnum_cmp_int, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_awk_num_is_integral, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_awk_num_fmt, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_print_awk_number, strnum).
+wam_llvm_runtime_chunk(builtin_dispatch, wam_awk_num_text, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_strnum_cmp_double, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_awk_numeric_start, strnum).
 wam_llvm_runtime_chunk(builtin_dispatch, wam_awk_strtod, strnum).

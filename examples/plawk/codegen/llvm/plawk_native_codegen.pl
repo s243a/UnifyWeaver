@@ -2263,6 +2263,20 @@ plawk_program_native_driver_ir(
 %  END has no current record, so a field read in the body has nothing to project
 %  from; those fail inside the sequence emitter and the program declines. The
 %  supported body is scalar work plus prints of scalars and literals.
+% An END-only program whose END needs the sequence emitter (an assignment or a
+% loop: `END { x = NR; print x }`): awk still reads the input, so it is the program
+% with a main rule that does nothing -- which the clause below compiles. Asking that
+% clause to take Rules0 = [] directly is what it refuses (see its comment).
+plawk_program_native_driver_ir(
+    program(BeginClauses, [], [end(EndActions)]),
+    InputPath,
+    DriverIR
+) :-
+    plawk_end_actions_need_sequence(EndActions, []),
+    !,
+    plawk_program_native_driver_ir(
+        program(BeginClauses, [rule(always, [])], [end(EndActions)]),
+        InputPath, DriverIR).
 plawk_program_native_driver_ir(
     program(BeginClauses, Rules0, [end(EndActions)]),
     InputPath,
@@ -11302,8 +11316,16 @@ plawk_strnum_action_unsafe_read(Action, _Set, _Name) :-
     plawk_strnum_numeric_operation(Operation),
     !,
     fail.
-% `set(var(_), RHS)` with a NON-numeric RHS (a string concat / sprintf / ...):
-% any read of Name in the RHS is unsafe (strnum in a string RHS is unsupported).
+% A string concatenation reads a bare `var(Name)` part as its text (ssa_strnum, the
+% builder's @wam_sv_cstr part): `s = last "!"`. Name inside any other part
+% (arithmetic, a builtin) is unsafe.
+plawk_strnum_action_unsafe_read(set(var(_LHS), concat(Parts)), _Set, Name) :-
+    !,
+    member(Part, Parts),
+    Part \== var(Name),
+    plawk_strnum_term_mentions(Part, Name).
+% `set(var(_), RHS)` with any other NON-numeric RHS (sprintf / ...): any read of
+% Name in the RHS is unsafe (strnum there is unsupported).
 % The name's own field-copy source has RHS = field(N), which is numeric and thus
 % handled by the clause above.
 plawk_strnum_action_unsafe_read(set(var(_LHS), RHS), _Set, Name) :-
@@ -20145,6 +20167,12 @@ plawk_substitute_operation_reads(set(Expr0), Slots, Values, set(Expr)) :-
     plawk_substitute_scalar_reads(Expr0, Slots, Values, Expr).
 % a string assignment's RHS may read a string scalar (`x = x $1` accumulation);
 % substitute the reads to their current slot values (ssa_str) before the build.
+% A tracked number that may still be unset reads as "" in a concat, as in print
+% (plawk_unset_counter_read_field/4).
+plawk_substitute_operation_reads(set_str(concat(Parts0)), Slots, Values, set_str(Src)) :-
+    !,
+    maplist(plawk_unset_counter_read_field(Slots, Values), Parts0, Parts1),
+    plawk_substitute_scalar_reads(concat(Parts1), Slots, Values, Src).
 plawk_substitute_operation_reads(set_str(Src0), Slots, Values, set_str(Src)) :-
     !,
     plawk_substitute_scalar_reads(Src0, Slots, Values, Src).
@@ -20786,6 +20814,13 @@ plawk_str_scalar_part_ok(string(Value)) :- string(Value).
 plawk_str_scalar_part_ok(var(Name)) :- atom(Name).
 % a strnum element (`s = s a[$1]`, array plan item 5(d)), read as its text
 plawk_str_scalar_part_ok(Elem) :- plawk_strnum_elem_operand(Elem).
+% a number: `"x" NR`, `"n=" 5`, `"avg=" t / NR` -- its awk text (see
+% plawk_str_concat_num_parts/7)
+plawk_str_scalar_part_ok(special('NR')).
+% NR in END, already substituted to its final count (plawk_end_nr_substitute/4)
+plawk_str_scalar_part_ok(ssa(V)) :- atom(V).
+plawk_str_scalar_part_ok(int(V)) :- integer(V).
+plawk_str_scalar_part_ok(Expr) :- plawk_i64_binary_expr(Expr, _, _, _, _).
 % Double-typed update expressions: float literals, float($N), and
 % binary trees mixing them with i64 operands or scalar reads. The
 % written slot becomes a double via plawk_scalar_typed_slots/3.
@@ -22664,16 +22699,19 @@ plawk_str_format_setup(sprintf(string(Format), Args), FieldSeparator, Base,
     ),
     GlobalParts = [FmtGlobal | ArgGlobalParts],
     append(ArgSetupParts, [FmtP], SetupLines).
-plawk_str_format_setup(concat(Parts), FieldSeparator, Base,
-        [FmtGlobal, EmptyGlobal], SetupLines, ArgsSuffix) :-
+plawk_str_format_setup(concat(Parts0), FieldSeparator, Base,
+        [FmtGlobal, EmptyGlobal | NumGlobals], SetupLines, ArgsSuffix) :-
+    format(atom(EmptyName), '~w_empty', [Base]),
+    plawk_str_concat_num_parts(Parts0, Base, EmptyName, FieldSeparator, Parts,
+        NumGlobals, NumLines),
     plawk_str_concat_format(Parts, FmtAtom),
     format(atom(FmtName), '~w_fmt', [Base]),
     llvm_emit_c_string_global(FmtName, FmtAtom, FmtGlobal, _FmtLen, FmtBytes),
-    format(atom(EmptyName), '~w_empty', [Base]),
     format(atom(EmptyGlobal),
         '@.~w = private constant [1 x i8] zeroinitializer', [EmptyName]),
     plawk_str_concat_field_lines(Parts, Base, EmptyName, FieldSeparator, 0,
-        FieldLines, ArgFrags),
+        FieldLines0, ArgFrags),
+    append(NumLines, FieldLines0, FieldLines),
     ( ArgFrags == []
     -> ArgsSuffix = ''
     ;  atomic_list_concat(ArgFrags, ', ', ArgsJoined),
@@ -22806,7 +22844,94 @@ plawk_snprintf_heap_intern_lines(Base, ArgsTail, IdValueIR,
 
 % The snprintf format for a string-concat: `%.*s` per field slot, literal
 % segments inline (with `%` escaped). No separator -- operands are adjacent.
+%% plawk_str_concat_num_parts(+Parts0, +Base, +EmptyName, +FieldSeparator, -Parts,
+%%     -Globals, -Lines) is semidet.
+%
+%  The NUMBER parts of a string concatenation, computed first: an integer value
+%  becomes num_i64(ValueIR), spelled by the build format's `%ld`; a double, or a
+%  tracked number that may still be unset, becomes num_text(PtrIR), its awk text
+%  (integral as an integer, else %.6g) in a buffer of its own -- or "" while unset,
+%  as print renders it. Text parts pass through unchanged. These declined:
+%  `s = "n=" n`, `s = last "!"` after `n++` ... in rule bodies and END alike.
+plawk_str_concat_num_parts(Parts0, Base, EmptyName, FieldSeparator, Parts, Globals,
+        Lines) :-
+    foldl(plawk_str_concat_num_part(Base, EmptyName, FieldSeparator), Parts0, Parts,
+        0-([]-[]), _-(Globals-Lines)).
+
+plawk_str_concat_num_part(Base, EmptyName, FieldSeparator, Part0, Part,
+        I0-(G0-L0), I-(G-L)) :-
+    I is I0 + 1,
+    format(atom(PBase), '~w_n~w', [Base, I0]),
+    (   plawk_str_concat_text_part(Part0)
+    ->  Part = Part0, G = G0, L = L0
+    ;   plawk_str_concat_num_part_ir(Part0, PBase, EmptyName, FieldSeparator, Part,
+            PG, PL),
+        append(G0, PG, G),
+        append(L0, PL, L)
+    ).
+
+plawk_str_concat_text_part(string(_)).
+plawk_str_concat_text_part(field(_)).
+plawk_str_concat_text_part(ssa_str(_)).
+plawk_str_concat_text_part(ssa_strnum(_)).
+
+% a counter that may be unset: its text, or "" while the assigned mark is clear
+plawk_str_concat_num_part_ir(ssa_or_unset(Value, SlotIndex), PBase, EmptyName,
+        _FieldSeparator, num_text(SelIR), [BufGlobal], Lines) :-
+    !,
+    plawk_str_num_buffer(PBase, BufGlobal, BufPtr),
+    format(atom(Txt), '  %~w_txt = call i8* @wam_awk_i64_text(i64 ~w, i8* ~w)',
+        [PBase, Value, BufPtr]),
+    plawk_str_num_unset_select(PBase, SlotIndex, EmptyName, SelIR, SelLines),
+    Lines = [Txt | SelLines].
+plawk_str_concat_num_part_ir(ssa_f64_or_unset(Value, SlotIndex), PBase, EmptyName,
+        _FieldSeparator, num_text(SelIR), [BufGlobal], Lines) :-
+    !,
+    plawk_str_num_buffer(PBase, BufGlobal, BufPtr),
+    format(atom(Txt), '  %~w_txt = call i8* @wam_awk_num_text(double ~w, i8* ~w)',
+        [PBase, Value, BufPtr]),
+    plawk_str_num_unset_select(PBase, SlotIndex, EmptyName, SelIR, SelLines),
+    Lines = [Txt | SelLines].
+plawk_str_concat_num_part_ir(Expr, PBase, _EmptyName, FieldSeparator,
+        num_text(TxtIR), [BufGlobal | Globals], Lines) :-
+    plawk_expr_is_double(Expr),
+    !,
+    plawk_f64_expr_ir(Expr, FieldSeparator, PBase, PBase, ValueIR, Globals, Setup),
+    plawk_str_num_buffer(PBase, BufGlobal, BufPtr),
+    format(atom(TxtIR), '%~w_txt', [PBase]),
+    format(atom(Txt), '  ~w = call i8* @wam_awk_num_text(double ~w, i8* ~w)',
+        [TxtIR, ValueIR, BufPtr]),
+    append(Setup, [Txt], Lines).
+plawk_str_concat_num_part_ir(Expr, PBase, _EmptyName, FieldSeparator,
+        num_i64(ValueIR), Globals, Lines) :-
+    plawk_i64_expr_ir(Expr, FieldSeparator, PBase, PBase, ValueIR, Globals, Lines).
+
+% the part's own text buffer (400 bytes: @wam_awk_num_text's capacity)
+plawk_str_num_buffer(PBase, BufGlobal, BufPtr) :-
+    format(atom(BufGlobal), '@.~w_buf = internal global [400 x i8] zeroinitializer',
+        [PBase]),
+    format(atom(BufPtr),
+        'getelementptr ([400 x i8], [400 x i8]* @.~w_buf, i64 0, i64 0)', [PBase]).
+
+plawk_str_num_unset_select(PBase, SlotIndex, EmptyName, SelIR,
+        [PtrLine, HasLine, SelLine]) :-
+    plawk_slot_assigned_width(Width),
+    format(atom(PtrLine),
+        '  %~w_asg_ptr = getelementptr [~w x i1], [~w x i1]* @plawk_slot_assigned, i64 0, i64 ~w',
+        [PBase, Width, Width, SlotIndex]),
+    format(atom(HasLine), '  %~w_asg = load i1, i1* %~w_asg_ptr', [PBase, PBase]),
+    format(atom(SelIR), '%~w_sel', [PBase]),
+    format(atom(SelLine),
+        '  ~w = select i1 %~w_asg, i8* %~w_txt, i8* getelementptr ([1 x i8], [1 x i8]* @.~w, i64 0, i64 0)',
+        [SelIR, PBase, PBase, EmptyName]).
+
 plawk_str_concat_format([], '').
+plawk_str_concat_format([num_i64(_) | Rest], Fmt) :-
+    plawk_str_concat_format(Rest, RestFmt),
+    atom_concat('%ld', RestFmt, Fmt).
+plawk_str_concat_format([num_text(_) | Rest], Fmt) :-
+    plawk_str_concat_format(Rest, RestFmt),
+    atom_concat('%s', RestFmt, Fmt).
 plawk_str_concat_format([field(_) | Rest], Fmt) :-
     plawk_str_concat_format(Rest, RestFmt),
     atom_concat('%.*s', RestFmt, Fmt).
@@ -22834,6 +22959,17 @@ plawk_str_escape_percent(Value, Escaped) :-
 % `i32 <len>, i8* <ptr>` snprintf argument pair for its `%.*s` slot. Literal
 % parts contribute no argument (they live in the format).
 plawk_str_concat_field_lines([], _B, _Empty, _FieldSep, _Pos, [], []).
+% a number part, computed by plawk_str_concat_num_parts/7
+plawk_str_concat_field_lines([num_i64(Value) | Rest], B, EmptyName, FieldSep, Pos,
+        Lines, [Frag | Frags]) :-
+    format(atom(Frag), 'i64 ~w', [Value]),
+    Pos1 is Pos + 1,
+    plawk_str_concat_field_lines(Rest, B, EmptyName, FieldSep, Pos1, Lines, Frags).
+plawk_str_concat_field_lines([num_text(Ptr) | Rest], B, EmptyName, FieldSep, Pos,
+        Lines, [Frag | Frags]) :-
+    format(atom(Frag), 'i8* ~w', [Ptr]),
+    Pos1 is Pos + 1,
+    plawk_str_concat_field_lines(Rest, B, EmptyName, FieldSep, Pos1, Lines, Frags).
 plawk_str_concat_field_lines([string(_) | Rest], B, EmptyName, FieldSep, Pos,
         Lines, Frags) :-
     plawk_str_concat_field_lines(Rest, B, EmptyName, FieldSep, Pos, Lines, Frags).
