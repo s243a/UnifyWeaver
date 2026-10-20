@@ -83,14 +83,19 @@ test(strnum_vs_strnum_activates) :-
 test(string_literal_cmp_activates) :-
     strnum_names("{ x = $1; if (x == \"foo\") print \"y\" }\n", [x]), !.
 
-% a read in a STRING concat is still unsupported and deactivates.
-test(concat_read_deactivates) :-
-    strnum_names("{ x = $1; y = x \" tail\"; print y }\n", []), !.
+% a bare part of a STRING concat reads the strnum as its text: activated (it
+% deactivated, and `y = x " tail"` declined, before the concat builder took it).
+test(concat_read_activates) :-
+    strnum_names("{ x = $1; y = x \" tail\"; print y }\n", [x]), !.
 
-% fixpoint: b is read in a string concat (deactivated); a then compares against
-% a now-deactivated partner, so a is deactivated too.
+% a read in sprintf is still unsupported and deactivates.
+test(sprintf_read_deactivates) :-
+    strnum_names("{ x = $1; y = sprintf(\"%s\", x); print y }\n", []), !.
+
+% fixpoint: b is read in a sprintf (deactivated); a then compares against a
+% now-deactivated partner, so a is deactivated too.
 test(fixpoint_partner_deactivation) :-
-    strnum_names("{ a = $1; b = $2; if (a > b) print \"x\"; c = b \" t\"; print c }\n", []),
+    strnum_names("{ a = $1; b = $2; if (a > b) print \"x\"; c = sprintf(\"%s\", b); print c }\n", []),
     !.
 
 % step 3b: comparison against an integer literal is a supported read.
