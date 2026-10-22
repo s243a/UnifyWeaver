@@ -182,6 +182,19 @@ plawk_program_native_driver_ir(Program, _InputPath, _DriverIR) :-
     !,
     fail.
 
+% An element read at an all-LITERAL SUBSEP key in END (`END { print c["a","x"] }`)
+% is the read at the one string key it denotes: the components joined with the
+% program's SUBSEP (a `BEGIN { SUBSEP = ... }` value, else "\034"), which is the
+% text `c[$1,$2]++` interns for those fields. The END print emitters take a string
+% key; the SUBSEP form declined.
+plawk_program_native_driver_ir(program(Begin, Rules, [end(End0)]), InputPath,
+        DriverIR) :-
+    plawk_end_literal_subsep_rewrite(Begin, End0, End),
+    End \== End0,
+    !,
+    plawk_program_native_driver_ir(program(Begin, Rules, [end(End)]), InputPath,
+        DriverIR).
+
 % COMPUTATION IN BEGIN -- the prelude. BEGIN statements beyond the literal forms
 % (arithmetic, `x++`, concatenation, loops, prints of computed values) run ONCE,
 % before the record loop, through the SAME rule walker the rule bodies use
@@ -7719,7 +7732,8 @@ plawk_while_cond_vars(truth(X), Vars) :-
     !,
     plawk_cond_operand_vars(X, Vars).
 plawk_while_cond_vars(cmp(L, _Op, R), Vars) :-
-    ( L = assoc(_, _) ; R = assoc(_, _) ; L = ssa(_) ; R = ssa(_) ),
+    ( L = assoc(_, _) ; R = assoc(_, _) ; L = ssa(_) ; R = ssa(_)
+    ; L = length(assoc(_, _)) ; L = length(field(_)) ),
     !,
     plawk_cond_operand_vars(L, VL),
     plawk_cond_operand_vars(R, VR),
@@ -7781,6 +7795,45 @@ plawk_cond_cmp_operand(assoc(var(A), Key), Slots, Vs, Plan, FS, Base, I0, I,
     format(atom(Ref), '%~w_val', [EBase]),
     plawk_assoc_elem_call_line(Ref, i64, i64, get, TableIndex, KeyId, ReadL),
     append(KeyLines, [ReadL], Lines),
+    I is I0 + 1.
+% `length(a[k])` of a text-valued element (`if (length(a[$1]) > 2)`): the byte
+% length of its text -- an absent element (id 0) is "", length 0.
+plawk_cond_cmp_operand(length(assoc(var(A), Key)), Slots, Vs, Plan, FS, Base, I0, I,
+        ssa(Ref), Globals, Lines) :-
+    plawk_text_array(A),
+    \+ plawk_assoc_plan_posarray_array(Plan, A),
+    !,
+    plawk_assoc_table_index(Plan, A, TableIndex),
+    format(atom(EBase), '~w_e~w', [Base, I0]),
+    plawk_cond_elem_key(Key, Slots, Vs, FS, Base, EBase, KeyId, Globals, KeyLines),
+    format(atom(ValRef), '%~w_val', [EBase]),
+    plawk_assoc_elem_call_line(ValRef, i64, i64, get, TableIndex, KeyId, ReadL),
+    format(atom(TextL), '  %~w_s = call i8* @wam_sv_cstr(i64 %~w_val)', [EBase, EBase]),
+    format(atom(Ref), '%~w_len', [EBase]),
+    format(atom(LenL), '  ~w = call i64 @strlen(i8* %~w_s)', [Ref, EBase]),
+    append(KeyLines, [ReadL, TextL, LenL], Lines),
+    I is I0 + 1.
+% ... and of an element already read as text (the iterated element of a for-in
+% over a text table: `for (k in a) if (length(a[k]) > 2) ...`)
+plawk_cond_cmp_operand(length(ssa_strnum(Id)), _Slots, _Vs, _Plan, _FS, Base, I0, I,
+        ssa(Ref), [], [TextL, LenL]) :-
+    !,
+    format(atom(EBase), '~w_e~w', [Base, I0]),
+    format(atom(TextL), '  %~w_s = call i8* @wam_sv_cstr(i64 ~w)', [EBase, Id]),
+    format(atom(Ref), '%~w_len', [EBase]),
+    format(atom(LenL), '  ~w = call i64 @strlen(i8* %~w_s)', [Ref, EBase]),
+    I is I0 + 1.
+% `length($N)` of the current record's field N (a rule body only: END has no
+% current record)
+plawk_cond_cmp_operand(length(field(N)), _Slots, _Vs, _Plan, FS, Base, I0, I,
+        ssa(Ref), Globals, Lines) :-
+    integer(N), N > 0,
+    integer(FS),
+    \+ sub_atom(Base, 0, _, _, plawk_endif),
+    \+ sub_atom(Base, 0, _, _, end_body),
+    !,
+    format(atom(EBase), '~w_e~w', [Base, I0]),
+    plawk_i64_expr_ir(length(field(N)), FS, EBase, EBase, Ref, Globals, Lines),
     I is I0 + 1.
 plawk_cond_cmp_operand(Operand, Slots, Vs, Plan, FS, Base, I0, I, Operand1, G, L) :-
     plawk_cond_elem_operand(Operand, Slots, Vs, Plan, FS, Base, I0, I, Operand1, G, L).
@@ -8678,7 +8731,9 @@ plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, AssocPlan, FieldSeparator,
 % record all make plawk_cond_elem_reads/11 fail, and the program declines.
 plawk_if_cond_ir(scalar_if(Cond), Slots, Values0, AssocPlan, FieldSeparator,
         GlobalBase, CondValue, GlobalIR-GuardIR) :-
-    sub_term(assoc(_, _), Cond),
+    (   sub_term(assoc(_, _), Cond)
+    ;   sub_term(length(X), Cond), ( X = field(_) ; X = ssa_strnum(_) )
+    ),
     !,
     plawk_cond_elem_reads(Cond, Slots, Values0, AssocPlan, FieldSeparator,
         GlobalBase, 0, _, Cond1, Globals, ReadLines),
@@ -17996,6 +18051,34 @@ plawk_rs_global_lines(BeginClauses, [Line]) :-
     llvm_emit_c_string_global(wam_rs_custom, Value, Line, _StringLen, _BytesLen).
 plawk_rs_global_lines(_BeginClauses, []).
 
+%% plawk_end_literal_subsep_rewrite(+BeginClauses, +End0, -End) is det.
+%  Every `assoc(var(A), subsep_key(Literals))` in End0 as `assoc(var(A),
+%  string(Joined))` (see the driver clause that uses it).
+plawk_end_literal_subsep_rewrite(BeginClauses, End0, End) :-
+    (   member(begin(Actions), BeginClauses),
+        member(set(var('SUBSEP'), string(Sep)), Actions)
+    ->  true
+    ;   string_codes(Sep, [0x1C])
+    ),
+    plawk_end_literal_subsep_rewrite_(Sep, End0, End).
+
+plawk_end_literal_subsep_rewrite_(_Sep, T, T) :-
+    \+ compound(T),
+    !.
+plawk_end_literal_subsep_rewrite_(Sep, assoc(var(A), subsep_key(Parts)),
+        assoc(var(A), string(Joined))) :-
+    maplist(plawk_literal_key_text, Parts, Texts),
+    !,
+    atomic_list_concat(Texts, Sep, JoinedAtom),
+    atom_string(JoinedAtom, Joined).
+plawk_end_literal_subsep_rewrite_(Sep, T0, T) :-
+    T0 =.. [F | Args0],
+    maplist(plawk_end_literal_subsep_rewrite_(Sep), Args0, Args),
+    T =.. [F | Args].
+
+plawk_literal_key_text(string(S), S) :- string(S).
+plawk_literal_key_text(int(N), S) :- integer(N), number_string(N, S).
+
 %% plawk_subsep_store_lines(+BeginClauses, -Lines)
 %
 %  Startup stores for a `BEGIN { SUBSEP = "…" }`, pointing @wam_subsep_ptr at
@@ -19414,6 +19497,10 @@ plawk_rule_body_print_field(assoc(var(_), field(N))) :- integer(N), N >= 0.
 plawk_rule_body_print_field(assoc(var(_), int(N))) :- integer(N).
 % a string-literal key (arrays PR 3d-1) -- resolved against the plan's tables
 plawk_rule_body_print_field(assoc(var(_), string(S))) :- string(S).
+% a SUBSEP key of field / literal components (`c[$1,$2]`) -- resolved against
+% the plan's tables (plawk_resolve_assoc_read_field/5)
+plawk_rule_body_print_field(assoc(var(_), subsep_key(Parts))) :-
+    plawk_cond_elem_key_comps(subsep_key(Parts), _).
 % an already-computed value (only produced by substitution: END's final NR)
 plawk_rule_body_print_field(ssa(R)) :- atom(R).
 plawk_rule_body_print_field(special('NR')).
@@ -20371,6 +20458,23 @@ plawk_resolve_assoc_read_field(_Slots, _Values, AssocPlan,
     ;   plawk_assoc_plan_str_array(AssocPlan, ArrayName)    % text (arrays PR 5c)
     ->  Resolved = assoc_field_read_str(TableIndex, N)
     ;   Resolved = assoc_field_read(TableIndex, N)
+    ).
+% `print c[$1,$2]` / `print c[$1,"k"]` in the shared walker: a SUBSEP key of
+% field and literal components, interned as the writes intern it (`c[$1,$2]++`),
+% printed through the table's print helper (nothing for an absent key). It
+% declined in the mixed chain, though the pure-array chain printed it. In END a
+% field component has already become end_lastrec_field(_), which is not a key
+% component, so the clause does not apply there (no record to read).
+plawk_resolve_assoc_read_field(_Slots, _Values, AssocPlan,
+        assoc(var(ArrayName), subsep_key(Parts)), Resolved) :-
+    plawk_cond_elem_key_comps(subsep_key(Parts), Comps),
+    plawk_assoc_table_index(AssocPlan, ArrayName, TableIndex),
+    !,
+    (   plawk_assoc_plan_posarray_array(AssocPlan, ArrayName)
+    ->  Resolved = assoc_unsupported_read(ArrayName)
+    ;   plawk_assoc_plan_str_array(AssocPlan, ArrayName)
+    ->  Resolved = assoc_comps_read(TableIndex, Comps, str)
+    ;   Resolved = assoc_comps_read(TableIndex, Comps, i64)
     ).
 % `print arr["x"]` in the shared walker (a mixed rule body, or a mixed END block,
 % arrays PR 3d-1): the literal is the key text, interned; the table's print helper
@@ -27318,6 +27422,16 @@ plawk_assoc_field_read_lines(Kind, TableIndex, N, FieldSeparator, Context, Lines
     format(atom(KeyIR), '%~w_kid', [Base]),
     plawk_assoc_kind_value_print_line(Kind, TableIndex, KeyIR, PrL),
     append(SrcLines, [MissL, SafePtrL, KidL, PrL], Lines).
+% `print c[$1,$2]` (resolved SUBSEP-key read): the key through the shared SUBSEP
+% key builder, then the table's print helper (nothing for an absent key).
+plawk_emit_print_expr_for_context(assoc_comps_read(TableIndex, Comps, Kind),
+        FieldSeparator, Context, direct(Lines), [Global], []) :-
+    integer(FieldSeparator),
+    plawk_print_expr_value_base(Context, assoc_comps_read, Base),
+    format(atom(KeyIR), '%~w_kid', [Base]),
+    plawk_subsep_key_n_ir(Base, '%line', Comps, FieldSeparator, KeyIR, Global, KeyLines),
+    plawk_assoc_kind_value_print_line(Kind, TableIndex, KeyIR, PrL),
+    append(KeyLines, [PrL], Lines).
 % `print arr["x"]` (resolved literal-key read): a module c-string for the key,
 % interned, then the table's print helper (nothing for an absent key).
 plawk_emit_print_expr_for_context(assoc_lit_read(TableIndex, Text, Kind), _FieldSeparator,
