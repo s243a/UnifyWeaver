@@ -22,6 +22,7 @@
 ]).
 
 :- use_module(library(lists)).
+:- use_module(library(assoc)).
 :- use_module(library(option)).
 :- use_module(library(gensym)).
 :- use_module('../core/clause_body_analysis').
@@ -876,18 +877,34 @@ collect_struct_groups_aux([Head-_|Rest], I, [FN-I|RestPairs]) :-
 
 %% pairs_group_keys(+KVPairs, -Groups)
 %  Preserves first-occurrence order of keys; values for the same key
-%  accumulate in encounter order.
-pairs_group_keys([], []).
-pairs_group_keys([K-V|Rest], [K-[V|Vs]|GroupedRest]) :-
-    partition_by_key(K, Rest, Vs, NonMatching),
-    pairs_group_keys(NonMatching, GroupedRest).
+%  accumulate in encounter order.  O(N log N), deterministic — one pass
+%  into an assoc (Key -> reversed value list) plus a first-occurrence key
+%  order, then rebuild.  Replaces an O(N^2) select/partition version that
+%  retained choicepoints (its partition clauses shared a variable first
+%  arg, so clause indexing could not discriminate them) and defeated
+%  last-call optimization, overflowing the SWI stack when building the
+%  switch table for multi-thousand-clause fact predicates.
+%  All group keys are ground (atomic first args, or "F/Arity" atoms), so
+%  assoc standard-order equality matches the old unification grouping.
+pairs_group_keys(Pairs, Groups) :-
+    empty_assoc(Acc0),
+    pgk_collect(Pairs, Acc0, Acc, [], RevOrder),
+    reverse(RevOrder, Order),
+    pgk_build(Order, Acc, Groups).
 
-partition_by_key(_, [], [], []).
-partition_by_key(K, [K-V|Rest], [V|Match], NonMatch) :-
-    !,
-    partition_by_key(K, Rest, Match, NonMatch).
-partition_by_key(K, [Other|Rest], Match, [Other|NonMatch]) :-
-    partition_by_key(K, Rest, Match, NonMatch).
+pgk_collect([], Acc, Acc, Order, Order).
+pgk_collect([K-V|Rest], Acc0, Acc, Order0, Order) :-
+    (   get_assoc(K, Acc0, Vs0)
+    ->  put_assoc(K, Acc0, [V|Vs0], Acc1), Order1 = Order0
+    ;   put_assoc(K, Acc0, [V], Acc1),     Order1 = [K|Order0]
+    ),
+    pgk_collect(Rest, Acc1, Acc, Order1, Order).
+
+pgk_build([], _, []).
+pgk_build([K|Ks], Acc, [K-Vs|Rest]) :-
+    get_assoc(K, Acc, RevVs),
+    reverse(RevVs, Vs),
+    pgk_build(Ks, Acc, Rest).
 
 %% groups_to_entries_and_chains(+Groups, +Pred, +Arity, +Kind,
 %%                              -Entries, -DispatchCode)
